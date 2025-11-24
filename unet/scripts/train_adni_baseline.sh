@@ -3,6 +3,7 @@ VER=$1
 ADNI_PATH=$2
 IMAGE_TYPE=$3  # axial or coronal
 BASE_CH=$4
+BATCH_SIZE=$5
 
 if [ "$USE_MASKED_LOSS" = "true" ]; then
   MASKED_FLAG="--enable-masked-loss"
@@ -14,5 +15,5 @@ python unet/src/"$VER"/train.py --amp \
   --use-gn --use-se --use-multiscale \
   --pre-bias --pre-norm --pre-crop --pre-align \
   --data-source adni --adni-path "$ADNI_PATH" --image-type "$IMAGE_TYPE" \
-  --base-ch "$BASE_CH" \
+  --base-ch "$BASE_CH" --batch-size "$BATCH_SIZE"\
   $MASKED_FLAG 
