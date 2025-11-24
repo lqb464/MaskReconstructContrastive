@@ -11,5 +11,5 @@ fi
 python unet/src/"$VER"/train.py --amp \
   --use-gn --use-se --use-multiscale \
   --pre-bias --pre-norm --pre-crop --pre-align \
-  --data-source hf --base-ch BASH_CH \
+  --data-source hf --base-ch "$BASE_CH" \
   $MASKED_FLAG
