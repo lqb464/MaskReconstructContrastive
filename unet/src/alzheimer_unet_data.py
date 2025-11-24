@@ -510,7 +510,7 @@ class AdniPrecomputedSliceDataset(Dataset):
         self.image_size = image_size
 
         csv_path = self.root_dir / meta_filename
-        print(csv_path)
+
         if not csv_path.exists():
             raise FileNotFoundError(f"Không tìm thấy meta csv: {csv_path}")
 
@@ -669,7 +669,6 @@ def create_unet_dataloaders(
     elif data_source == "adni_preproc":
         if adni_preproc_path is None:
             raise ValueError("For data_source='adni_preproc', please provide adni_preproc_path")
-        print(adni_preproc_path)
         full_ds = AdniPrecomputedSliceDataset(
             root_dir=adni_preproc_path,
             image_size=image_size,
