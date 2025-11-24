@@ -607,7 +607,7 @@ def train(args):
             )  
             
         # t SNE snapshots
-        if epoch % args.tsne_every == 0 and not args.adni:
+        if epoch % args.tsne_every == 0 and "adni" not in args.data_source:
             tsne_prefix = str(tsne_dir / f"tsne_epoch{epoch:03d}")
             run_tsne_variants(model, val_loader, device, tsne_prefix, max_items=args.tsne_max_items)
 
