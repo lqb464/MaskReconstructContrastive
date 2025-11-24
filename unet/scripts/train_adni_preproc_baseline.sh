@@ -1,8 +1,7 @@
 #!/bin/bash
 VER=$1
-ADNI_PATH=$2
-IMAGE_TYPE=$3  # axial or coronal
-BASE_CH=$4
+ADNI_PROC_PATH=$2
+BASE_CH=$3
 
 if [ "$USE_MASKED_LOSS" = "true" ]; then
   MASKED_FLAG="--enable-masked-loss"
@@ -13,6 +12,6 @@ fi
 python unet/src/"$VER"/train.py --amp \
   --use-gn --use-se --use-multiscale \
   --pre-bias --pre-norm --pre-crop --pre-align \
-  --data-source adni --adni-path "$ADNI_PATH" --image-type "$IMAGE_TYPE" \
+  --data-source adni_preproc --adni-path "$ADNI_PROC_PATH" --image-type "$IMAGE_TYPE" \
   --bash-ch BASH_CH \
   $MASKED_FLAG 

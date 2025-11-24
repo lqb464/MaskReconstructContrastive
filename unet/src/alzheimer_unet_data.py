@@ -476,6 +476,92 @@ class AdniNiftiSliceDataset(Dataset):
         from PIL import Image
         return Image.fromarray((arr_v * 255.0).astype(np.uint8), mode="L")
 
+
+class AdniPrecomputedSliceDataset(Dataset):
+    """
+    Dataset đọc từ PNG + meta.csv đã được precompute trước.
+
+    Cấu trúc thư mục:
+      root_dir/
+        meta.csv   (các cột: id, filename, label, orig_path, slice_idx)
+        images/
+          000000.png
+          000001.png
+          ...
+
+    Mỗi sample trả về:
+      input    [1,H,W] đã unsharp nếu apply_unsharp=True
+      target   [1,H,W] giống input
+      original [1,H,W] trước unsharp
+      label    int64
+      path     str
+      slice_idx int
+    """
+
+    def __init__(
+        self,
+        root_dir: str,
+        image_size: int = 128,
+        apply_unsharp: bool = True,
+        meta_filename: str = "meta.csv",
+    ):
+        self.root_dir = Path(root_dir)
+        self.img_dir = self.root_dir / "images"
+        self.image_size = image_size
+
+        csv_path = self.root_dir / meta_filename
+        if not csv_path.exists():
+            raise FileNotFoundError(f"Không tìm thấy meta csv: {csv_path}")
+
+        self.df = pd.read_csv(csv_path)
+
+        # Giống base_transform của AlzheimerUNetDataset
+        self.base_transform = transforms.Compose(
+            [
+                transforms.Resize((image_size, image_size)),
+                transforms.Grayscale(num_output_channels=1),
+                transforms.ToTensor(),
+            ]
+        )
+
+        if apply_unsharp:
+            self.unsharp = UnsharpMask(kernel_size=5, sigma=1.0, amount=0.7)
+        else:
+            self.unsharp = None
+
+    def __len__(self) -> int:
+        return len(self.df)
+
+    def __getitem__(self, idx: int):
+        row = self.df.iloc[idx]
+        fname = row["filename"]
+        img_path = self.img_dir / fname
+
+        # đọc ảnh grayscale
+        pil_img = Image.open(img_path).convert("L")
+        x_orig = self.base_transform(pil_img)  # [1,H,W]
+
+        if self.unsharp is not None:
+            x_proc = self.unsharp(x_orig)
+        else:
+            x_proc = x_orig
+
+        label = int(row.get("label", -1))
+        path = str(row.get("orig_path", ""))
+        slice_idx = int(row.get("slice_idx", -1))
+
+        sample = {
+            "input": x_proc,
+            "target": x_proc,
+            "original": x_orig,
+            "label": torch.tensor(label, dtype=torch.long),
+            "path": path,
+            "slice_idx": slice_idx,
+        }
+        return sample
+
+
+
 def create_unet_dataloaders(
     batch_size: int = 8,
     val_size: float = 0.2,
@@ -490,6 +576,7 @@ def create_unet_dataloaders(
     adni_label_csv: Optional[str] = None,           # optional filename->label csv
     adni_middle_frac: float = 0.4,                  # central fraction of slices
     adni_middle_subsample: int = 1,                 # stride in that band
+    adni_preproc_path: Optional[str] = None,  
     seed: int = 42,
 ):
     """
@@ -574,6 +661,67 @@ def create_unet_dataloaders(
         test_ds  = _Subset(full_ds, test_idx)
 
         print(f"ADNI total slices: {N}")
+        print(f"Train size: {len(train_ds)}")
+        print(f"Val size:   {len(val_ds)}")
+        print(f"Test size:  {len(test_ds)}")
+
+    elif data_source == "adni_preproc":
+        if adni_preproc_path is None:
+            raise ValueError("For data_source='adni_preproc', please provide adni_preproc_path")
+
+        full_ds = AdniPrecomputedSliceDataset(
+            root_dir=adni_preproc_path,
+            image_size=image_size,
+            apply_unsharp=apply_unsharp,
+        )
+
+        N = len(full_ds)
+        indices = np.arange(N)
+
+        # cố gắng stratify theo label nếu có và hợp lệ
+        labels = None
+        if "label" in full_ds.df.columns:
+            labels = full_ds.df["label"].to_numpy()
+            uniq = np.unique(labels)
+            if len(uniq) < 2 or np.any(labels < 0):
+                labels = None
+
+        if labels is None:
+            tr_idx, val_idx = train_test_split(
+                indices,
+                test_size=val_size,
+                random_state=seed,
+                shuffle=True,
+            )
+        else:
+            tr_idx, val_idx = train_test_split(
+                indices,
+                test_size=val_size,
+                random_state=seed,
+                stratify=labels,
+            )
+
+        # chia nửa val thành val và test như nhánh ADNI
+        val_idx, test_idx = train_test_split(
+            val_idx,
+            test_size=0.5,
+            random_state=seed,
+        )
+
+        class _Subset(Dataset):
+            def __init__(self, base, idxs):
+                self.base = base
+                self.idxs = list(idxs)
+            def __len__(self):
+                return len(self.idxs)
+            def __getitem__(self, i):
+                return self.base[self.idxs[i]]
+
+        train_ds = _Subset(full_ds, tr_idx)
+        val_ds   = _Subset(full_ds, val_idx)
+        test_ds  = _Subset(full_ds, test_idx)
+
+        print(f"ADNI preproc total slices: {N}")
         print(f"Train size: {len(train_ds)}")
         print(f"Val size:   {len(val_ds)}")
         print(f"Test size:  {len(test_ds)}")
@@ -741,9 +889,7 @@ class FolderUNetDataset(Dataset):
             "path": str(path),
         }
 
-# -------------------------
-# Single DataLoader
-# -------------------------
+
 def create_unet_dataloader_from_folder_csv(
     image_dir: str,
     csv_map: str,

@@ -1,5 +1,6 @@
 #!/bin/bash
 VER=$1
+BASE_CH=$2
 
 if [ "$USE_MASKED_LOSS" = "true" ]; then
   MASKED_FLAG="--enable-masked-loss"
@@ -10,4 +11,5 @@ fi
 python unet/src/"$VER"/train.py --amp \
   --use-gn --use-se --use-multiscale \
   --pre-bias --pre-norm --pre-crop --pre-align \
+  --data-source hf --bash-ch BASH_CH \
   $MASKED_FLAG
