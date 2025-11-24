@@ -669,7 +669,7 @@ def create_unet_dataloaders(
     elif data_source == "adni_preproc":
         if adni_preproc_path is None:
             raise ValueError("For data_source='adni_preproc', please provide adni_preproc_path")
-
+        print(adni_preproc_path)
         full_ds = AdniPrecomputedSliceDataset(
             root_dir=adni_preproc_path,
             image_size=image_size,
