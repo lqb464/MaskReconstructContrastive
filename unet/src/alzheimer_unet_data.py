@@ -510,6 +510,7 @@ class AdniPrecomputedSliceDataset(Dataset):
         self.image_size = image_size
 
         csv_path = self.root_dir / meta_filename
+        print(csv_path)
         if not csv_path.exists():
             raise FileNotFoundError(f"Không tìm thấy meta csv: {csv_path}")
 
