@@ -14,5 +14,5 @@ python unet/src/"$VER"/train.py --amp \
   --use-gn --use-se --use-multiscale \
   --pre-bias --pre-norm --pre-crop --pre-align \
   --data-source adni --adni-path "$ADNI_PATH" --image-type "$IMAGE_TYPE" \
-  --bash-ch BASH_CH \
+  --base-ch BASH_CH \
   $MASKED_FLAG 
