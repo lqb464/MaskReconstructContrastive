@@ -681,7 +681,7 @@ def build_argparser():
     # Training
     p.add_argument("--enable-contrastive", action="store_true", help="whether to enable contrastive loss")
     p.add_argument("--enable-masked-loss", action="store_true", help="whether to use masked loss on unmasked regions")
-    p.add_argument("--epochs", type=int, default=100)
+    p.add_argument("--epochs", type=int, default=200)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--weight-decay", type=float, default=1e-4)
     p.add_argument("--lambda-recon", type=float, default=1.0)
