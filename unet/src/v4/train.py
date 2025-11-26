@@ -536,7 +536,7 @@ def train(args):
         val_ssim_mean   = (val_ssim_sum   / max(val_img_count, 1))
 
         print(
-            f"Epoch {epoch:03d} | "
+            f"\nEpoch {epoch:03d} | "
             f"train L1 (M/U/T) {train_recon_masked:.4f}/{train_recon_unmasked:.4f}/{train_recon_total:.4f} | "
             f"val L1 (M/U/T) {val_recon_masked:.4f}/{val_recon_unmasked:.4f}/{val_recon_total:.4f} | "
             f"train SSIM {train_ssim_mean:.4f} | val SSIM {val_ssim_mean:.4f}"

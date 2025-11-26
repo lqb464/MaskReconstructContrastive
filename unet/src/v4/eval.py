@@ -37,9 +37,7 @@ from alzheimer_unet_data import (
 )
 
 
-
 # Minimal preprocessing and masking so eval can run standalone
-
 @dataclass
 class MaskSpec:
     patch_size: int = 16
