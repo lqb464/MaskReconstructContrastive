@@ -584,6 +584,11 @@ def train(args):
             "opt": opt.state_dict(),
             "args": vars(args),
             "val_recon": val_recon,
+            "base_ch": args.base_ch,
+            "bottleneck_dim": args.bottleneck_dim,
+            "use_gn": args.use_gn,
+            "use_se": args.use_se,
+            "use_multiscale": args.use_multiscale
         }
         torch.save(ckpt, str(ckpt_dir / f"ckpt_epoch{epoch:03d}.pt"))
         if val_recon < best_val:

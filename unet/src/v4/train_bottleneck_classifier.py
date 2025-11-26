@@ -111,17 +111,29 @@ class UNetBottleneckClassifier(nn.Module):
 def build_backbone_from_checkpoint(ckpt_path: Path, device: torch.device) -> SmallUNetSSL:
     ckpt = torch.load(str(ckpt_path), map_location=device)
 
-    # Recreate the backbone with the same hyperparameters used in SSL training
+    # Args dict saved by train.py: ckpt["args"] = vars(args)
     ssl_args = ckpt.get("args", {})
+
+    # Fallbacks: if you ever add base_ch, bottleneck_dim, etc as top-level keys
+    def get_param(name, default=None):
+        if name in ssl_args:
+            return ssl_args[name]
+        if name in ckpt:
+            return ckpt[name]
+        if default is not None:
+            return default
+        raise KeyError(f"Missing `{name}` in checkpoint args/ckpt")
+
     model_kwargs = {
         "in_ch": 1,
-        "base_ch": ssl_args.get("base_ch", 16),
-        "bottleneck_dim": ssl_args.get("bottleneck_dim", 128),
-        "proj_dim": ssl_args.get("proj_dim", 128),
-        "use_gn": ssl_args.get("use_gn", False),
-        "use_se": ssl_args.get("use_se", False),
-        "use_multiscale": ssl_args.get("use_multiscale", True),
+        "base_ch":        get_param("base_ch", 16),
+        "bottleneck_dim": get_param("bottleneck_dim", 128),
+        "proj_dim":       get_param("proj_dim", 128),
+        "use_gn":         get_param("use_gn", False),
+        "use_se":         get_param("use_se", False),
+        "use_multiscale": get_param("use_multiscale", True),
     }
+
     backbone = SmallUNetSSL(**model_kwargs)
     backbone.load_state_dict(ckpt["model"], strict=True)
     backbone.to(device)
