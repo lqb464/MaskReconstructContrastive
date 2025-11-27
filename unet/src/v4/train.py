@@ -590,7 +590,6 @@ def train(args):
             "use_se": args.use_se,
             "use_multiscale": args.use_multiscale
         }
-        torch.save(ckpt, str(ckpt_dir / f"ckpt_epoch{epoch:03d}.pt"))
         if val_recon < best_val:
             best_val = val_recon
             torch.save(ckpt, str(ckpt_dir / "ckpt_best.pt"))
