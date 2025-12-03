@@ -151,10 +151,25 @@ def build_backbone_from_checkpoint(ckpt_path: Path, device: torch.device) -> Sma
 def _mri_collate(batch):
     # batch: list of (img_t, label_int)
     imgs, labels = zip(*batch)
-    # clone/contiguous to avoid any weird non resizable storage from numpy
-    imgs = torch.stack([img.contiguous().clone() for img in imgs], dim=0)
-    labels = torch.tensor(labels, dtype=torch.long)
-    return imgs, labels
+
+    # Get max H, W in this batch
+    Hs = [img.shape[-2] for img in imgs]
+    Ws = [img.shape[-1] for img in imgs]
+    maxH, maxW = max(Hs), max(Ws)
+
+    padded_imgs = []
+    for img in imgs:
+        # img: [1, H, W]
+        C, H, W = img.shape
+        # zero pad to [1, maxH, maxW]
+        pad = torch.zeros((C, maxH, maxW), dtype=img.dtype)
+        pad[:, :H, :W] = img
+        padded_imgs.append(pad)
+
+    imgs_tensor = torch.stack(padded_imgs, dim=0)         # [B, 1, maxH, maxW]
+    labels_tensor = torch.tensor(labels, dtype=torch.long)
+    return imgs_tensor, labels_tensor
+
 
 
 def create_dataloaders(
