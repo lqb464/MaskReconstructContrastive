@@ -16,8 +16,6 @@ from torch.utils.data import Dataset, DataLoader, Subset
 
 from model import SmallUNetSSL
 from train import preprocess_batch, set_seed
-from collections import Counter
-
 
 
 # -----------------------------
@@ -474,6 +472,7 @@ def main():
 
     if test_loader is not None:
         test_loss, test_acc = evaluate(model, test_loader, device, preprocess_cfg)
+        debug_predictions(model, test_loader, device, preprocess_cfg, mindset_idx_map_label_1)
         print(f"Test loss {test_loss:.4f} acc {test_acc:.4f}")
     else:
         print("No test set with set == 'test' found in CSV; skipping test evaluation.")
