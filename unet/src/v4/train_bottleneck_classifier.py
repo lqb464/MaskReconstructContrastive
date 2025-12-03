@@ -442,6 +442,8 @@ def main():
 
     best_val_acc = 0.0
     best_epoch = 0
+    
+    best_val_loss = float('inf')
 
     for epoch in range(1, args.epochs + 1):
         train_loss, train_acc = train_one_epoch(model, train_loader, optimizer, device, preprocess_cfg)
@@ -455,7 +457,7 @@ def main():
         
         debug_predictions(model, val_loader, device, preprocess_cfg, mindset_idx_map_label_1)
 
-        if val_acc > best_val_acc:
+        if val_acc >= best_val_acc and val_loss < best_val_loss:
             best_val_acc = val_acc
             best_epoch = epoch
             ckpt = {
