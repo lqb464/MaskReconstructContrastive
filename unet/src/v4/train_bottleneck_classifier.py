@@ -50,6 +50,34 @@ class PreprocessConfig:
     pre_align: bool = True
     image_size: int = 192
 
+@torch.no_grad()
+def debug_predictions(model, loader, device, preprocess_cfg, label_map):
+    model.eval()
+    all_preds, all_labels = [], []
+    for imgs, labels in loader:
+        imgs = imgs.to(device)
+        labels = labels.to(device)
+
+        imgs = preprocess_batch(imgs, preprocess_cfg)
+        logits = model(imgs)
+        preds = torch.argmax(logits, dim=1)
+
+        all_preds.append(preds.cpu())
+        all_labels.append(labels.cpu())
+
+    all_preds = torch.cat(all_preds)
+    all_labels = torch.cat(all_labels)
+
+    print("Label counts:", torch.bincount(all_labels, minlength=4))
+    print("Pred counts:", torch.bincount(all_preds, minlength=4))
+
+    # Optional: confusion matrix
+    cm = torch.zeros(4, 4, dtype=torch.int64)
+    for t, p in zip(all_labels, all_preds):
+        cm[t, p] += 1
+    print("Confusion matrix (rows=true, cols=pred):")
+    print(cm)
+
 
 # -----------------------------
 # Dataset
@@ -374,6 +402,8 @@ def main():
             f"Train loss {train_loss:.4f} acc {train_acc:.4f} | "
             f"Val loss {val_loss:.4f} acc {val_acc:.4f}"
         )
+        
+        debug_predictions(model, val_loader, device, preprocess_cfg, mindset_idx_map_label_1)
 
         if val_acc > best_val_acc:
             best_val_acc = val_acc
