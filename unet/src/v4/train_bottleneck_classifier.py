@@ -16,6 +16,8 @@ from torch.utils.data import Dataset, DataLoader, Subset
 
 from model import SmallUNetSSL
 from train import preprocess_batch, set_seed
+from collections import Counter
+
 
 
 # -----------------------------
@@ -124,19 +126,37 @@ class UNetBottleneckClassifier(nn.Module):
     Wrap a frozen SmallUNetSSL and train a linear classifier on top of the
     bottleneck embedding returned by encoder_embed(mode='bottleneck').
     """
-    def __init__(self, backbone: SmallUNetSSL, num_classes: int = 4, freeze_backbone: bool = True):
+    def __init__(
+        self, 
+        backbone: SmallUNetSSL, 
+        num_classes: int = 4, 
+        freeze_backbone: bool = True,
+        unfreeze_last: bool = False,
+    ):
         super().__init__()
         self.backbone = backbone
 
+        # Freeze everything first
         if freeze_backbone:
             for p in self.backbone.parameters():
                 p.requires_grad = False
 
+        if unfreeze_last:
+            # Example: unfreeze the deepest encoder block and bottleneck conv
+            for p in self.backbone.enc4.parameters():
+                p.requires_grad = True
+            for p in self.backbone.bottleneck.parameters():
+                p.requires_grad = True
+            # Also unfreeze the bottleneck embedding MLP
+            for p in self.backbone.embed_fc["bottleneck"].parameters():
+                p.requires_grad = True
+
         bottleneck_dim = self.backbone.embed_fc["bottleneck"].out_features
+        # stronger head
         self.classifier = nn.Sequential(
             nn.LayerNorm(bottleneck_dim),
             nn.ReLU(inplace=True),
-            nn.Linear(bottleneck_dim, 4),
+            nn.Linear(bottleneck_dim, num_classes),
         )
 
 
@@ -391,9 +411,34 @@ def main():
     )
 
     backbone = build_backbone_from_checkpoint(ckpt_path, device)
-    model = UNetBottleneckClassifier(backbone, num_classes=4, freeze_backbone=True).to(device)
+    model = UNetBottleneckClassifier(
+        backbone, 
+        num_classes=4, 
+        freeze_backbone=True,
+        unfreeze_last=True,
+    ).to(device)
+    
+    # Create param groups with different lrs
+    backbone_params = []
+    head_params = []
 
-    optimizer = optim.AdamW(model.classifier.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        if name.startswith("backbone."):
+            backbone_params.append(p)
+        else:
+            head_params.append(p)
+
+
+
+    optimizer = optim.AdamW(
+        [
+            {"params": head_params, "lr": args.lr},            # e.g. 1e3
+            {"params": backbone_params, "lr": args.lr * 1e2}, # e.g. 1e5
+        ],
+        weight_decay=args.weight_decay,
+    )
 
     best_val_acc = 0.0
     best_epoch = 0
