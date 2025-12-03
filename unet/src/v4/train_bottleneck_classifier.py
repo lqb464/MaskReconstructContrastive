@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
-import os
 import random
 
 import numpy as np
@@ -18,21 +17,34 @@ from torch.utils.data import Dataset, DataLoader, Subset
 from model import SmallUNetSSL
 from train import preprocess_batch, set_seed
 
-import sys
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from alzheimer_unet_data import (
-    mindset_idx_map_label_1,
-    mindset_label_map_idx_1,
-)
+# -----------------------------
+# Label mappings
+# -----------------------------
+mindset_idx_map_label_1 = {
+    0: "Normal",
+    1: "MTL",
+    2: "Other",
+    3: "WMH",
+}
+
+mindset_label_map_idx_1 = {
+    "mtl_atrophy": 1,
+    "mtl_atrophy,other_atrophy": 1,
+    "mtl_atrophy,wmh": 1,
+    "normal": 0,
+    "other_atrophy": 2,
+    "wmh": 3,
+    "wmh,other_atrophy": 3,
+}
 
 
 # -----------------------------
-# Small helper for preprocessing
+# Preprocess config for preprocess_batch
 # -----------------------------
 @dataclass
 class PreprocessConfig:
-    pre_bias: bool = True
+    pre_bias: bool = False
     pre_norm: bool = True
     pre_crop: bool = True
     pre_align: bool = True
@@ -44,10 +56,10 @@ class PreprocessConfig:
 # -----------------------------
 class MindsetMRIDataset(Dataset):
     """
-    Dataset that reads the CSV with columns:
-        - img_path: image file name
-        - abnormal_type: string used with mindset_label_map_idx_1
-        - set: "train" or "test"
+    Dataset that reads a CSV with columns:
+      - img_path: file name under images_root
+      - abnormal_type: string label used with mindset_label_map_idx_1
+      - set: "train" or "test" (used only to split in create_dataloaders)
     """
     def __init__(self, df: pd.DataFrame, images_root: Path):
         self.df = df.reset_index(drop=True)
@@ -63,27 +75,26 @@ class MindsetMRIDataset(Dataset):
         if not img_file.is_file():
             raise FileNotFoundError(f"Image file not found: {img_file}")
 
-        # Load as single-channel (grayscale) and convert to tensor in [0,1]
+        # Load grayscale, convert to float tensor in [0,1], shape [1,H,W]
         img = Image.open(img_file).convert("L")
-        img = torch.from_numpy(
-            np.array(img, dtype=np.float32) / 255.0
-        ).unsqueeze(0)  # [1,H,W]
+        np_img = np.array(img, dtype=np.float32) / 255.0
+        img_t = torch.from_numpy(np_img).unsqueeze(0).contiguous()
 
         abnormal_type = row["abnormal_type"]
         if abnormal_type not in mindset_label_map_idx_1:
             raise KeyError(f"Unknown abnormal_type: {abnormal_type}")
         label = mindset_label_map_idx_1[abnormal_type]
 
-        return img, label
+        return img_t, int(label)
 
 
 # -----------------------------
-# Classifier on top of bottleneck features
+# Backbone + classifier
 # -----------------------------
 class UNetBottleneckClassifier(nn.Module):
     """
-    Wraps a frozen SmallUNetSSL and adds a simple Linear head on top of
-    the bottleneck embedding (encoder_embed with mode='bottleneck').
+    Wrap a frozen SmallUNetSSL and train a linear classifier on top of the
+    bottleneck embedding returned by encoder_embed(mode='bottleneck').
     """
     def __init__(self, backbone: SmallUNetSSL, num_classes: int = 4, freeze_backbone: bool = True):
         super().__init__()
@@ -93,28 +104,21 @@ class UNetBottleneckClassifier(nn.Module):
             for p in self.backbone.parameters():
                 p.requires_grad = False
 
-        # bottleneck_dim is the output dim of the bottleneck head in embed_fc
         bottleneck_dim = self.backbone.embed_fc["bottleneck"].out_features
         self.classifier = nn.Linear(bottleneck_dim, num_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Compute bottleneck embedding without tracking gradients for the backbone
         with torch.no_grad():
             _, h = self.backbone.encoder_embed(x, mode="bottleneck")
         logits = self.classifier(h)
         return logits
 
 
-# -----------------------------
-# Utilities
-# -----------------------------
 def build_backbone_from_checkpoint(ckpt_path: Path, device: torch.device) -> SmallUNetSSL:
     ckpt = torch.load(str(ckpt_path), map_location=device)
 
-    # Args dict saved by train.py: ckpt["args"] = vars(args)
     ssl_args = ckpt.get("args", {})
 
-    # Fallbacks: if you ever add base_ch, bottleneck_dim, etc as top-level keys
     def get_param(name, default=None):
         if name in ssl_args:
             return ssl_args[name]
@@ -141,28 +145,37 @@ def build_backbone_from_checkpoint(ckpt_path: Path, device: torch.device) -> Sma
     return backbone
 
 
+# -----------------------------
+# Dataloaders with custom collate_fn
+# -----------------------------
+def _mri_collate(batch):
+    # batch: list of (img_t, label_int)
+    imgs, labels = zip(*batch)
+    # clone/contiguous to avoid any weird non resizable storage from numpy
+    imgs = torch.stack([img.contiguous().clone() for img in imgs], dim=0)
+    labels = torch.tensor(labels, dtype=torch.long)
+    return imgs, labels
+
+
 def create_dataloaders(
     csv_path: Path,
     images_root: Path,
     batch_size: int,
     val_ratio: float = 0.2,
-    num_workers: int = 4,
+    num_workers: int = 0,
+    pin_memory: bool = False,
 ):
     df = pd.read_csv(csv_path)
 
-    # Use "train" rows for train/val splits and keep "test" as held-out
     train_df = df[df["set"] == "train"].reset_index(drop=True)
     test_df = df[df["set"] == "test"].reset_index(drop=True)
 
     if len(train_df) == 0:
         raise ValueError("CSV contains no rows with set == 'train'")
-    if len(test_df) == 0:
-        print("Warning: CSV contains no rows with set == 'test'. Test metrics will be skipped.")
 
     full_train_dataset = MindsetMRIDataset(train_df, images_root)
     test_dataset = MindsetMRIDataset(test_df, images_root) if len(test_df) > 0 else None
 
-    # Split train into train and val
     num_train = len(full_train_dataset)
     indices = list(range(num_train))
     random.shuffle(indices)
@@ -177,15 +190,18 @@ def create_dataloaders(
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
-        pin_memory=True,
+        pin_memory=pin_memory,
+        collate_fn=_mri_collate,
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=True,
+        pin_memory=pin_memory,
+        collate_fn=_mri_collate,
     )
+
     test_loader = None
     if test_dataset is not None:
         test_loader = DataLoader(
@@ -193,12 +209,16 @@ def create_dataloaders(
             batch_size=batch_size,
             shuffle=False,
             num_workers=num_workers,
-            pin_memory=True,
+            pin_memory=pin_memory,
+            collate_fn=_mri_collate,
         )
 
     return train_loader, val_loader, test_loader
 
 
+# -----------------------------
+# Train / eval loops
+# -----------------------------
 def train_one_epoch(
     model: UNetBottleneckClassifier,
     loader: DataLoader,
@@ -214,10 +234,9 @@ def train_one_epoch(
     total = 0
 
     for imgs, labels in loader:
-        imgs = imgs.to(device)  # [B,1,H,W] in [0,1]
+        imgs = imgs.to(device)
         labels = labels.to(device, dtype=torch.long)
 
-        # Apply same preprocessing as SSL training (bias, crop, align, etc.)
         imgs = preprocess_batch(imgs, preprocess_cfg)
 
         optimizer.zero_grad()
@@ -227,7 +246,6 @@ def train_one_epoch(
         optimizer.step()
 
         running_loss += loss.item() * imgs.size(0)
-
         preds = torch.argmax(logits, dim=1)
         correct += (preds == labels).sum().item()
         total += labels.size(0)
@@ -269,71 +287,64 @@ def evaluate(
     acc = correct / max(total, 1)
     return avg_loss, acc
 
-def build_argparser():
-    p = argparse.ArgumentParser(
-        "Train 4-class classifier (Normal / MTL / Other / WMH) on top of SmallUNetSSL bottleneck"
-    )
-    p.add_argument("--csv-path", type=str, default="data_description.csv")
-    p.add_argument("--images-root", type=str, required=True, help="Directory containing image files")
-    p.add_argument("--ckpt-path", type=str, required=True, help="Path to SSL UNet checkpoint (ckpt_best.pt)")
-    p.add_argument("--batch-size", type=int, default=8)
-    p.add_argument("--val-ratio", type=float, default=0.2)
-    p.add_argument("--epochs", type=int, default=50)
-    p.add_argument("--lr", type=float, default=1e-3)
-    p.add_argument("--weight-decay", type=float, default=1e-4)
-    p.add_argument("--num-workers", type=int, default=4)
-    p.add_argument("--image-size", type=int, default=192)
-    p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--device", type=str, default="cuda")
-    p.add_argument("--outdir", type=str, default="runs_bottleneck_cls")
-    
-    return p
 
 # -----------------------------
 # Main
 # -----------------------------
 def main():
-    
-    args = build_argparser().parse_args()
+    parser = argparse.ArgumentParser(
+        "Train 4-class classifier (Normal / MTL / Other / WMH) on top of UNet bottleneck"
+    )
+    parser.add_argument("--csv-path", type=str, default="data_description.csv")
+    parser.add_argument("--images-root", type=str, required=True)
+    parser.add_argument("--ckpt-path", type=str, required=True)
+    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--val-ratio", type=float, default=0.2)
+    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--image-size", type=int, default=192)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--outdir", type=str, default="runs_bottleneck_cls")
 
-    # Resolve paths
+    args = parser.parse_args()
+
     csv_path = Path(args.csv_path)
     images_root = Path(args.images_root)
     ckpt_path = Path(args.ckpt_path)
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
-    # Device
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 
-    # Reproducibility
     set_seed(args.seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-    # Preprocess config (mirrors SSL preprocessing pipeline)
     preprocess_cfg = PreprocessConfig(
-        pre_bias=True,
+        pre_bias=False,
         pre_norm=True,
         pre_crop=True,
         pre_align=True,
         image_size=args.image_size,
     )
 
-    # Data
+    pin_memory = device.type == "cuda"
+
     train_loader, val_loader, test_loader = create_dataloaders(
         csv_path=csv_path,
         images_root=images_root,
         batch_size=args.batch_size,
         val_ratio=args.val_ratio,
         num_workers=args.num_workers,
+        pin_memory=pin_memory,
     )
 
-    # Backbone + classifier
     backbone = build_backbone_from_checkpoint(ckpt_path, device)
     model = UNetBottleneckClassifier(backbone, num_classes=4, freeze_backbone=True).to(device)
 
-    # Only train the classifier parameters
     optimizer = optim.AdamW(model.classifier.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     best_val_acc = 0.0
@@ -345,11 +356,10 @@ def main():
 
         print(
             f"Epoch {epoch:03d} | "
-            f"Train loss: {train_loss:.4f}, acc: {train_acc:.4f} | "
-            f"Val loss: {val_loss:.4f}, acc: {val_acc:.4f}"
+            f"Train loss {train_loss:.4f} acc {train_acc:.4f} | "
+            f"Val loss {val_loss:.4f} acc {val_acc:.4f}"
         )
 
-        # Save best checkpoint based on validation accuracy
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             best_epoch = epoch
@@ -365,12 +375,11 @@ def main():
 
     print(f"Best val acc: {best_val_acc:.4f} at epoch {best_epoch}")
 
-    # Final test evaluation
     if test_loader is not None:
         test_loss, test_acc = evaluate(model, test_loader, device, preprocess_cfg)
-        print(f"Test loss: {test_loss:.4f}, acc: {test_acc:.4f}")
+        print(f"Test loss {test_loss:.4f} acc {test_acc:.4f}")
     else:
-        print("No test set found in CSV (set == 'test'), skipping test evaluation.")
+        print("No test set with set == 'test' found in CSV; skipping test evaluation.")
 
 
 if __name__ == "__main__":
