@@ -133,7 +133,12 @@ class UNetBottleneckClassifier(nn.Module):
                 p.requires_grad = False
 
         bottleneck_dim = self.backbone.embed_fc["bottleneck"].out_features
-        self.classifier = nn.Linear(bottleneck_dim, num_classes)
+        self.classifier = nn.Sequential(
+            nn.LayerNorm(bottleneck_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(bottleneck_dim, 4),
+        )
+
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         with torch.no_grad():
