@@ -7,7 +7,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional
+from typing import Tuple, Optional
 
 __all__ = [
     "SmallUNetSSL",

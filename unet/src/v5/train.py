@@ -550,10 +550,9 @@ def train(args):
             vb = next(iter(val_loader))
             vx = vb['input'].to(device, non_blocking=True)
             vx = preprocess_batch(vx, args)
-            vmask = sample_masks_anti_mirror(vx.size(0), spec, device)
-            vrecon, _ = model.forward(vx, pixel_mask=vmask)
-            vresid = torch.abs(vx - vrecon).clamp(0, 1)
             vmasked = vx * (1.0 - vmask)
+            vrecon, _ = model.forward(vmasked, pixel_mask=vmask)
+            vresid = torch.abs(vx - vrecon).clamp(0, 1)
             
             out_path = str(vis_dir / f'epoch_{epoch:03d}.png')
 

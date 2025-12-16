@@ -191,7 +191,9 @@ def evaluate_recon(model: SmallUNetSSL, loader: DataLoader, device: torch.device
         x = batch["input"].to(device, non_blocking=True)
         x = preprocess_batch(x, args)
         pixel_mask = sample_masks_anti_mirror(x.size(0), spec, device)
-        recon, _ = model.forward(x, pixel_mask=pixel_mask)
+        x_masked = x * (1 - pixel_mask)
+        recon, _ = model(x_masked, pixel_mask=pixel_mask)
+
         diff = torch.abs(recon - x) * pixel_mask
         loss_recon = diff.sum() / pixel_mask.sum().clamp(min=1.0)
         losses.append(loss_recon.item())
