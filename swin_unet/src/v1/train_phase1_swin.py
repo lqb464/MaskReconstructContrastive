@@ -324,6 +324,11 @@ def main():
         proj_dim=args.proj_dim,
         plane_dim=2,
     ).to(device)
+    
+    print("Dataset size:", len(dataset))
+    print("Train size:", len(train_ds))
+    print("Val size:", len(val_ds))
+
 
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
