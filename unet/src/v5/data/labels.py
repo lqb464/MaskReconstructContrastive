@@ -65,3 +65,18 @@ def build_label_config() -> LabelConfig:
         mindset_label_colors_1=mindset_label_colors_1,
         mindset_label_colors_2=mindset_label_colors_2,
     )
+
+_cfg = build_label_config()
+
+mindset_label_map_idx_1 = _cfg.mindset_label_map_idx_1
+mindset_label_map_idx_2 = _cfg.mindset_label_map_idx_2
+
+# idx -> label (inverted map)
+mindset_idx_map_label_1 = {v: k for k, v in mindset_label_map_idx_1.items()}
+mindset_idx_map_label_2 = {v: k for k, v in mindset_label_map_idx_2.items()}
+
+mindset_colors_1 = _cfg.mindset_label_colors_1
+mindset_colors_2 = _cfg.mindset_label_colors_2
+
+hf_idx_map_label = _cfg.hf_label_map
+hf_demantia_colors = _cfg.hf_label_colors
