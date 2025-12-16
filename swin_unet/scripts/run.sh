@@ -1,0 +1,13 @@
+python train_phase1_swin.py \
+  --data-root data_mri_png \
+  --label 0 \
+  --plane axial \
+  --image-size 256 \
+  --patch-size 16 \
+  --mask-ratio 0.35 \
+  --batch-size 4 \
+  --epochs 2 \
+  --lr 3e-4 \
+  --lambda-contrast 1.0 \
+  --recon-loss mixed_l1 \
+  --out-dir runs_phase1_swin_test
