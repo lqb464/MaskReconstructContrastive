@@ -145,7 +145,7 @@ def train_one_epoch(
         mask_ratio_side=args.mask_ratio,
     )
 
-    for batch in loader:
+    for batch in tqdm(loader):
         x = batch["image"].to(device, non_blocking=True)  # [B,1,256,256]
         B = x.size(0)
 
