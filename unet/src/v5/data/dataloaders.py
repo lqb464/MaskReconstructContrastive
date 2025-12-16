@@ -66,13 +66,13 @@ def create_unet_dataloaders(
     unsharp_kernel_size: int = 5,
     unsharp_sigma: float = 1.0,
     unsharp_amount: float = 1.0,
-    adni_root_dir: Optional[str] = None,
+    adni_path: Optional[str] = None,
     adni_image_type: str = "axial",
     adni_series_filter: Optional[str] = None,
     adni_label_csv: Optional[str] = None,
     adni_middle_frac: float = 0.4,
     adni_middle_subsample: int = 1,
-    adni_preproc_root_dir: Optional[str] = None,
+    adni_preproc_path: Optional[str] = None,
     folder_csv_path: Optional[str] = None,
     val_frac: float = 0.05,
     val_size: Optional[int] = None,  
@@ -123,11 +123,11 @@ def create_unet_dataloaders(
         )
 
     elif data_source == "adni":
-        if adni_root_dir is None:
-            raise ValueError("adni_root_dir is required for data_source='adni'")
+        if adni_path is None:
+            raise ValueError("adni_path is required for data_source='adni'")
 
         full_ds = AdniNiftiSliceDataset(
-            root_dir=adni_root_dir,
+            root_dir=adni_path,
             image_size=image_size,
             adni_image_type=adni_image_type,
             adni_series_filter=adni_series_filter,
@@ -151,11 +151,11 @@ def create_unet_dataloaders(
         val_ds, test_ds = random_split(valtmp_ds, [n_val2, n_test2], generator=g)
 
     elif data_source == "adni_preproc":
-        if adni_preproc_root_dir is None:
-            raise ValueError("adni_preproc_root_dir is required for data_source='adni_preproc'")
+        if adni_preproc_path is None:
+            raise ValueError("adni_preproc_path is required for data_source='adni_preproc'")
 
         full_ds = AdniPrecomputedSliceDataset(
-            root_dir=adni_preproc_root_dir,
+            root_dir=adni_preproc_path,
             image_size=image_size,
             apply_unsharp=apply_unsharp,
             unsharp_kernel_size=unsharp_kernel_size,
