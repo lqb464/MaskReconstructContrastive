@@ -73,8 +73,13 @@ def create_unet_dataloaders(
     adni_preproc_root_dir: Optional[str] = None,
     folder_csv_path: Optional[str] = None,
     val_frac: float = 0.05,
+    val_size: Optional[int] = None,  
 ) -> LoaderBundle:
+
     g = torch.Generator().manual_seed(seed)
+
+    if val_size is not None:
+            val_frac = max(1, int(val_size)) / max(1, n_total)
 
     if data_source == "hf":
         from datasets import load_dataset
