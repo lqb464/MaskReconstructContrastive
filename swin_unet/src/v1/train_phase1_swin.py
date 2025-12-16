@@ -24,6 +24,7 @@ from torch.utils.data import DataLoader
 from dataset_png_folder import PngFolderDataset
 from masking import MaskSpec, sample_masks_anti_mirror
 from model_swin_unet_ssl import SwinUNetSSL
+from tqdm import tqdm
 
 
 # -------------------------------------------------
@@ -341,7 +342,7 @@ def main():
 
     best_val = float("inf")
 
-    for epoch in range(1, args.epochs + 1):
+    for epoch in tqdm(range(1, args.epochs + 1)):
         stats = train_one_epoch(model, train_loader, opt, device, args)
         val_recon = validate_recon(model, val_loader, device, args)
 
