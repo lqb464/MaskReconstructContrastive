@@ -54,6 +54,7 @@ class LoaderBundle:
     test_loader: DataLoader
 
 
+
 def create_unet_dataloaders(
     data_source: str,
     batch_size: int,
@@ -61,6 +62,7 @@ def create_unet_dataloaders(
     num_workers: int,
     seed: int = 42,
     apply_unsharp: bool = False,
+    pin_memory: bool = True,
     unsharp_kernel_size: int = 5,
     unsharp_sigma: float = 1.0,
     unsharp_amount: float = 1.0,
@@ -198,29 +200,18 @@ def create_unet_dataloaders(
     else:
         raise ValueError(f"Unknown data_source: {data_source}")
 
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=batch_size,
-        shuffle=True,
-        drop_last=True,
-        num_workers=num_workers,
-        pin_memory=True,
-    )
-    val_loader = DataLoader(
-        val_ds,
-        batch_size=batch_size,
-        shuffle=False,
-        drop_last=False,
-        num_workers=num_workers,
-        pin_memory=True,
-    )
-    test_loader = DataLoader(
-        test_ds,
-        batch_size=batch_size,
-        shuffle=False,
-        drop_last=False,
-        num_workers=num_workers,
-        pin_memory=True,
-    )
+    def make_loader(ds, shuffle: bool, drop_last: bool = False, pin_memory=False):
+        return DataLoader(
+            ds,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            drop_last=drop_last,
+        )
 
+    train_loader = make_loader(train_ds, shuffle=True,  drop_last=True,  pin_memory=pin_memory)
+    val_loader   = make_loader(val_ds,   shuffle=False, drop_last=False, pin_memory=pin_memory)
+    test_loader  = make_loader(test_ds,  shuffle=False, drop_last=False, pin_memory=pin_memory)
+ 
     return LoaderBundle(train_loader=train_loader, val_loader=val_loader, test_loader=test_loader)
