@@ -81,7 +81,7 @@ def create_unet_dataloaders(
     g = torch.Generator().manual_seed(seed)
 
     if val_size is not None:
-            val_frac = max(1, int(val_size)) / max(1, n_total)
+        val_frac = 0.1
 
     if data_source == "hf":
         from datasets import load_dataset
