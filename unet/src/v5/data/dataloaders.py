@@ -47,13 +47,6 @@ def create_unet_dataloader_from_folder_csv(
         pin_memory=True,
     )
 
-@dataclass
-class LoaderBundle:
-    train_loader: DataLoader
-    val_loader: DataLoader
-    test_loader: DataLoader
-
-
 
 def create_unet_dataloaders(
     data_source: str,
@@ -74,14 +67,10 @@ def create_unet_dataloaders(
     adni_middle_subsample: int = 1,
     adni_preproc_path: Optional[str] = None,
     folder_csv_path: Optional[str] = None,
-    val_frac: float = 0.05,
-    val_size: Optional[int] = None,  
+    val_size: float = 0.05,
 ) -> LoaderBundle:
 
     g = torch.Generator().manual_seed(seed)
-
-    if val_size is not None:
-        val_frac = 0.1
 
     if data_source == "hf":
         from datasets import load_dataset
@@ -92,7 +81,7 @@ def create_unet_dataloaders(
         labels = [int(x["label"]) for x in ds_train]
         train_idx, val_idx = train_test_split(
             list(range(len(ds_train))),
-            test_size=val_frac,
+            test_size=val_size,
             random_state=seed,
             stratify=labels,
         )
@@ -141,7 +130,7 @@ def create_unet_dataloaders(
         )
 
         n_total = len(full_ds)
-        n_val = max(1, int(n_total * val_frac))
+        n_val = max(1, int(n_total * val_size))
         n_train = n_total - n_val
         train_ds, valtmp_ds = random_split(full_ds, [n_train, n_val], generator=g)
 
@@ -164,7 +153,7 @@ def create_unet_dataloaders(
         )
 
         n_total = len(full_ds)
-        n_val = max(1, int(n_total * val_frac))
+        n_val = max(1, int(n_total * val_size))
         n_train = n_total - n_val
         train_ds, valtmp_ds = random_split(full_ds, [n_train, n_val], generator=g)
 
@@ -189,7 +178,7 @@ def create_unet_dataloaders(
         )
 
         n_total = len(full_ds)
-        n_val = max(1, int(n_total * val_frac))
+        n_val = max(1, int(n_total * val_size))
         n_train = n_total - n_val
         train_ds, valtmp_ds = random_split(full_ds, [n_train, n_val], generator=g)
 
@@ -214,4 +203,4 @@ def create_unet_dataloaders(
     val_loader   = make_loader(val_ds,   shuffle=False, drop_last=False, pin_memory=pin_memory)
     test_loader  = make_loader(test_ds,  shuffle=False, drop_last=False, pin_memory=pin_memory)
  
-    return LoaderBundle(train_loader=train_loader, val_loader=val_loader, test_loader=test_loader)
+    return train_loader, val_loader, test_loader
