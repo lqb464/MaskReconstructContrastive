@@ -304,6 +304,7 @@ def main():
         shuffle=True,
         num_workers=args.num_workers,
         pin_memory=(device.type == "cuda"),
+        drop_last=True,
     )
     val_loader = DataLoader(
         val_ds,

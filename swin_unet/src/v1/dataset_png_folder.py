@@ -17,28 +17,6 @@ from PIL import Image
 
 
 class PngFolderDataset(Dataset):
-    """
-    Dataset đọc ảnh PNG/JPG từ một folder (có thể nhiều subfolder).
-
-    Input:
-        root_dir/
-            class_a/
-                img1.png
-                img2.png
-            class_b/
-                img3.png
-                ...
-
-    Tuy nhiên trong Phase 1:
-        - label KHÔNG lấy từ folder
-        - label là constant, truyền từ arg parser
-
-    Output mỗi sample:
-        {
-            "image": Tensor [1, 256, 256],
-            "label": LongTensor scalar
-        }
-    """
 
     IMG_EXT = (".png", ".jpg", ".jpeg")
 
@@ -92,3 +70,4 @@ class PngFolderDataset(Dataset):
             "image": x,
             "label": torch.tensor(self.label, dtype=torch.long),
         }
+        

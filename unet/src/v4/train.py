@@ -311,6 +311,7 @@ def masked_l1_loss(pred: torch.Tensor, target: torch.Tensor, pixel_mask: torch.T
     denom = pixel_mask.sum().clamp(min=1.0)
     return diff.sum() / denom
 
+
 def mixed_l1_loss(
     pred: torch.Tensor,
     target: torch.Tensor,
