@@ -68,7 +68,7 @@ def create_unet_dataloaders(
     adni_preproc_path: Optional[str] = None,
     folder_csv_path: Optional[str] = None,
     val_size: float = 0.05,
-) -> LoaderBundle:
+): 
 
     g = torch.Generator().manual_seed(seed)
 

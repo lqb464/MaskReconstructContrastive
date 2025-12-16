@@ -2,7 +2,6 @@
 from .dataloaders import (
     create_unet_dataloaders,
     create_unet_dataloader_from_folder_csv,
-    LoaderBundle,
 )
 
 from .labels import (
