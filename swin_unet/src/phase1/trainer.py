@@ -210,8 +210,10 @@ class Phase1Trainer:
             with torch.no_grad():
                 diff = (x - recon).abs().detach()
                 # SSIM from old pipeline depended on losses.py; we keep only L1 splits here via MetricsAccumulator
-                ssim_val = ssim_index(x.float(), recon.float())
-                meter.update(diff, pixel_mask, ssim_sum=ssim_val.item())
+                ssim_vals = ssim_index(x.float(), recon.float())      # shape (B,)
+                ssim_sum = float(ssim_vals.sum().item())              # scalar sum over batch
+                meter.update(diff, pixel_mask, ssim_sum=ssim_sum)
+
                 losses.append(float(loss.item()))
                 losses_con.append(float(loss_con.item()) if torch.is_tensor(loss_con) else 0.0)
 
@@ -262,8 +264,9 @@ class Phase1Trainer:
                 loss = self.cfg.training.lambda_recon * loss_recon
 
             diff = (x - recon).abs()
-            ssim_val = ssim_index(x.float(), recon.float())
-            meter.update(diff, pixel_mask, ssim_sum=ssim_val.item())
+            ssim_vals = ssim_index(x.float(), recon.float())      # shape (B,)
+            ssim_sum = float(ssim_vals.sum().item())              # scalar sum over batch
+            meter.update(diff, pixel_mask, ssim_sum=ssim_sum)
             losses.append(float(loss.item()))
 
         stats = meter.finalize()
