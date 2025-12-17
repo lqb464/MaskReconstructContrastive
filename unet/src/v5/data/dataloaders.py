@@ -7,7 +7,7 @@ import torch
 from torch.utils.data import DataLoader, random_split
 from sklearn.model_selection import train_test_split
 
-from dataset import mindset_label_map_idx_1, mindset_label_map_idx_2
+from .labels import mindset_label_map_idx_1, mindset_label_map_idx_2
 
 from .datasets_hf import AlzheimerUNetDataset
 from .datasets_adni_nifti import AdniNiftiSliceDataset
