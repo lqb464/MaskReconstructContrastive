@@ -25,13 +25,13 @@ from torch.cuda.amp import autocast, GradScaler
 from torch.optim import AdamW
 from tqdm import tqdm
 
-from config_phase1 import ExperimentConfig, build_argparser
+from config import ExperimentConfig, build_argparser
 from data import create_dataloaders_from_folder
 from augmentation import sample_masks_anti_mirror, HalfAug
 from losses import masked_l1_loss, mixed_l1_loss, nt_xent_loss, compute_embedding_variance, ssim_index
 from metrics import MetricsAccumulator
 from visualization import save_image_grid, plot_training_curves, run_tsne_visualization
-from model_phase1 import SwinUNetDualViewSSLPhase1
+from model import SwinUNetDualViewSSLPhase1
 
 
 # -------------------------
