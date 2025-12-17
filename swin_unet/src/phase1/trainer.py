@@ -152,13 +152,15 @@ class Phase1Trainer:
     @torch.no_grad()
     def _visualize_recon(self, x: torch.Tensor, pixel_mask: torch.Tensor, recon: torch.Tensor, epoch: int, tag: str):
         # x, recon: [B,1,H,W]; pixel_mask: [B,1,H,W] where 1=masked
-        resid = (x - recon).abs().clamp(0, 1)
+    
+        recon_full = pixel_mask * recon + (1.0 - pixel_mask) * x
+        resid = (x - recon_full).abs().clamp(0, 1)
         masked = x * (1.0 - pixel_mask)
 
         out_path = str(self.vis_dir / f"{tag}_epoch_{epoch:03d}.png")
         save_image_grid(
-            [x, pixel_mask, masked, recon.clamp(0, 1), resid],
-            [f"{tag}: target", "mask", "masked", "recon", "abs_resid"],
+            [x, pixel_mask, masked, recon_full.clamp(0, 1), resid],
+            [f"{tag}: target", "mask", "masked", "recon_full", "abs_resid"],
             out_path,
         )
         
@@ -192,9 +194,9 @@ class Phase1Trainer:
                 recon_raw, z1, z2 = self.model(
                     x, pixel_mask=pixel_mask, plane_one_hot=plane, return_embeddings=True
                 )
-
+                print("recon_raw min/max/mean:", recon_raw.min().item(), recon_raw.max().item(), recon_raw.mean().item())
                 recon_img = torch.sigmoid(recon_raw)
-
+                print("recon_img min/max/mean:", recon_img.min().item(), recon_img.max().item(), recon_img.mean().item())
                 if self.cfg.training.enable_masked_loss:
                     loss_recon = masked_l1_loss(recon_img, x, pixel_mask)
                 else:
