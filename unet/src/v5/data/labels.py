@@ -5,78 +5,68 @@ from dataclasses import dataclass
 from typing import Dict
 
 
-@dataclass(frozen=True)
-class LabelConfig:
-    hf_label_map: Dict[int, str]
-    hf_label_colors: Dict[int, str]
-    mindset_label_map_idx_1: Dict[str, int]
-    mindset_label_map_idx_2: Dict[str, int]
-    mindset_label_colors_1: Dict[int, str]
-    mindset_label_colors_2: Dict[int, str]
+mindset_idx_map_label_1 = {
+    '0': "Normal",
+    '1': "MTL",
+    '2': "Other",
+    '3': "WMH",
+}
+
+mindset_label_map_idx_1 = {
+    'mtl_atrophy': 1,              # Mild_Demented MTL
+    'mtl_atrophy,other_atrophy': 1,# Moderate_Demented MTL
+    'mtl_atrophy,wmh': 1,          # Very_Mild_Demented MTL
+    'normal': 0,                   # Non_Demented N (nhãn 0) 4 màu hoàn toàn khác nhau 
+    'other_atrophy': 2,            # Mild_Demented O
+    'wmh': 3,                      # Very_Mild_Demented WMH
+    'wmh,other_atrophy': 3         # Moderate_Demented WMH 
+    # alzemer | normal | other 
+}
+
+mindset_colors_1 = {
+    "MTL": "#df4122",
+    "Normal": "#f6d097",
+    "Other": "#7bbfc8",
+    "WMH": "#f19809",
+}
 
 
-def build_label_config() -> LabelConfig:
-    # Bạn chỉnh mapping theo đúng dự án của bạn nếu khác
-    hf_label_map = {
-        0: "NonDemented",
-        1: "VeryMildDemented",
-        2: "MildDemented",
-        3: "ModerateDemented",
-    }
-    hf_label_colors = {
-        0: "tab:blue",
-        1: "tab:orange",
-        2: "tab:green",
-        3: "tab:red",
-    }
+mindset_label_map_idx_2 = {
+    'mtl_atrophy': 1,              # Mild_Demented MTL
+    'mtl_atrophy,other_atrophy': 1,# Moderate_Demented MTL
+    'mtl_atrophy,wmh': 1,          # Very_Mild_Demented MTL
+    'normal': 0,                   # Non_Demented N (nhãn 0) 4 màu hoàn toàn khác nhau 
+    'other_atrophy': 2,            # Mild_Demented O
+    'wmh': 1,                      # Very_Mild_Demented WMH
+    'wmh,other_atrophy': 1 
+}
 
-    mindset_label_map_idx_1 = {
-        "Normal": 0,
-        "MTL": 1,
-        "Other": 2,
-        "WMH": 3,
-    }
-    mindset_label_map_idx_2 = {
-        "Normal": 0,
-        "MTL": 1,
-        "Other": 2,
-        "WMH": 3,
-    }
+mindset_idx_map_label_2 = {
+    '0': "Normal",
+    '1': "MTL",
+    '2': "Other",
+}
 
-    # Nếu bạn thật sự có 2 bộ màu khác nhau thì sửa ở đây
-    mindset_label_colors_1 = {
-        0: "tab:blue",
-        1: "tab:orange",
-        2: "tab:green",
-        3: "tab:red",
-    }
-    mindset_label_colors_2 = {
-        0: "tab:blue",
-        1: "tab:orange",
-        2: "tab:green",
-        3: "tab:red",
-    }
+mindset_colors_2 = {
+    "MTL": "#df4122",
+    "Normal": "#f6d097",
+    "Other": "#7bbfc8",
+}
+    
 
-    return LabelConfig(
-        hf_label_map=hf_label_map,
-        hf_label_colors=hf_label_colors,
-        mindset_label_map_idx_1=mindset_label_map_idx_1,
-        mindset_label_map_idx_2=mindset_label_map_idx_2,
-        mindset_label_colors_1=mindset_label_colors_1,
-        mindset_label_colors_2=mindset_label_colors_2,
-    )
+# Huggingface mapping and fixed colors for t SNE legends
+hf_idx_map_label = {
+    '0': "Mild_Demented",
+    '1': "Moderate_Demented",
+    '2': "Non_Demented",
+    '3': "Very_Mild_Demented",
+}
 
-_cfg = build_label_config()
+hf_demantia_colors = {
+    "Moderate_Demented": "#a5352b",
+    "Non_Demented": "#457eb7",
+    "Mild_Demented": "#e18775",
+    "Very_Mild_Demented": "#ffe9c6",
+}
 
-mindset_label_map_idx_1 = _cfg.mindset_label_map_idx_1
-mindset_label_map_idx_2 = _cfg.mindset_label_map_idx_2
 
-# idx -> label (inverted map)
-mindset_idx_map_label_1 = {v: k for k, v in mindset_label_map_idx_1.items()}
-mindset_idx_map_label_2 = {v: k for k, v in mindset_label_map_idx_2.items()}
-
-mindset_colors_1 = _cfg.mindset_label_colors_1
-mindset_colors_2 = _cfg.mindset_label_colors_2
-
-hf_idx_map_label = _cfg.hf_label_map
-hf_demantia_colors = _cfg.hf_label_colors
