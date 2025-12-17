@@ -150,17 +150,30 @@ def run_tsne_visualization(
     def collect(mode: str):
         embs, labels = [], []
         count = 0
-        for batch in loader:
-            x = batch["input"].to(device, non_blocking=True)
-            _, h = model.encoder_embed(x, mode=mode)
-            embs.append(F.normalize(h, dim=-1).cpu().numpy())
-            labels.append(batch.get(label_val, torch.zeros(x.size(0), dtype=torch.long)).cpu().numpy())
-            count += x.size(0)
-            if count >= max_items:
-                break
+
+        with torch.no_grad():   # <-- QUAN TRỌNG
+            for batch in loader:
+                x = batch["input"].to(device, non_blocking=True)
+                _, h = model.encoder_embed(x, mode=mode)
+
+                h = F.normalize(h, dim=-1)
+                embs.append(h.cpu().numpy())
+
+                labels.append(
+                    batch.get(label_val, torch.zeros(x.size(0), dtype=torch.long))
+                    .cpu()
+                    .numpy()
+                )
+
+                count += x.size(0)
+                if count >= max_items:
+                    break
+
         if not embs:
             return None, None
+
         return np.concatenate(embs, axis=0), np.concatenate(labels, axis=0)
+
     
     for mode in modes:
         X, y = collect(mode)
