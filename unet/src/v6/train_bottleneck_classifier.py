@@ -16,7 +16,7 @@ from torch.utils.data import Dataset, DataLoader, Subset
 
 from model import SmallUNetSSL
 from preprocessing import preprocess_batch
-from trainer import set_seed
+from unet.src.v6.train import set_seed
 
 from data import mindset_idx_map_label_1, mindset_label_map_idx_1
 
