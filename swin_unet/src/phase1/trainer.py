@@ -28,7 +28,7 @@ from tqdm import tqdm
 from config import ExperimentConfig, build_argparser
 from data import create_dataloaders_from_folder
 from augmentation import sample_masks_anti_mirror, HalfAug
-from losses_patched import masked_l1_loss, mixed_l1_loss, nt_xent_loss, compute_embedding_variance, ssim_index, masked_bce_logits_weighted, mixed_bce_logits_weighted
+from losses import masked_l1_loss, mixed_l1_loss, nt_xent_loss, compute_embedding_variance, ssim_index, masked_bce_logits_weighted, mixed_bce_logits_weighted
 from metrics import MetricsAccumulator
 from visualization import save_image_grid, plot_training_curves, run_tsne_visualization
 from model import SwinUNetDualViewSSLPhase1
