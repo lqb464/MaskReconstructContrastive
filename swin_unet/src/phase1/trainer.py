@@ -193,8 +193,7 @@ class Phase1Trainer:
                     x, pixel_mask=pixel_mask, plane_one_hot=plane, return_embeddings=True
                 )
 
-                # Clamp để loss ổn định và phù hợp domain ảnh [0,1]
-                recon_img = recon_raw.clamp(0.0, 1.0)
+                recon_img = torch.sigmoid(recon_raw)
 
                 if self.cfg.training.enable_masked_loss:
                     loss_recon = masked_l1_loss(recon_img, x, pixel_mask)
@@ -263,7 +262,7 @@ class Phase1Trainer:
                     x, pixel_mask=pixel_mask, plane_one_hot=plane, return_embeddings=False
                 )
 
-                recon_img = recon_raw.clamp(0.0, 1.0)
+                recon_img = torch.sigmoid(recon_raw)
 
                 if self.cfg.training.enable_masked_loss:
                     loss_recon = masked_l1_loss(recon_img, x, pixel_mask)
