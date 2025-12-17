@@ -174,32 +174,33 @@ class Phase1Trainer:
         losses_con = []
         embed_vars = []
 
-        pbar = tqdm(loader, desc=f"Epoch {epoch}", leave=False)
+        pbar = tqdm(loader, desc=f"Train {epoch}", leave=False)
         for batch in pbar:
             x = batch["input"].to(self.device, non_blocking=True)  # [B,1,H,W]
             plane = batch.get("plane_one_hot", None)
             if plane is None:
-                # fallback axial
                 plane = torch.tensor([0.0, 1.0], device=self.device).view(1, 2).repeat(x.size(0), 1)
             else:
                 plane = plane.to(self.device, non_blocking=True)
 
-            # pixel mask: keep existing anti-mirror logic
             pixel_mask = sample_masks_anti_mirror(x.size(0), self.cfg.mask, self.device)
 
             self.opt.zero_grad(set_to_none=True)
 
             with autocast("cuda", enabled=self.cfg.training.amp):
-                # Model constructs two views internally with SAME mask (mask not flipped)
-                recon, z1, z2 = self.model(x, pixel_mask=pixel_mask, plane_one_hot=plane, return_embeddings=True)
+                # recon_raw là logits (KHÔNG sigmoid trong model)
+                recon_raw, z1, z2 = self.model(
+                    x, pixel_mask=pixel_mask, plane_one_hot=plane, return_embeddings=True
+                )
 
-                # Recon loss on view1 only (target is original x)
+                # Clamp để loss ổn định và phù hợp domain ảnh [0,1]
+                recon_img = recon_raw.clamp(0.0, 1.0)
+
                 if self.cfg.training.enable_masked_loss:
-                    loss_recon = masked_l1_loss(recon, x, pixel_mask)
+                    loss_recon = masked_l1_loss(recon_img, x, pixel_mask)
                 else:
-                    loss_recon = mixed_l1_loss(recon, x, pixel_mask)
+                    loss_recon = mixed_l1_loss(recon_img, x, pixel_mask)
 
-                # Contrastive loss uses proj embeddings (already normalized)
                 if self.cfg.training.enable_contrastive:
                     loss_con = nt_xent_loss(z1, z2, temperature=self.cfg.training.temperature)
                 else:
@@ -211,18 +212,16 @@ class Phase1Trainer:
             self.scaler.step(self.opt)
             self.scaler.update()
 
-            # metrics update
             with torch.no_grad():
-                diff = (x - recon).abs().detach()
-                # SSIM from old pipeline depended on losses.py; we keep only L1 splits here via MetricsAccumulator
-                ssim_vals = ssim_index(x.float(), recon.float())      # shape (B,)
-                ssim_sum = float(ssim_vals.sum().item())              # scalar sum over batch
+                diff = (x - recon_img).abs().detach()
+
+                ssim_vals = ssim_index(x.float(), recon_img.float())  # shape (B,)
+                ssim_sum = float(ssim_vals.sum().item())
                 meter.update(diff, pixel_mask, ssim_sum=ssim_sum)
 
                 losses.append(float(loss.item()))
                 losses_con.append(float(loss_con.item()) if torch.is_tensor(loss_con) else 0.0)
 
-                # embedding variance collapse monitor
                 if self.cfg.training.enable_contrastive:
                     mean_var, min_var = compute_embedding_variance([z1.detach(), z2.detach()])
                     embed_vars.append(float(mean_var))
@@ -260,18 +259,25 @@ class Phase1Trainer:
             pixel_mask = sample_masks_anti_mirror(x.size(0), self.cfg.mask, self.device)
 
             with autocast("cuda", enabled=self.cfg.training.amp):
-                recon, z1, z2 = self.model(x, pixel_mask=pixel_mask, plane_one_hot=plane, return_embeddings=False)
+                recon_raw, z1, z2 = self.model(
+                    x, pixel_mask=pixel_mask, plane_one_hot=plane, return_embeddings=False
+                )
+
+                recon_img = recon_raw.clamp(0.0, 1.0)
 
                 if self.cfg.training.enable_masked_loss:
-                    loss_recon = masked_l1_loss(recon, x, pixel_mask)
+                    loss_recon = masked_l1_loss(recon_img, x, pixel_mask)
                 else:
-                    loss_recon = mixed_l1_loss(recon, x, pixel_mask)
+                    loss_recon = mixed_l1_loss(recon_img, x, pixel_mask)
+
                 loss = self.cfg.training.lambda_recon * loss_recon
 
-            diff = (x - recon).abs()
-            ssim_vals = ssim_index(x.float(), recon.float())      # shape (B,)
-            ssim_sum = float(ssim_vals.sum().item())              # scalar sum over batch
+            diff = (x - recon_img).abs()
+
+            ssim_vals = ssim_index(x.float(), recon_img.float())  # shape (B,)
+            ssim_sum = float(ssim_vals.sum().item())
             meter.update(diff, pixel_mask, ssim_sum=ssim_sum)
+
             losses.append(float(loss.item()))
 
         stats = meter.compute()  # ReconstructionMetrics

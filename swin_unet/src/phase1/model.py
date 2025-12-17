@@ -589,7 +589,6 @@ class SwinUNetDualViewSSLPhase1(nn.Module):
 
         feat_full = self.final_up(d0)  # [B,H,W,32]
         recon = self.recon_head(nhwc_to_nchw(feat_full))
-        recon = torch.sigmoid(recon)
         return recon, z1, z2
 
 
