@@ -302,8 +302,17 @@ class Phase1Trainer:
             plane = plane.to(self.device, non_blocking=True)
 
         pixel_mask = sample_masks_anti_mirror(x.size(0), self.cfg.mask, self.device)
-        recon, _, _ = self.model(x, pixel_mask=pixel_mask, plane_one_hot=plane, return_embeddings=False)
-        self._visualize_recon(x, pixel_mask, recon, epoch, tag)
+
+        recon_raw, _, _ = self.model(
+            x,
+            pixel_mask=pixel_mask,
+            plane_one_hot=plane,
+            return_embeddings=False
+        )
+        recon_img = torch.sigmoid(recon_raw)
+
+        self._visualize_recon(x, pixel_mask, recon_img, epoch, tag)
+
 
     def maybe_tsne(self, loader, epoch: int):
         if not self.cfg.logging.enable_tsne:
