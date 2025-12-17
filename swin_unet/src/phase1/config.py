@@ -80,6 +80,11 @@ class TrainingConfig:
     enable_contrastive: bool = True
     enable_masked_loss: bool = False
 
+    # Recon loss stabilization (recommended for sparse medical images)
+    recon_loss: str = "weighted_bce_logits"  # "weighted_bce_logits" or "l1_sigmoid"
+    fg_eps: float = 0.02
+    fg_weight: float = 10.0
+
     # Data augmentation (contrastive)
     aug_p_noise: float = 0.7
     aug_p_jitter: float = 0.7
@@ -171,6 +176,9 @@ class ExperimentConfig:
                 aug_noise_std=args.aug_noise_std,
                 aug_jitter_strength=args.aug_jitter_strength,
                 aug_blur_kernel=args.aug_blur_kernel,
+                recon_loss=args.recon_loss,
+                fg_eps=args.fg_eps,
+                fg_weight=args.fg_weight,
             ),
             data=DataConfig(
                 data_root=args.data_root,
@@ -260,6 +268,10 @@ def build_argparser() -> argparse.ArgumentParser:
     p.set_defaults(enable_contrastive=True)
 
     p.add_argument("--enable-masked-loss", action="store_true", help="Use masked-only loss instead of mixed loss")
+    p.add_argument("--recon-loss", type=str, default="weighted_bce_logits", choices=["weighted_bce_logits", "l1_sigmoid"],
+                   help="Reconstruction loss type. weighted_bce_logits is recommended to avoid all-zero collapse.")
+    p.add_argument("--fg-eps", type=float, default=0.02, help="Foreground threshold for weighted_bce_logits")
+    p.add_argument("--fg-weight", type=float, default=10.0, help="Extra foreground weight for weighted_bce_logits")
     p.add_argument("--epochs", type=int, default=200)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--weight-decay", type=float, default=1e-4)

@@ -28,7 +28,7 @@ from tqdm import tqdm
 from config import ExperimentConfig, build_argparser
 from data import create_dataloaders_from_folder
 from augmentation import sample_masks_anti_mirror, HalfAug
-from losses import masked_l1_loss, mixed_l1_loss, nt_xent_loss, compute_embedding_variance, ssim_index
+from losses_patched import masked_l1_loss, mixed_l1_loss, nt_xent_loss, compute_embedding_variance, ssim_index, masked_bce_logits_weighted, mixed_bce_logits_weighted
 from metrics import MetricsAccumulator
 from visualization import save_image_grid, plot_training_curves, run_tsne_visualization
 from model import SwinUNetDualViewSSLPhase1
@@ -102,7 +102,7 @@ class Phase1Trainer:
 
         # Optimizer
         self.opt = AdamW(self.model.parameters(), lr=cfg.training.lr, weight_decay=cfg.training.weight_decay)
-        self.scaler = GradScaler("cuda", enabled=cfg.training.amp)
+        self.scaler = GradScaler(enabled=(cfg.training.amp and self.device.type == "cuda"))
 
         # Augmentation for contrastive halves (optional, used outside model)
         self.half_aug = HalfAug(
@@ -177,7 +177,7 @@ class Phase1Trainer:
         embed_vars = []
 
         pbar = tqdm(loader, desc=f"Train {epoch}", leave=False)
-        for batch in pbar:
+        for step, batch in enumerate(pbar):
             x = batch["input"].to(self.device, non_blocking=True)  # [B,1,H,W]
             plane = batch.get("plane_one_hot", None)
             if plane is None:
@@ -187,20 +187,52 @@ class Phase1Trainer:
 
             pixel_mask = sample_masks_anti_mirror(x.size(0), self.cfg.mask, self.device)
 
+            # --- Collapse diagnostics (run once per epoch on first batch) ---
+            if step == 0:
+                with torch.no_grad():
+                    x0 = x.detach()
+                    frac_black = float((x0 < 0.01).to(torch.float32).mean().item())
+                    med = float(x0.median().item())
+                    mean = float(x0.mean().item())
+                    m = pixel_mask.detach()
+                    masked_mean = float((x0 * m).sum().item() / m.sum().clamp(min=1.0).item())
+                    unmasked_mean = float((x0 * (1.0 - m)).sum().item() / (1.0 - m).sum().clamp(min=1.0).item())
+                    print(f"[diag e{epoch:03d}] x mean={mean:.6f} median={med:.6f} frac(x<0.01)={frac_black:.3f} masked_mean={masked_mean:.6f} unmasked_mean={unmasked_mean:.6f}")
+            # ---------------------------------------------------------------
+
+
             self.opt.zero_grad(set_to_none=True)
 
-            with autocast("cuda", enabled=self.cfg.training.amp):
+            with autocast(device_type=self.device.type, enabled=(self.cfg.training.amp and self.device.type == "cuda")):
                 # recon_raw là logits (KHÔNG sigmoid trong model)
                 recon_raw, z1, z2 = self.model(
                     x, pixel_mask=pixel_mask, plane_one_hot=plane, return_embeddings=True
                 )
-                print("recon_raw min/max/mean:", recon_raw.min().item(), recon_raw.max().item(), recon_raw.mean().item())
-                recon_img = torch.sigmoid(recon_raw)
-                print("recon_img min/max/mean:", recon_img.min().item(), recon_img.max().item(), recon_img.mean().item())
-                if self.cfg.training.enable_masked_loss:
-                    loss_recon = masked_l1_loss(recon_img, x, pixel_mask)
+                # recon_raw is logits (NO sigmoid in the model)
+                if step == 0:
+                    print("recon_raw min/max/mean:", recon_raw.min().item(), recon_raw.max().item(), recon_raw.mean().item())
+
+                # For metrics/visualization we keep a bounded image in [0,1]
+                recon_img = torch.sigmoid(recon_raw.clamp(-10, 10))
+                if step == 0:
+                    print("recon_img min/max/mean:", recon_img.min().item(), recon_img.max().item(), recon_img.mean().item())
+
+                # Reconstruction loss: avoid sigmoid saturation + all-zero collapse on sparse images
+                recon_loss_type = getattr(self.cfg.training, "recon_loss", "weighted_bce_logits")
+                fg_eps = float(getattr(self.cfg.training, "fg_eps", 0.02))
+                fg_weight = float(getattr(self.cfg.training, "fg_weight", 10.0))
+
+                if recon_loss_type == "weighted_bce_logits":
+                    if self.cfg.training.enable_masked_loss:
+                        loss_recon = masked_bce_logits_weighted(recon_raw, x, pixel_mask, fg_eps=fg_eps, fg_weight=fg_weight)
+                    else:
+                        loss_recon = mixed_bce_logits_weighted(recon_raw, x, pixel_mask, fg_eps=fg_eps, fg_weight=fg_weight)
                 else:
-                    loss_recon = mixed_l1_loss(recon_img, x, pixel_mask)
+                    # legacy: L1 on sigmoid output
+                    if self.cfg.training.enable_masked_loss:
+                        loss_recon = masked_l1_loss(recon_img, x, pixel_mask)
+                    else:
+                        loss_recon = mixed_l1_loss(recon_img, x, pixel_mask)
 
                 if self.cfg.training.enable_contrastive:
                     loss_con = nt_xent_loss(z1, z2, temperature=self.cfg.training.temperature)
@@ -259,17 +291,28 @@ class Phase1Trainer:
 
             pixel_mask = sample_masks_anti_mirror(x.size(0), self.cfg.mask, self.device)
 
-            with autocast("cuda", enabled=self.cfg.training.amp):
+            with autocast(device_type=self.device.type, enabled=(self.cfg.training.amp and self.device.type == "cuda")):
                 recon_raw, z1, z2 = self.model(
                     x, pixel_mask=pixel_mask, plane_one_hot=plane, return_embeddings=False
                 )
 
-                recon_img = torch.sigmoid(recon_raw)
+                # For metrics/visualization we keep a bounded image in [0,1]
+                recon_img = torch.sigmoid(recon_raw.clamp(-10, 10))
 
-                if self.cfg.training.enable_masked_loss:
-                    loss_recon = masked_l1_loss(recon_img, x, pixel_mask)
+                recon_loss_type = getattr(self.cfg.training, "recon_loss", "weighted_bce_logits")
+                fg_eps = float(getattr(self.cfg.training, "fg_eps", 0.02))
+                fg_weight = float(getattr(self.cfg.training, "fg_weight", 10.0))
+
+                if recon_loss_type == "weighted_bce_logits":
+                    if self.cfg.training.enable_masked_loss:
+                        loss_recon = masked_bce_logits_weighted(recon_raw, x, pixel_mask, fg_eps=fg_eps, fg_weight=fg_weight)
+                    else:
+                        loss_recon = mixed_bce_logits_weighted(recon_raw, x, pixel_mask, fg_eps=fg_eps, fg_weight=fg_weight)
                 else:
-                    loss_recon = mixed_l1_loss(recon_img, x, pixel_mask)
+                    if self.cfg.training.enable_masked_loss:
+                        loss_recon = masked_l1_loss(recon_img, x, pixel_mask)
+                    else:
+                        loss_recon = mixed_l1_loss(recon_img, x, pixel_mask)
 
                 loss = self.cfg.training.lambda_recon * loss_recon
 
@@ -311,7 +354,7 @@ class Phase1Trainer:
             plane_one_hot=plane,
             return_embeddings=False
         )
-        recon_img = torch.sigmoid(recon_raw)
+        recon_img = torch.sigmoid(recon_raw.clamp(-10, 10))
 
         self._visualize_recon(x, pixel_mask, recon_img, epoch, tag)
 

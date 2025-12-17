@@ -108,6 +108,98 @@ def mixed_l1_loss(
     return alpha_mask * masked_l1 + beta_unmask * unmasked_l1
 
 
+def masked_bce_logits_weighted(
+    logits: torch.Tensor,
+    target: torch.Tensor,
+    pixel_mask: torch.Tensor,
+    fg_eps: float = 0.02,
+    fg_weight: float = 10.0,
+    base_weight: float = 1.0,
+) -> torch.Tensor:
+    """
+    BCEWithLogits loss on masked region, with extra weight on foreground pixels.
+
+    This is designed to avoid the trivial all-zero reconstruction collapse on
+    sparse (mostly-black) medical images.
+
+    Args:
+        logits: Raw logits (B, C, H, W) from the recon head (NO sigmoid).
+        target: Target image scaled to [0, 1] (B, C, H, W).
+        pixel_mask: Binary mask (B, 1, H, W), 1 = masked.
+        fg_eps: Threshold to consider a target pixel foreground.
+        fg_weight: Extra multiplicative weight applied to foreground pixels.
+        base_weight: Base multiplicative weight applied everywhere.
+
+    Returns:
+        Scalar loss.
+    """
+    # Broadcast pixel_mask to channels if needed
+    if pixel_mask.shape[1] != logits.shape[1]:
+        m = pixel_mask.expand(-1, logits.shape[1], -1, -1)
+    else:
+        m = pixel_mask
+
+    # Foreground emphasis computed from the target (no extra preprocessing pipeline)
+    fg = (target > fg_eps).to(dtype=logits.dtype)
+    w = base_weight + fg_weight * fg
+
+    per_pixel = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
+    num = (per_pixel * m * w).sum()
+    denom = (m * w).sum().clamp(min=1.0)
+    return num / denom
+
+
+def mixed_bce_logits_weighted(
+    logits: torch.Tensor,
+    target: torch.Tensor,
+    pixel_mask: torch.Tensor,
+    fg_eps: float = 0.02,
+    fg_weight: float = 10.0,
+    base_weight: float = 1.0,
+    alpha_mask: float = 1.0,
+    beta_unmask: float = 0.2,
+) -> torch.Tensor:
+    """
+    Weighted BCEWithLogits on both masked and unmasked regions, with extra
+    weight on foreground pixels.
+
+    Args:
+        logits: Raw logits (B, C, H, W) from the recon head (NO sigmoid).
+        target: Target image scaled to [0, 1] (B, C, H, W).
+        pixel_mask: Binary mask (B, 1, H, W), 1 = masked.
+        fg_eps: Threshold to consider a target pixel foreground.
+        fg_weight: Extra multiplicative weight applied to foreground pixels.
+        base_weight: Base multiplicative weight applied everywhere.
+        alpha_mask: Weight for masked region.
+        beta_unmask: Weight for unmasked region.
+
+    Returns:
+        Scalar loss.
+    """
+    if pixel_mask.shape[1] != logits.shape[1]:
+        m = pixel_mask.expand(-1, logits.shape[1], -1, -1)
+    else:
+        m = pixel_mask
+    um = 1.0 - m
+
+    fg = (target > fg_eps).to(dtype=logits.dtype)
+    w = base_weight + fg_weight * fg
+
+    per_pixel = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
+
+    masked_num = (per_pixel * m * w).sum()
+    masked_den = (m * w).sum().clamp(min=1.0)
+    masked = masked_num / masked_den
+
+    unmasked_num = (per_pixel * um * w).sum()
+    unmasked_den = (um * w).sum().clamp(min=1.0)
+    unmasked = unmasked_num / unmasked_den
+
+    return alpha_mask * masked + beta_unmask * unmasked
+
+
+
+
 def nt_xent_loss(z1: torch.Tensor, z2: torch.Tensor, temperature: float = 0.2) -> torch.Tensor:
     """
     NT-Xent (Normalized Temperature-scaled Cross Entropy) loss for contrastive learning
@@ -165,4 +257,6 @@ __all__ = [
     "mixed_l1_loss",
     "nt_xent_loss",
     "compute_embedding_variance",
+    "masked_bce_logits_weighted",
+    "mixed_bce_logits_weighted",
 ]
