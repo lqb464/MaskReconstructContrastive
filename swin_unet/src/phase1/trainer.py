@@ -161,6 +161,11 @@ class Phase1Trainer:
             [f"{tag}: target", "mask", "masked", "recon", "abs_resid"],
             out_path,
         )
+        
+        print("x     min/max/mean:", x.min().item(), x.max().item(), x.mean().item())
+        print("recon min/max/mean:", recon.min().item(), recon.max().item(), recon.mean().item())
+        print("mask  mean:", pixel_mask.float().mean().item())
+
 
     def train_one_epoch(self, loader, epoch: int) -> Dict[str, float]:
         self.model.train()
