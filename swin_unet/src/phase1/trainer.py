@@ -21,7 +21,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast, GradScaler
 from torch.optim import AdamW
 from tqdm import tqdm
 
@@ -102,7 +102,7 @@ class Phase1Trainer:
 
         # Optimizer
         self.opt = AdamW(self.model.parameters(), lr=cfg.training.lr, weight_decay=cfg.training.weight_decay)
-        self.scaler = GradScaler(enabled=cfg.training.amp)
+        self.scaler = GradScaler("cuda", enabled=cfg.training.amp)
 
         # Augmentation for contrastive halves (optional, used outside model)
         self.half_aug = HalfAug(
@@ -184,7 +184,7 @@ class Phase1Trainer:
 
             self.opt.zero_grad(set_to_none=True)
 
-            with autocast(enabled=self.cfg.training.amp):
+            with autocast("cuda", enabled=self.cfg.training.amp):
                 # Model constructs two views internally with SAME mask (mask not flipped)
                 recon, z1, z2 = self.model(x, pixel_mask=pixel_mask, plane_one_hot=plane, return_embeddings=True)
 
@@ -254,7 +254,7 @@ class Phase1Trainer:
 
             pixel_mask = sample_masks_anti_mirror(x.size(0), self.cfg.mask, self.device)
 
-            with autocast(enabled=self.cfg.training.amp):
+            with autocast("cuda", enabled=self.cfg.training.amp):
                 recon, z1, z2 = self.model(x, pixel_mask=pixel_mask, plane_one_hot=plane, return_embeddings=False)
 
                 if self.cfg.training.enable_masked_loss:
