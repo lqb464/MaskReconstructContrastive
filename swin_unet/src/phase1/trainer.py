@@ -228,6 +228,9 @@ class Phase1Trainer:
 
         stats = meter.compute()  # ReconstructionMetrics
         out = {
+            "loss": float(np.mean(losses)) if losses else 0.0,
+            "loss_contrast": float(np.mean(losses_con)) if losses_con else 0.0,
+            "embed_var": float(np.mean(embed_vars)) if embed_vars else 0.0,
             "recon_total": float(stats.total_l1),
             "recon_masked": float(stats.masked_l1),
             "recon_unmasked": float(stats.unmasked_l1),
@@ -268,6 +271,7 @@ class Phase1Trainer:
 
         stats = meter.compute()  # ReconstructionMetrics
         out = {
+            "loss": float(np.mean(losses)) if losses else 0.0,
             "recon_total": float(stats.total_l1),
             "recon_masked": float(stats.masked_l1),
             "recon_unmasked": float(stats.unmasked_l1),
