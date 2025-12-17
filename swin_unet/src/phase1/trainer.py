@@ -219,8 +219,8 @@ class Phase1Trainer:
 
                 # embedding variance collapse monitor
                 if self.cfg.training.enable_contrastive:
-                    all_z = torch.cat([z1.detach(), z2.detach()], dim=0)
-                    embed_vars.append(float(compute_embedding_variance(all_z).item()))
+                    mean_var, min_var = compute_embedding_variance([z1.detach(), z2.detach()])
+                    embed_vars.append(float(mean_var))
                 else:
                     embed_vars.append(0.0)
 
