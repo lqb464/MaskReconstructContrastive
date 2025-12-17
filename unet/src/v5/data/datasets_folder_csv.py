@@ -7,7 +7,6 @@ from PIL import Image
 from torch.utils.data import Dataset
 
 from .transforms import build_base_transform, UnsharpMask
-from .labels import LabelConfig
 
 
 class FolderUNetDataset(Dataset):
@@ -15,12 +14,13 @@ class FolderUNetDataset(Dataset):
         self,
         csv_path: str,
         image_size: int = 224,
-        label_cfg: Optional[LabelConfig] = None,
         validate_images: bool = False,
         apply_unsharp: bool = False,
         unsharp_kernel_size: int = 5,
         unsharp_sigma: float = 1.0,
         unsharp_amount: float = 1.0,
+        mindset_label_map_idx_1: str = "", 
+        mindset_label_map_idx_2: str = "",
     ):
         self.csv_path = Path(csv_path)
         self.root = self.csv_path.parent
@@ -29,7 +29,6 @@ class FolderUNetDataset(Dataset):
         if "img_path" not in self.df.columns or "abnormal_type" not in self.df.columns:
             raise ValueError("CSV must contain columns: img_path, abnormal_type")
 
-        self.label_cfg = label_cfg
         self.transform = build_base_transform(image_size)
 
         self.apply_unsharp = apply_unsharp
@@ -41,6 +40,9 @@ class FolderUNetDataset(Dataset):
             self.df = self._validate_images(self.df)
 
         self.df = self.df.reset_index(drop=True)
+        
+        self.mindset_label_map_idx_1 = mindset_label_map_idx_1
+        self.mindset_label_map_idx_2 = mindset_label_map_idx_2
 
     def _apply_label_mapping(self, df: pd.DataFrame) -> pd.DataFrame:
         if self.label_cfg is None:
@@ -48,11 +50,8 @@ class FolderUNetDataset(Dataset):
             df["label_2"] = -1
             return df
 
-        m1 = self.label_cfg.mindset_label_map_idx_1
-        m2 = self.label_cfg.mindset_label_map_idx_2
-
-        df["label_1"] = df["abnormal_type"].map(m1)
-        df["label_2"] = df["abnormal_type"].map(m2)
+        df["label_1"] = df["abnormal_type"].map(self.mindset_label_map_idx_1)
+        df["label_2"] = df["abnormal_type"].map(self.mindset_label_map_idx_2)
         df = df.dropna(subset=["label_1", "label_2"]).copy()
         df["label_1"] = df["label_1"].astype(int)
         df["label_2"] = df["label_2"].astype(int)

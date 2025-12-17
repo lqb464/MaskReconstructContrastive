@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict
-
-
+  
+    
 mindset_idx_map_label_1 = {
     '0': "Normal",
     '1': "MTL",
@@ -68,5 +68,3 @@ hf_demantia_colors = {
     "Mild_Demented": "#e18775",
     "Very_Mild_Demented": "#ffe9c6",
 }
-
-

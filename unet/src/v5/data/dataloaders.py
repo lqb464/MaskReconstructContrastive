@@ -7,7 +7,8 @@ import torch
 from torch.utils.data import DataLoader, random_split
 from sklearn.model_selection import train_test_split
 
-from .labels import build_label_config
+from label import mindset_label_map_idx_1, mindset_label_map_idx_2
+
 from .datasets_hf import AlzheimerUNetDataset
 from .datasets_adni_nifti import AdniNiftiSliceDataset
 from .datasets_adni_precomputed import AdniPrecomputedSliceDataset
@@ -26,16 +27,16 @@ def create_unet_dataloader_from_folder_csv(
     unsharp_amount: float = 1.0,
     validate_images: bool = False,
 ) -> DataLoader:
-    label_cfg = build_label_config()
     ds = FolderUNetDataset(
         csv_path=csv_path,
         image_size=image_size,
-        label_cfg=label_cfg,
         validate_images=validate_images,
         apply_unsharp=apply_unsharp,
         unsharp_kernel_size=unsharp_kernel_size,
         unsharp_sigma=unsharp_sigma,
         unsharp_amount=unsharp_amount,
+        mindset_label_map_idx_1=mindset_label_map_idx_1,
+        mindset_label_map_idx_2=mindset_label_map_idx_2,
     )
 
     return DataLoader(
@@ -165,16 +166,16 @@ def create_unet_dataloaders(
         if folder_csv_path is None:
             raise ValueError("folder_csv_path is required for data_source='folder_csv'")
 
-        label_cfg = build_label_config()
         full_ds = FolderUNetDataset(
             csv_path=folder_csv_path,
             image_size=image_size,
-            label_cfg=label_cfg,
             validate_images=False,
             apply_unsharp=apply_unsharp,
             unsharp_kernel_size=unsharp_kernel_size,
             unsharp_sigma=unsharp_sigma,
             unsharp_amount=unsharp_amount,
+            mindset_label_map_idx_1=mindset_label_map_idx_1,
+            mindset_label_map_idx_2=mindset_label_map_idx_2,
         )
 
         n_total = len(full_ds)
