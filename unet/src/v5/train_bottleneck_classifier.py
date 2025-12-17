@@ -17,26 +17,7 @@ from torch.utils.data import Dataset, DataLoader, Subset
 from model import SmallUNetSSL
 from train import preprocess_batch, set_seed
 
-
-# -----------------------------
-# Label mappings
-# -----------------------------
-mindset_idx_map_label_1 = {
-    0: "Normal",
-    1: "MTL",
-    2: "Other",
-    3: "WMH",
-}
-
-mindset_label_map_idx_1 = {
-    "mtl_atrophy": 1,
-    "mtl_atrophy,other_atrophy": 1,
-    "mtl_atrophy,wmh": 1,
-    "normal": 0,
-    "other_atrophy": 2,
-    "wmh": 3,
-    "wmh,other_atrophy": 3,
-}
+from data import mindset_idx_map_label_1, mindset_label_map_idx_1
 
 
 # -----------------------------

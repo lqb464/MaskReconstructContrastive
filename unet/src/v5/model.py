@@ -9,10 +9,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Tuple, Optional
 
-__all__ = [
-    "SmallUNetSSL",
-]
-
 
 class SEBlock(nn.Module):
     def __init__(self, ch: int, r: int = 8):
@@ -188,3 +184,7 @@ class SmallUNetSSL(nn.Module):
         z = self.proj(h)
         z = F.normalize(z, dim=-1)
         return z, h
+
+__all__ = [
+    "SmallUNetSSL",
+]
