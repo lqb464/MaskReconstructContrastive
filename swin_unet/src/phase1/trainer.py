@@ -226,15 +226,12 @@ class Phase1Trainer:
 
             pbar.set_postfix(loss=np.mean(losses[-20:]) if losses else 0.0)
 
-        stats = meter.finalize()
+        stats = meter.compute()  # ReconstructionMetrics
         out = {
-            "loss": float(np.mean(losses)) if losses else 0.0,
-            "loss_contrast": float(np.mean(losses_con)) if losses_con else 0.0,
-            "embed_var": float(np.mean(embed_vars)) if embed_vars else 0.0,
-            "recon_total": stats.get("recon_total", 0.0),
-            "recon_masked": stats.get("recon_masked", 0.0),
-            "recon_unmasked": stats.get("recon_unmasked", 0.0),
-            "ssim": stats.get("ssim", 0.0),
+            "recon_total": float(stats.total_l1),
+            "recon_masked": float(stats.masked_l1),
+            "recon_unmasked": float(stats.unmasked_l1),
+            "ssim": float(stats.ssim),
         }
         return out
 
@@ -269,13 +266,12 @@ class Phase1Trainer:
             meter.update(diff, pixel_mask, ssim_sum=ssim_sum)
             losses.append(float(loss.item()))
 
-        stats = meter.finalize()
+        stats = meter.compute()  # ReconstructionMetrics
         out = {
-            "loss": float(np.mean(losses)) if losses else 0.0,
-            "recon_total": stats.get("recon_total", 0.0),
-            "recon_masked": stats.get("recon_masked", 0.0),
-            "recon_unmasked": stats.get("recon_unmasked", 0.0),
-            "ssim": stats.get("ssim", 0.0),
+            "recon_total": float(stats.total_l1),
+            "recon_masked": float(stats.masked_l1),
+            "recon_unmasked": float(stats.unmasked_l1),
+            "ssim": float(stats.ssim),
         }
         return out
 
