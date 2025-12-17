@@ -169,7 +169,7 @@ class Phase1Trainer:
         losses_con = []
         embed_vars = []
 
-        pbar = tqdm(loader, desc=f"train {epoch}", leave=False)
+        pbar = tqdm(loader, desc=f"Epoch {epoch}", leave=False)
         for batch in pbar:
             x = batch["input"].to(self.device, non_blocking=True)  # [B,1,H,W]
             plane = batch.get("plane_one_hot", None)
