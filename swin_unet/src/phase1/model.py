@@ -377,7 +377,8 @@ class SwinUNetDualViewSSLPhase1(nn.Module):
         image_size: int = 192,
         patch_size: int = 16,
         embed_dim: int = 96,
-        depths: Tuple[int, int, int, int] = (2, 2, 6, 2),
+        enc_depths: Tuple[int, int, int, int] = (2, 2, 6, 2),
+        dec_depths: Tuple[int, int, int] = (6, 2, 2),
         num_heads: Tuple[int, int, int, int] = (3, 6, 12, 24),
         window_size: int = 7,
         proj_dim: int = 128,
@@ -387,7 +388,8 @@ class SwinUNetDualViewSSLPhase1(nn.Module):
         self.image_size = image_size
         self.patch_size = patch_size
         self.embed_dim = embed_dim
-        self.depths = depths
+        self.enc_depths = enc_depths
+        self.dec_depths = dec_depths
         self.num_heads = num_heads
         self.window_size = window_size
 
@@ -398,29 +400,29 @@ class SwinUNetDualViewSSLPhase1(nn.Module):
 
         # Early encoders (separate)
         self.patch_embed_1 = PatchEmbed(in_ch=in_ch, embed_dim=C0, patch_size=patch_size)
-        self.stage0_1 = BasicLayer(dim=C0, depth=depths[0], num_heads=num_heads[0], window_size=window_size)
+        self.stage0_1 = BasicLayer(dim=C0, depth=enc_depths[0], num_heads=num_heads[0], window_size=window_size)
         self.merge0_1 = PatchMerging(dim=C0)
-        self.stage1_1 = BasicLayer(dim=C1, depth=depths[1], num_heads=num_heads[1], window_size=window_size)
+        self.stage1_1 = BasicLayer(dim=C1, depth=enc_depths[1], num_heads=num_heads[1], window_size=window_size)
 
         self.patch_embed_2 = PatchEmbed(in_ch=in_ch, embed_dim=C0, patch_size=patch_size)
-        self.stage0_2 = BasicLayer(dim=C0, depth=depths[0], num_heads=num_heads[0], window_size=window_size)
+        self.stage0_2 = BasicLayer(dim=C0, depth=enc_depths[0], num_heads=num_heads[0], window_size=window_size)
         self.merge0_2 = PatchMerging(dim=C0)
-        self.stage1_2 = BasicLayer(dim=C1, depth=depths[1], num_heads=num_heads[1], window_size=window_size)
+        self.stage1_2 = BasicLayer(dim=C1, depth=enc_depths[1], num_heads=num_heads[1], window_size=window_size)
 
         # Shared trunk (Stage2+)
         self.merge1 = PatchMerging(dim=C1)
         self.plane_cond = PlaneCondition(in_dim=2, feat_dim=C2, method=plane_inject_method)
-        self.stage2 = BasicLayer(dim=C2, depth=depths[2], num_heads=num_heads[2], window_size=window_size)
+        self.stage2 = BasicLayer(dim=C2, depth=enc_depths[2], num_heads=num_heads[2], window_size=window_size)
         self.merge2 = PatchMerging(dim=C2)
-        self.stage3 = BasicLayer(dim=C3, depth=depths[3], num_heads=num_heads[3], window_size=window_size)
+        self.stage3 = BasicLayer(dim=C3, depth=enc_depths[3], num_heads=num_heads[3], window_size=window_size)
 
         # Contrastive head (unchanged)
         self.proj = ProjectionHead(in_dim=C3, proj_dim=proj_dim)
 
         # Decoder (shared weights) used for BOTH views
-        self.up2 = SwinUpBlock(in_dim=C3, skip_dim=C2, out_dim=C2, depth=2, num_heads=num_heads[2], window_size=window_size)
-        self.up1 = SwinUpBlock(in_dim=C2, skip_dim=C1, out_dim=C1, depth=2, num_heads=num_heads[1], window_size=window_size)
-        self.up0 = SwinUpBlock(in_dim=C1, skip_dim=C0, out_dim=C0, depth=2, num_heads=num_heads[0], window_size=window_size)
+        self.up2 = SwinUpBlock(in_dim=C3, skip_dim=C2, out_dim=C2, depth=dec_depths[0], num_heads=num_heads[2], window_size=window_size)
+        self.up1 = SwinUpBlock(in_dim=C2, skip_dim=C1, out_dim=C1, depth=dec_depths[1], num_heads=num_heads[1], window_size=window_size)
+        self.up0 = SwinUpBlock(in_dim=C1, skip_dim=C0, out_dim=C0, depth=dec_depths[2], num_heads=num_heads[0], window_size=window_size)
 
         self.final_up = FinalPatchExpand(dim=C0, patch_size=patch_size, out_dim=32)
 
@@ -455,26 +457,57 @@ class SwinUNetDualViewSSLPhase1(nn.Module):
         return b
 
     def param_count_breakdown(self) -> Dict[str, int]:
-        """Return parameter counts for logging."""
-        encoder_modules = [
-            self.patch_embed_1, self.stage0_1, self.merge0_1, self.stage1_1,
-            self.patch_embed_2, self.stage0_2, self.merge0_2, self.stage1_2,
-            self.merge1, self.plane_cond, self.stage2, self.merge2, self.stage3,
-            self.proj,
-        ]
-        decoder_trunk_modules = [self.up2, self.up1, self.up0, self.final_up]
-        head_modules = [self.recon_head]
+        """Return parameter counts for logging.
 
-        enc = sum(count_parameters(m) for m in encoder_modules)
-        dec = sum(count_parameters(m) for m in decoder_trunk_modules)
-        heads = sum(count_parameters(m) for m in head_modules)
+        Notes:
+        - Shared modules (trunk, decoder, heads) are counted once.
+        - Running decoder twice in forward does NOT mean double parameters.
+        """
+        # 1) Early encoders (view-specific)
+        early_view1 = [self.patch_embed_1, self.stage0_1, self.merge0_1, self.stage1_1]
+        early_view2 = [self.patch_embed_2, self.stage0_2, self.merge0_2, self.stage1_2]
+
+        # 2) Shared encoder trunk (Stage2+)
+        shared_trunk = [self.merge1, self.plane_cond, self.stage2, self.merge2, self.stage3]
+
+        # 3) Contrastive head
+        contrastive_head = [self.proj]
+
+        # 4) Shared decoder trunk (used for BOTH views but counted once)
+        decoder_trunk = [self.up2, self.up1, self.up0, self.final_up]
+
+        # 5) Reconstruction head (shared)
+        recon_heads = [self.recon_head]
+
+        def _count(mods) -> int:
+            return sum(count_parameters(m) for m in mods)
+
+        n_early_v1 = _count(early_view1)
+        n_early_v2 = _count(early_view2)
+        n_trunk = _count(shared_trunk)
+        n_contrast = _count(contrastive_head)
+        n_decoder = _count(decoder_trunk)
+        n_recon = _count(recon_heads)
+
         total = count_parameters(self)
+        check_sum = n_early_v1 + n_early_v2 + n_trunk + n_contrast + n_decoder + n_recon
+
         return {
             "total": total,
-            "encoder": enc,
-            "decoder_trunk": dec,
-            "recon_heads": heads,
+
+            "enc_early_view1": n_early_v1,
+            "enc_early_view2": n_early_v2,
+            "enc_shared_trunk": n_trunk,
+
+            "contrastive_head": n_contrast,
+
+            "decoder_trunk": n_decoder,
+            "recon_head": n_recon,
+
+            "check_sum": check_sum,
+            "delta_total_minus_check": total - check_sum,
         }
+
 
     def forward(
         self,

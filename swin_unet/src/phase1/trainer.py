@@ -157,7 +157,7 @@ class PhaseATrainer:
             image_size=cfg.data.image_size,
             patch_size=cfg.model.patch_size,
             embed_dim=cfg.model.embed_dim,
-            depths=tuple(cfg.model.depths),
+            enc_depths=tuple(cfg.model.depths),
             num_heads=tuple(cfg.model.num_heads),
             window_size=cfg.model.window_size,
             proj_dim=cfg.model.proj_dim,
@@ -168,9 +168,14 @@ class PhaseATrainer:
         try:
             pc = self.model.param_count_breakdown()
             print("[params] total:", pc.get("total", 0))
-            print("[params] encoder:", pc.get("encoder", 0))
-            print("[params] decoder_trunk:", pc.get("decoder_trunk", 0))
-            print("[params] recon_heads:", pc.get("recon_heads", 0))
+            print("[params] enc_early_view1:", pc.get("enc_early_view1", 0))
+            print("[params] enc_early_view2:", pc.get("enc_early_view2", 0))  
+            print("[params] enc_shared_trunk:", pc.get("enc_shared_trunk", 0))            
+            print("[params] contrastive_head:", pc.get("contrastive_head", 0))            
+            print("[params] decoder_trunk:", pc.get("decoder_trunk", 0))            
+            print("[params] recon_head:", pc.get("recon_head", 0))
+            print("[params] check_sum: ", pc.get("check_sum", 0))
+            print("[params] delta_total_minus_check:", pc.get("delta_total_minus_check", 0))
         except Exception as e:
             print("[params] unable to compute breakdown:", repr(e))
 
