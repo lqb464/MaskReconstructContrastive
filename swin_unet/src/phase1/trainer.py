@@ -1,21 +1,19 @@
 
 # =============================================
-# File: trainer_phase1.py
-# Phase 1 trainer for SwinUNet Dual View SSL
-# - No preprocessing pipeline
+# File: trainer_phaseA.py
+# Phase A: Dual Reconstruction Head (Original + Flip)
 # - Keeps sample_masks_anti_mirror() logic
-# - Dataset: folder with subfolders (see data.py)
-# - Optional CSV labels for t-SNE (only plot if enabled AND labels exist)
-# - Keeps reconstruction visualization grid
+# - Keeps contrastive pairing and NT-Xent as-is
+# - Adds second reconstruction loss for flipped target in same batch
+# - Logs parameter counts: total, encoder, decoder_trunk, recon_heads
 # =============================================
 from __future__ import annotations
 
 import csv
-import os
 import time
 from dataclasses import asdict
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict
 
 import numpy as np
 import torch
@@ -27,11 +25,47 @@ from tqdm import tqdm
 
 from config import ExperimentConfig, build_argparser
 from data import create_dataloaders_from_folder
-from augmentation import sample_masks_anti_mirror, HalfAug
-from losses import masked_l1_loss, mixed_l1_loss, nt_xent_loss, compute_embedding_variance, ssim_index, masked_bce_logits_weighted, mixed_bce_logits_weighted
+from augmentation import sample_masks_anti_mirror
+from losses import masked_l1_loss, mixed_l1_loss, nt_xent_loss, compute_embedding_variance, ssim_index
 from metrics import MetricsAccumulator
 from visualization import save_image_grid, plot_training_curves, run_tsne_visualization
-from model import SwinUNetDualViewSSLPhase1
+from model_phaseA import SwinUNetDualViewSSLPhase1, flip_lr
+
+
+# -------------------------
+# Weighted BCE logits (kept local to trainer)
+# -------------------------
+def _foreground_weighted_bce_logits(logits: torch.Tensor, target: torch.Tensor, fg_eps: float = 0.02, fg_weight: float = 10.0) -> torch.Tensor:
+    """
+    Weighted BCEWithLogits where pixels with target > fg_eps get larger weight.
+    target expected in [0,1].
+    """
+    with torch.no_grad():
+        w = torch.ones_like(target)
+        w = torch.where(target > fg_eps, torch.full_like(w, fg_weight), w)
+    return F.binary_cross_entropy_with_logits(logits, target, weight=w, reduction="none")
+
+
+def masked_bce_logits_weighted(logits: torch.Tensor, target: torch.Tensor, pixel_mask: torch.Tensor, fg_eps: float = 0.02, fg_weight: float = 10.0) -> torch.Tensor:
+    """
+    BCE logits computed only on masked region (pixel_mask==1).
+    """
+    loss_map = _foreground_weighted_bce_logits(logits, target, fg_eps=fg_eps, fg_weight=fg_weight)
+    m = pixel_mask
+    denom = m.sum().clamp(min=1.0)
+    return (loss_map * m).sum() / denom
+
+
+def mixed_bce_logits_weighted(logits: torch.Tensor, target: torch.Tensor, pixel_mask: torch.Tensor, fg_eps: float = 0.02, fg_weight: float = 10.0, alpha_mask: float = 1.0, beta_unmask: float = 0.2) -> torch.Tensor:
+    """
+    Weighted BCE logits computed on both masked and unmasked, with different weights.
+    """
+    loss_map = _foreground_weighted_bce_logits(logits, target, fg_eps=fg_eps, fg_weight=fg_weight)
+    m = pixel_mask
+    um = 1.0 - m
+    masked = (loss_map * m).sum() / m.sum().clamp(min=1.0)
+    unmasked = (loss_map * um).sum() / um.sum().clamp(min=1.0)
+    return alpha_mask * masked + beta_unmask * unmasked
 
 
 # -------------------------
@@ -57,20 +91,14 @@ def ensure_dir(p: Path) -> Path:
 
 
 def has_labels_in_batch(batch: Dict) -> bool:
-    if "label" not in batch:
-        return False
-    y = batch["label"]
-    if y is None:
-        return False
-    if isinstance(y, torch.Tensor):
-        return y.numel() > 0
-    return True
+    y = batch.get("label", None)
+    return isinstance(y, torch.Tensor) and y.numel() > 0
 
 
 # -------------------------
 # Trainer
 # -------------------------
-class Phase1Trainer:
+class PhaseATrainer:
     def __init__(self, cfg: ExperimentConfig, device: torch.device):
         self.cfg = cfg
         self.device = device
@@ -87,34 +115,31 @@ class Phase1Trainer:
         self.log_csv_path = self.out_dir / "epoch_log.csv"
         self._init_csv()
 
-        # Model
         self.model = SwinUNetDualViewSSLPhase1(
             in_ch=cfg.model.in_ch,
             image_size=cfg.data.image_size,
             patch_size=cfg.model.patch_size,
             embed_dim=cfg.model.embed_dim,
-            depths=cfg.model.depths,
-            num_heads=cfg.model.num_heads,
+            depths=tuple(cfg.model.depths),
+            num_heads=tuple(cfg.model.num_heads),
             window_size=cfg.model.window_size,
             proj_dim=cfg.model.proj_dim,
             plane_inject_method=cfg.model.plane_inject_method,
         ).to(device)
 
-        # Optimizer
+        # Parameter logging (DoD)
+        try:
+            pc = self.model.param_count_breakdown()
+            print("[params] total:", pc.get("total", 0))
+            print("[params] encoder:", pc.get("encoder", 0))
+            print("[params] decoder_trunk:", pc.get("decoder_trunk", 0))
+            print("[params] recon_heads:", pc.get("recon_heads", 0))
+        except Exception as e:
+            print("[params] unable to compute breakdown:", repr(e))
+
         self.opt = AdamW(self.model.parameters(), lr=cfg.training.lr, weight_decay=cfg.training.weight_decay)
-        self.scaler = GradScaler(enabled=(cfg.training.amp and self.device.type == "cuda"))
+        self.scaler = GradScaler(enabled=(cfg.training.amp and device.type == "cuda"))
 
-        # Augmentation for contrastive halves (optional, used outside model)
-        self.half_aug = HalfAug(
-            p_noise=cfg.training.aug_p_noise,
-            p_jitter=cfg.training.aug_p_jitter,
-            p_blur=cfg.training.aug_p_blur,
-            noise_std=cfg.training.aug_noise_std,
-            jitter_strength=cfg.training.aug_jitter_strength,
-            blur_kernel=cfg.training.aug_blur_kernel,
-        )
-
-        # Store datamodule/dataset reference for t-SNE label mapping if needed (optional)
         self.data_module = None
 
     def _init_csv(self):
@@ -130,7 +155,8 @@ class Phase1Trainer:
                 "train_recon_unmasked",
                 "train_ssim",
                 "train_loss_contrast",
-                "train_embed_var",
+                "train_embed_var_mean",
+                "train_embed_var_min",
                 "val_loss",
                 "val_recon_total",
                 "val_recon_masked",
@@ -139,46 +165,46 @@ class Phase1Trainer:
             ])
 
     def _append_csv(self, row: Dict):
-        header = None
-        if self.log_csv_path.exists():
-            with self.log_csv_path.open("r", encoding="utf-8") as f:
-                header = f.readline().strip().split(",")
-        if not header:
-            return
         with self.log_csv_path.open("a", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            w.writerow([row.get(k, "") for k in header])
+            w.writerow([
+                row["epoch"],
+                row["train_loss"],
+                row["train_recon_total"],
+                row["train_recon_masked"],
+                row["train_recon_unmasked"],
+                row["train_ssim"],
+                row["train_loss_contrast"],
+                row["train_embed_var_mean"],
+                row["train_embed_var_min"],
+                row["val_loss"],
+                row["val_recon_total"],
+                row["val_recon_masked"],
+                row["val_recon_unmasked"],
+                row["val_ssim"],
+            ])
 
     @torch.no_grad()
-    def _visualize_recon(self, x: torch.Tensor, pixel_mask: torch.Tensor, recon: torch.Tensor, epoch: int, tag: str):
-        # x, recon: [B,1,H,W]; pixel_mask: [B,1,H,W] where 1=masked
-    
-        recon_full = pixel_mask * recon + (1.0 - pixel_mask) * x
-        resid = (x - recon_full).abs().clamp(0, 1)
+    def _visualize_recon(self, x: torch.Tensor, pixel_mask: torch.Tensor, recon_img: torch.Tensor, epoch: int, tag: str):
+        resid = (x - (pixel_mask * recon_img + (1.0 - pixel_mask) * x)).abs().clamp(0, 1)
         masked = x * (1.0 - pixel_mask)
-
         out_path = str(self.vis_dir / f"{tag}_epoch_{epoch:03d}.png")
         save_image_grid(
-            [x, pixel_mask, masked, recon_full.clamp(0, 1), resid],
-            [f"{tag}: target", "mask", "masked", "recon_full", "abs_resid"],
+            [x, pixel_mask, masked, recon_img.clamp(0, 1), resid],
+            [f"{tag}: target", "mask", "masked", "recon", "abs_resid"],
             out_path,
         )
-        
-        print("x     min/max/mean:", x.min().item(), x.max().item(), x.mean().item())
-        print("recon min/max/mean:", recon.min().item(), recon.max().item(), recon.mean().item())
-        print("mask  mean:", pixel_mask.float().mean().item())
-
 
     def train_one_epoch(self, loader, epoch: int) -> Dict[str, float]:
         self.model.train()
         meter = MetricsAccumulator()
         losses = []
         losses_con = []
-        embed_vars = []
+        vars_mean = []
+        vars_min = []
 
-        pbar = tqdm(loader, desc=f"Train {epoch}", leave=False)
-        for step, batch in enumerate(pbar):
-            x = batch["input"].to(self.device, non_blocking=True)  # [B,1,H,W]
+        for step, batch in enumerate(tqdm(loader, desc=f"train {epoch}", leave=False)):
+            x = batch["input"].to(self.device, non_blocking=True)
             plane = batch.get("plane_one_hot", None)
             if plane is None:
                 plane = torch.tensor([0.0, 1.0], device=self.device).view(1, 2).repeat(x.size(0), 1)
@@ -187,52 +213,49 @@ class Phase1Trainer:
 
             pixel_mask = sample_masks_anti_mirror(x.size(0), self.cfg.mask, self.device)
 
-            # --- Collapse diagnostics (run once per epoch on first batch) ---
-            if step == 0:
-                with torch.no_grad():
-                    x0 = x.detach()
-                    frac_black = float((x0 < 0.01).to(torch.float32).mean().item())
-                    med = float(x0.median().item())
-                    mean = float(x0.mean().item())
-                    m = pixel_mask.detach()
-                    masked_mean = float((x0 * m).sum().item() / m.sum().clamp(min=1.0).item())
-                    unmasked_mean = float((x0 * (1.0 - m)).sum().item() / (1.0 - m).sum().clamp(min=1.0).item())
-                    print(f"[diag e{epoch:03d}] x mean={mean:.6f} median={med:.6f} frac(x<0.01)={frac_black:.3f} masked_mean={masked_mean:.6f} unmasked_mean={unmasked_mean:.6f}")
-            # ---------------------------------------------------------------
-
-
             self.opt.zero_grad(set_to_none=True)
 
             with autocast(device_type=self.device.type, enabled=(self.cfg.training.amp and self.device.type == "cuda")):
-                # recon_raw là logits (KHÔNG sigmoid trong model)
-                recon_raw, z1, z2 = self.model(
+                recon_raw_orig, recon_raw_flip, z1, z2 = self.model(
                     x, pixel_mask=pixel_mask, plane_one_hot=plane, return_embeddings=True
                 )
-                # recon_raw is logits (NO sigmoid in the model)
-                if step == 0:
-                    print("recon_raw min/max/mean:", recon_raw.min().item(), recon_raw.max().item(), recon_raw.mean().item())
 
-                # For metrics/visualization we keep a bounded image in [0,1]
-                recon_img = torch.sigmoid(recon_raw.clamp(-10, 10))
-                if step == 0:
-                    print("recon_img min/max/mean:", recon_img.min().item(), recon_img.max().item(), recon_img.mean().item())
+                # For metrics/visualization (orig only)
+                recon_img_orig = torch.sigmoid(recon_raw_orig.clamp(-10, 10))
 
-                # Reconstruction loss: avoid sigmoid saturation + all-zero collapse on sparse images
+                # targets
+                x_flip = flip_lr(x)
+
                 recon_loss_type = getattr(self.cfg.training, "recon_loss", "weighted_bce_logits")
                 fg_eps = float(getattr(self.cfg.training, "fg_eps", 0.02))
                 fg_weight = float(getattr(self.cfg.training, "fg_weight", 10.0))
 
+                # original recon loss
                 if recon_loss_type == "weighted_bce_logits":
                     if self.cfg.training.enable_masked_loss:
-                        loss_recon = masked_bce_logits_weighted(recon_raw, x, pixel_mask, fg_eps=fg_eps, fg_weight=fg_weight)
+                        loss_recon_orig = masked_bce_logits_weighted(recon_raw_orig, x, pixel_mask, fg_eps=fg_eps, fg_weight=fg_weight)
                     else:
-                        loss_recon = mixed_bce_logits_weighted(recon_raw, x, pixel_mask, fg_eps=fg_eps, fg_weight=fg_weight)
+                        loss_recon_orig = mixed_bce_logits_weighted(recon_raw_orig, x, pixel_mask, fg_eps=fg_eps, fg_weight=fg_weight)
                 else:
-                    # legacy: L1 on sigmoid output
                     if self.cfg.training.enable_masked_loss:
-                        loss_recon = masked_l1_loss(recon_img, x, pixel_mask)
+                        loss_recon_orig = masked_l1_loss(recon_img_orig, x, pixel_mask)
                     else:
-                        loss_recon = mixed_l1_loss(recon_img, x, pixel_mask)
+                        loss_recon_orig = mixed_l1_loss(recon_img_orig, x, pixel_mask)
+
+                # flip recon loss (independent)
+                if recon_loss_type == "weighted_bce_logits":
+                    if self.cfg.training.enable_masked_loss:
+                        loss_recon_flip = masked_bce_logits_weighted(recon_raw_flip, x_flip, pixel_mask, fg_eps=fg_eps, fg_weight=fg_weight)
+                    else:
+                        loss_recon_flip = mixed_bce_logits_weighted(recon_raw_flip, x_flip, pixel_mask, fg_eps=fg_eps, fg_weight=fg_weight)
+                else:
+                    recon_img_flip = torch.sigmoid(recon_raw_flip.clamp(-10, 10))
+                    if self.cfg.training.enable_masked_loss:
+                        loss_recon_flip = masked_l1_loss(recon_img_flip, x_flip, pixel_mask)
+                    else:
+                        loss_recon_flip = mixed_l1_loss(recon_img_flip, x_flip, pixel_mask)
+
+                loss_recon = loss_recon_orig + loss_recon_flip
 
                 if self.cfg.training.enable_contrastive:
                     loss_con = nt_xent_loss(z1, z2, temperature=self.cfg.training.temperature)
@@ -246,34 +269,32 @@ class Phase1Trainer:
             self.scaler.update()
 
             with torch.no_grad():
-                diff = (x - recon_img).abs().detach()
-
-                ssim_vals = ssim_index(x.float(), recon_img.float())  # shape (B,)
-                ssim_sum = float(ssim_vals.sum().item())
-                meter.update(diff, pixel_mask, ssim_sum=ssim_sum)
+                diff = (x - recon_img_orig).abs().detach()
+                ssim_vals = ssim_index(x.float(), recon_img_orig.float())
+                meter.update(diff, pixel_mask, ssim_sum=float(ssim_vals.sum().item()))
 
                 losses.append(float(loss.item()))
                 losses_con.append(float(loss_con.item()) if torch.is_tensor(loss_con) else 0.0)
 
                 if self.cfg.training.enable_contrastive:
                     mean_var, min_var = compute_embedding_variance([z1.detach(), z2.detach()])
-                    embed_vars.append(float(mean_var))
+                    vars_mean.append(float(mean_var))
+                    vars_min.append(float(min_var))
                 else:
-                    embed_vars.append(0.0)
+                    vars_mean.append(0.0)
+                    vars_min.append(0.0)
 
-            pbar.set_postfix(loss=np.mean(losses[-20:]) if losses else 0.0)
-
-        stats = meter.compute()  # ReconstructionMetrics
-        out = {
+        stats = meter.finalize()
+        return {
             "loss": float(np.mean(losses)) if losses else 0.0,
             "loss_contrast": float(np.mean(losses_con)) if losses_con else 0.0,
-            "embed_var": float(np.mean(embed_vars)) if embed_vars else 0.0,
-            "recon_total": float(stats.total_l1),
-            "recon_masked": float(stats.masked_l1),
-            "recon_unmasked": float(stats.unmasked_l1),
-            "ssim": float(stats.ssim),
+            "var_mean": float(np.mean(vars_mean)) if vars_mean else 0.0,
+            "var_min": float(np.mean(vars_min)) if vars_min else 0.0,
+            "recon_total": stats.get("recon_total", 0.0),
+            "recon_masked": stats.get("recon_masked", 0.0),
+            "recon_unmasked": stats.get("recon_unmasked", 0.0),
+            "ssim": stats.get("ssim", 0.0),
         }
-        return out
 
     @torch.no_grad()
     def validate(self, loader, epoch: int) -> Dict[str, float]:
@@ -292,12 +313,11 @@ class Phase1Trainer:
             pixel_mask = sample_masks_anti_mirror(x.size(0), self.cfg.mask, self.device)
 
             with autocast(device_type=self.device.type, enabled=(self.cfg.training.amp and self.device.type == "cuda")):
-                recon_raw, z1, z2 = self.model(
+                recon_raw_orig, recon_raw_flip, _, _ = self.model(
                     x, pixel_mask=pixel_mask, plane_one_hot=plane, return_embeddings=False
                 )
-
-                # For metrics/visualization we keep a bounded image in [0,1]
-                recon_img = torch.sigmoid(recon_raw.clamp(-10, 10))
+                recon_img_orig = torch.sigmoid(recon_raw_orig.clamp(-10, 10))
+                x_flip = flip_lr(x)
 
                 recon_loss_type = getattr(self.cfg.training, "recon_loss", "weighted_bce_logits")
                 fg_eps = float(getattr(self.cfg.training, "fg_eps", 0.02))
@@ -305,34 +325,36 @@ class Phase1Trainer:
 
                 if recon_loss_type == "weighted_bce_logits":
                     if self.cfg.training.enable_masked_loss:
-                        loss_recon = masked_bce_logits_weighted(recon_raw, x, pixel_mask, fg_eps=fg_eps, fg_weight=fg_weight)
+                        loss_recon_orig = masked_bce_logits_weighted(recon_raw_orig, x, pixel_mask, fg_eps=fg_eps, fg_weight=fg_weight)
+                        loss_recon_flip = masked_bce_logits_weighted(recon_raw_flip, x_flip, pixel_mask, fg_eps=fg_eps, fg_weight=fg_weight)
                     else:
-                        loss_recon = mixed_bce_logits_weighted(recon_raw, x, pixel_mask, fg_eps=fg_eps, fg_weight=fg_weight)
+                        loss_recon_orig = mixed_bce_logits_weighted(recon_raw_orig, x, pixel_mask, fg_eps=fg_eps, fg_weight=fg_weight)
+                        loss_recon_flip = mixed_bce_logits_weighted(recon_raw_flip, x_flip, pixel_mask, fg_eps=fg_eps, fg_weight=fg_weight)
                 else:
+                    recon_img_flip = torch.sigmoid(recon_raw_flip.clamp(-10, 10))
                     if self.cfg.training.enable_masked_loss:
-                        loss_recon = masked_l1_loss(recon_img, x, pixel_mask)
+                        loss_recon_orig = masked_l1_loss(recon_img_orig, x, pixel_mask)
+                        loss_recon_flip = masked_l1_loss(recon_img_flip, x_flip, pixel_mask)
                     else:
-                        loss_recon = mixed_l1_loss(recon_img, x, pixel_mask)
+                        loss_recon_orig = mixed_l1_loss(recon_img_orig, x, pixel_mask)
+                        loss_recon_flip = mixed_l1_loss(recon_img_flip, x_flip, pixel_mask)
 
+                loss_recon = loss_recon_orig + loss_recon_flip
                 loss = self.cfg.training.lambda_recon * loss_recon
 
-            diff = (x - recon_img).abs()
-
-            ssim_vals = ssim_index(x.float(), recon_img.float())  # shape (B,)
-            ssim_sum = float(ssim_vals.sum().item())
-            meter.update(diff, pixel_mask, ssim_sum=ssim_sum)
-
+            diff = (x - recon_img_orig).abs().detach()
+            ssim_vals = ssim_index(x.float(), recon_img_orig.float())
+            meter.update(diff, pixel_mask, ssim_sum=float(ssim_vals.sum().item()))
             losses.append(float(loss.item()))
 
-        stats = meter.compute()  # ReconstructionMetrics
-        out = {
+        stats = meter.finalize()
+        return {
             "loss": float(np.mean(losses)) if losses else 0.0,
-            "recon_total": float(stats.total_l1),
-            "recon_masked": float(stats.masked_l1),
-            "recon_unmasked": float(stats.unmasked_l1),
-            "ssim": float(stats.ssim),
+            "recon_total": stats.get("recon_total", 0.0),
+            "recon_masked": stats.get("recon_masked", 0.0),
+            "recon_unmasked": stats.get("recon_unmasked", 0.0),
+            "ssim": stats.get("ssim", 0.0),
         }
-        return out
 
     def maybe_visualize(self, loader, epoch: int, tag: str):
         if (epoch % self.cfg.logging.vis_every) != 0:
@@ -347,34 +369,22 @@ class Phase1Trainer:
             plane = plane.to(self.device, non_blocking=True)
 
         pixel_mask = sample_masks_anti_mirror(x.size(0), self.cfg.mask, self.device)
-
-        recon_raw, _, _ = self.model(
-            x,
-            pixel_mask=pixel_mask,
-            plane_one_hot=plane,
-            return_embeddings=False
-        )
-        recon_img = torch.sigmoid(recon_raw.clamp(-10, 10))
-
-        self._visualize_recon(x, pixel_mask, recon_img, epoch, tag)
-
+        recon_raw_orig, _, _, _ = self.model(x, pixel_mask=pixel_mask, plane_one_hot=plane, return_embeddings=False)
+        recon_img_orig = torch.sigmoid(recon_raw_orig.clamp(-10, 10))
+        self._visualize_recon(x, pixel_mask, recon_img_orig, epoch, tag)
 
     def maybe_tsne(self, loader, epoch: int):
         if not self.cfg.logging.enable_tsne:
             return
         if (epoch % self.cfg.logging.tsne_every) != 0:
             return
-
-        # Gating: only if labels exist (unless user overrides)
         if self.cfg.logging.tsne_only_if_labeled:
-            # check first batch for label presence
             try:
                 b0 = next(iter(loader))
                 if not has_labels_in_batch(b0):
                     return
             except Exception:
                 return
-
         out_prefix = str(self.out_dir / "tsne" / f"epoch_{epoch:03d}")
         run_tsne_visualization(
             model=self._tsne_wrapper_model(),
@@ -387,10 +397,6 @@ class Phase1Trainer:
         )
 
     def _tsne_wrapper_model(self):
-        """
-        run_tsne_visualization expects model.encoder_embed(x, mode=...)
-        Provide a light wrapper that uses view1 encoder bottleneck pooled.
-        """
         trainer = self
 
         class _Wrap(nn.Module):
@@ -400,25 +406,19 @@ class Phase1Trainer:
 
             @torch.no_grad()
             def encoder_embed(self, x: torch.Tensor, mode: str = "bottleneck"):
-                # x: [B,1,H,W], no mask in tSNE; use zero mask
                 B, _, H, W = x.shape
                 device = x.device
                 M = torch.zeros((B, 1, H, W), device=device, dtype=x.dtype)
                 plane = torch.tensor([0.0, 1.0], device=device).view(1, 2).repeat(B, 1)
-                b = self.base.encode_bottleneck(x, plane, view=1)  # [B,h,w,C]
-                h = b.mean(dim=(1, 2))  # [B,C]
+                b = self.base.encode_bottleneck(x, plane, view=1)
+                h = b.mean(dim=(1, 2))
                 return None, h
 
         return _Wrap(self.model).to(self.device)
 
     def save_checkpoint(self, epoch: int):
         path = self.ckpt_dir / f"epoch_{epoch:03d}.pt"
-        obj = {
-            "epoch": epoch,
-            "model": self.model.state_dict(),
-            "opt": self.opt.state_dict(),
-            "cfg": asdict(self.cfg),
-        }
+        obj = {"epoch": epoch, "model": self.model.state_dict(), "opt": self.opt.state_dict(), "cfg": asdict(self.cfg)}
         torch.save(obj, path)
 
     def fit(self, train_loader, val_loader):
@@ -429,7 +429,7 @@ class Phase1Trainer:
             va = self.validate(val_loader, epoch)
             dt = time.time() - t0
 
-            row = {
+            self._append_csv({
                 "epoch": epoch,
                 "train_loss": tr["loss"],
                 "train_recon_total": tr["recon_total"],
@@ -437,33 +437,26 @@ class Phase1Trainer:
                 "train_recon_unmasked": tr["recon_unmasked"],
                 "train_ssim": tr["ssim"],
                 "train_loss_contrast": tr["loss_contrast"],
-                "train_embed_var": tr["embed_var"],
+                "train_embed_var_mean": tr["var_mean"],
+                "train_embed_var_min": tr["var_min"],
                 "val_loss": va["loss"],
                 "val_recon_total": va["recon_total"],
                 "val_recon_masked": va["recon_masked"],
                 "val_recon_unmasked": va["recon_unmasked"],
                 "val_ssim": va["ssim"],
-            }
-            self._append_csv(row)
+            })
 
-            # hooks
             self.maybe_visualize(val_loader, epoch, tag="val")
             self.maybe_tsne(val_loader, epoch)
 
-            # checkpoint
             if va["loss"] < best_val:
                 best_val = va["loss"]
                 self.save_checkpoint(epoch)
 
-            # update plots
             plot_training_curves(self.log_csv_path, self.plots_dir)
-
             print(f"[epoch {epoch:03d}] train_loss={tr['loss']:.4f} val_loss={va['loss']:.4f} time={dt:.1f}s")
 
 
-# -------------------------
-# Main
-# -------------------------
 def main():
     parser = build_argparser()
     args = parser.parse_args()
@@ -491,7 +484,7 @@ def main():
     print(f"Dataset size: {len(full_ds)}")
     print(f"Train batches: {len(train_loader)} | Val batches: {len(val_loader)}")
 
-    trainer = Phase1Trainer(cfg, device)
+    trainer = PhaseATrainer(cfg, device)
     trainer.fit(train_loader, val_loader)
 
 

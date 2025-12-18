@@ -1,23 +1,29 @@
 
 # =============================================
-# File: model_phase1.py
-# SwinUNet Dual View SSL with Plane Conditioning (Phase 1)
-# - Dual view: view2 is flip_lr(x) with SAME pixel_mask (mask not flipped)
-# - Split weights up to Stage1 (PatchEmbed, Stage0, Merge0, Stage1 are separate)
-# - Shared trunk from Stage2 (Merge1, Stage2, Merge2, Stage3 shared)
-# - Decoder exists ONLY for view1 (masked reconstruction head)
+# File: model.py
+# SwinUNet Dual View SSL with Plane Conditioning (Phase 1 + Phase A)
+#
+# Phase 1 baseline:
+# - Dual view: view1 masked, view2 flip_lr(x) masked with SAME mask (mask NOT flipped)
+# - Split weights up to Stage1 (PatchEmbed, Stage0, Merge0, Stage1 separate per view)
+# - Shared trunk from Stage2 (Merge1, PlaneCondition, Stage2, Merge2, Stage3 shared)
 # - Contrastive head uses pooled bottleneck AFTER shared trunk (InfoNCE outside)
 #
-# Notes:
-# - Phase 1: no SACA / no SAH implemented here.
-# - Uses only torch + einops (no timm dependency).
-# - Tensors are channel-last inside transformer blocks: [B, H, W, C]
+# Phase A extension:
+# - Dual Reconstruction Heads (Original + Flip)
+#   * Decoder trunk is shared (view1 only) producing a feature map at full resolution.
+#   * Two lightweight reconstruction heads run in parallel on the SAME decoder feature map:
+#       - recon_head_orig -> logits for original image
+#       - recon_head_flip -> logits for flipped image
+#
+# Outputs:
+#   recon_raw_orig: [B,1,H,W] logits
+#   recon_raw_flip: [B,1,H,W] logits
+#   z1, z2: [B,D] embeddings (contrastive) unchanged
 # =============================================
 from __future__ import annotations
 
-import math
-from dataclasses import dataclass
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, Dict
 
 import torch
 import torch.nn as nn
@@ -28,12 +34,6 @@ from einops import rearrange
 # -------------------------
 # Utility
 # -------------------------
-def _to_2tuple(x):
-    if isinstance(x, (tuple, list)):
-        return (int(x[0]), int(x[1]))
-    return (int(x), int(x))
-
-
 def flip_lr(x: torch.Tensor) -> torch.Tensor:
     """Left-right flip on width dimension for NCHW tensor."""
     return torch.flip(x, dims=[-1])
@@ -47,8 +47,12 @@ def nhwc_to_nchw(x: torch.Tensor) -> torch.Tensor:
     return x.permute(0, 3, 1, 2).contiguous()
 
 
+def count_parameters(module: nn.Module) -> int:
+    return sum(p.numel() for p in module.parameters() if p.requires_grad)
+
+
 # -------------------------
-# Patch operations
+# Patch ops
 # -------------------------
 class PatchEmbed(nn.Module):
     """Conv patch embedding: NCHW -> NHWC tokens."""
@@ -58,10 +62,8 @@ class PatchEmbed(nn.Module):
         self.proj = nn.Conv2d(in_ch, embed_dim, kernel_size=patch_size, stride=patch_size)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: [B,C,H,W] -> [B, H/P, W/P, C0]
         x = self.proj(x)
-        x = nchw_to_nhwc(x)
-        return x
+        return nchw_to_nhwc(x)
 
 
 class PatchMerging(nn.Module):
@@ -73,20 +75,20 @@ class PatchMerging(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, H, W, C = x.shape
-        # pad if odd
         if (H % 2) == 1:
             x = F.pad(x, (0, 0, 0, 0, 0, 1))
             H += 1
         if (W % 2) == 1:
             x = F.pad(x, (0, 0, 0, 1, 0, 0))
             W += 1
-        x0 = x[:, 0::2, 0::2, :]  # [B,H/2,W/2,C]
+
+        x0 = x[:, 0::2, 0::2, :]
         x1 = x[:, 1::2, 0::2, :]
         x2 = x[:, 0::2, 1::2, :]
         x3 = x[:, 1::2, 1::2, :]
-        x = torch.cat([x0, x1, x2, x3], dim=-1)  # [B,H/2,W/2,4C]
+        x = torch.cat([x0, x1, x2, x3], dim=-1)
         x = self.norm(x)
-        x = self.reduction(x)  # [B,H/2,W/2,2C]
+        x = self.reduction(x)
         return x
 
 
@@ -100,14 +102,14 @@ class PatchExpand(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, H, W, C = x.shape
-        x = self.expand(x)  # [B,H,W,2C]
+        x = self.expand(x)
         x = rearrange(x, "b h w (p1 p2 c) -> b (h p1) (w p2) c", p1=2, p2=2, c=C // 2)
         x = self.norm(x)
         return x
 
 
 class FinalPatchExpand(nn.Module):
-    """Upsample by patch_size: [B,H/P,W/P,C] -> [B,H,W,C_out]"""
+    """Upsample by patch_size: [B,H/P,W/P,C] -> [B,H,W,out_dim] (channel-last)"""
     def __init__(self, dim: int, patch_size: int, out_dim: int):
         super().__init__()
         self.patch_size = patch_size
@@ -117,27 +119,29 @@ class FinalPatchExpand(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, H, W, C = x.shape
         p = self.patch_size
-        x = self.proj(x)  # [B,H,W,p*p*out_dim]
+        x = self.proj(x)
         x = rearrange(x, "b h w (p1 p2 c) -> b (h p1) (w p2) c", p1=p, p2=p, c=self.out_dim)
         return x
 
 
 # -------------------------
-# Window attention (Swin)
+# Swin blocks (minimal)
 # -------------------------
 def window_partition(x: torch.Tensor, window_size: int) -> torch.Tensor:
-    """[B,H,W,C] -> [num_windows*B, window, window, C]"""
     B, H, W, C = x.shape
-    x = rearrange(x, "b (nh ws1) (nw ws2) c -> (b nh nw) ws1 ws2 c",
-                  ws1=window_size, ws2=window_size)
-    return x
+    return rearrange(x, "b (nh ws1) (nw ws2) c -> (b nh nw) ws1 ws2 c", ws1=window_size, ws2=window_size)
 
 
 def window_reverse(windows: torch.Tensor, window_size: int, H: int, W: int, B: int) -> torch.Tensor:
-    """[num_windows*B, ws, ws, C] -> [B,H,W,C]"""
-    x = rearrange(windows, "(b nh nw) ws1 ws2 c -> b (nh ws1) (nw ws2) c",
-                  b=B, ws1=window_size, ws2=window_size, nh=H // window_size, nw=W // window_size)
-    return x
+    return rearrange(
+        windows,
+        "(b nh nw) ws1 ws2 c -> b (nh ws1) (nw ws2) c",
+        b=B,
+        ws1=window_size,
+        ws2=window_size,
+        nh=H // window_size,
+        nw=W // window_size,
+    )
 
 
 class Mlp(nn.Module):
@@ -150,11 +154,8 @@ class Mlp(nn.Module):
         self.drop = nn.Dropout(drop)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.fc1(x)
-        x = self.act(x)
-        x = self.drop(x)
-        x = self.fc2(x)
-        x = self.drop(x)
+        x = self.drop(self.act(self.fc1(x)))
+        x = self.drop(self.fc2(x))
         return x
 
 
@@ -172,62 +173,52 @@ class WindowAttention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-        # relative position bias table
         ws = window_size
-        self.relative_position_bias_table = nn.Parameter(
-            torch.zeros((2 * ws - 1) * (2 * ws - 1), num_heads)
-        )
-        # relative position index
+        self.relative_position_bias_table = nn.Parameter(torch.zeros((2 * ws - 1) * (2 * ws - 1), num_heads))
+
         coords_h = torch.arange(ws)
         coords_w = torch.arange(ws)
-        coords = torch.stack(torch.meshgrid(coords_h, coords_w, indexing="ij"))  # [2, ws, ws]
-        coords_flatten = torch.flatten(coords, 1)  # [2, ws*ws]
-        rel_coords = coords_flatten[:, :, None] - coords_flatten[:, None, :]  # [2, ws*ws, ws*ws]
-        rel_coords = rel_coords.permute(1, 2, 0).contiguous()  # [ws*ws, ws*ws, 2]
+        coords = torch.stack(torch.meshgrid(coords_h, coords_w, indexing="ij"))
+        coords_flatten = torch.flatten(coords, 1)
+        rel_coords = coords_flatten[:, :, None] - coords_flatten[:, None, :]
+        rel_coords = rel_coords.permute(1, 2, 0).contiguous()
         rel_coords[:, :, 0] += ws - 1
         rel_coords[:, :, 1] += ws - 1
         rel_coords[:, :, 0] *= 2 * ws - 1
-        rel_pos_index = rel_coords.sum(-1)  # [ws*ws, ws*ws]
+        rel_pos_index = rel_coords.sum(-1)
         self.register_buffer("relative_position_index", rel_pos_index)
 
         nn.init.trunc_normal_(self.relative_position_bias_table, std=0.02)
 
     def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        # x: [nW*B, N, C], N=ws*ws
         Bn, N, C = x.shape
         qkv = self.qkv(x).reshape(Bn, N, 3, self.num_heads, C // self.num_heads)
-        qkv = qkv.permute(2, 0, 3, 1, 4)  # 3, Bn, heads, N, head_dim
+        qkv = qkv.permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
 
         q = q * self.scale
-        attn = (q @ k.transpose(-2, -1))  # [Bn, heads, N, N]
+        attn = q @ k.transpose(-2, -1)
 
-        # add relative bias
         rel_bias = self.relative_position_bias_table[self.relative_position_index.view(-1)].view(N, N, -1)
-        rel_bias = rel_bias.permute(2, 0, 1).contiguous()  # heads, N, N
+        rel_bias = rel_bias.permute(2, 0, 1).contiguous()
         attn = attn + rel_bias.unsqueeze(0)
 
         if attn_mask is not None:
-            # attn_mask: [nW, N, N]
             nW = attn_mask.size(0)
             attn = attn.view(Bn // nW, nW, self.num_heads, N, N)
             attn = attn + attn_mask.unsqueeze(1).unsqueeze(0)
             attn = attn.view(-1, self.num_heads, N, N)
 
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
-
+        attn = self.attn_drop(attn.softmax(dim=-1))
         out = (attn @ v).transpose(1, 2).reshape(Bn, N, C)
-        out = self.proj(out)
-        out = self.proj_drop(out)
+        out = self.proj_drop(self.proj(out))
         return out
 
 
 def compute_attn_mask(H: int, W: int, window_size: int, shift_size: int, device: torch.device) -> Optional[torch.Tensor]:
-    """Compute attention mask for shifted windows."""
     if shift_size == 0:
         return None
-    img_mask = torch.zeros((1, H, W, 1), device=device)  # 1 H W 1
+    img_mask = torch.zeros((1, H, W, 1), device=device)
     cnt = 0
     h_slices = (slice(0, -window_size), slice(-window_size, -shift_size), slice(-shift_size, None))
     w_slices = (slice(0, -window_size), slice(-window_size, -shift_size), slice(-shift_size, None))
@@ -235,35 +226,29 @@ def compute_attn_mask(H: int, W: int, window_size: int, shift_size: int, device:
         for w in w_slices:
             img_mask[:, h, w, :] = cnt
             cnt += 1
-    mask_windows = window_partition(img_mask, window_size)  # nW, ws, ws, 1
-    mask_windows = mask_windows.view(-1, window_size * window_size)
+    mask_windows = window_partition(img_mask, window_size).view(-1, window_size * window_size)
     attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
     attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(attn_mask == 0, float(0.0))
     return attn_mask
 
 
 class SwinTransformerBlock(nn.Module):
-    def __init__(self, dim: int, num_heads: int, window_size: int = 7, shift_size: int = 0,
-                 mlp_ratio: float = 4.0, qkv_bias: bool = True, drop: float = 0.0, attn_drop: float = 0.0):
+    def __init__(self, dim: int, num_heads: int, window_size: int = 7, shift_size: int = 0, mlp_ratio: float = 4.0):
         super().__init__()
         self.dim = dim
         self.window_size = window_size
         self.shift_size = shift_size
 
         self.norm1 = nn.LayerNorm(dim)
-        self.attn = WindowAttention(dim, window_size, num_heads, qkv_bias=qkv_bias, attn_drop=attn_drop, proj_drop=drop)
-        self.drop_path = nn.Identity()
-
+        self.attn = WindowAttention(dim, window_size, num_heads)
         self.norm2 = nn.LayerNorm(dim)
-        self.mlp = Mlp(dim, mlp_ratio=mlp_ratio, drop=drop)
+        self.mlp = Mlp(dim, mlp_ratio=mlp_ratio)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: [B,H,W,C]
         B, H, W, C = x.shape
         ws = self.window_size
         ss = self.shift_size
 
-        # pad to window
         pad_b = (ws - H % ws) % ws
         pad_r = (ws - W % ws) % ws
         if pad_b or pad_r:
@@ -274,13 +259,12 @@ class SwinTransformerBlock(nn.Module):
 
         shortcut = x
         x = self.norm1(x)
+
         if ss > 0:
             x = torch.roll(x, shifts=(-ss, -ss), dims=(1, 2))
 
-        x_windows = window_partition(x, ws)  # [nW*B, ws, ws, C]
-        x_windows = x_windows.view(-1, ws * ws, C)
-        attn_windows = self.attn(x_windows, attn_mask=attn_mask)
-        attn_windows = attn_windows.view(-1, ws, ws, C)
+        x_windows = window_partition(x, ws).view(-1, ws * ws, C)
+        attn_windows = self.attn(x_windows, attn_mask=attn_mask).view(-1, ws, ws, C)
         x = window_reverse(attn_windows, ws, Hp, Wp, B)
 
         if ss > 0:
@@ -289,7 +273,6 @@ class SwinTransformerBlock(nn.Module):
         x = shortcut + x
         x = x + self.mlp(self.norm2(x))
 
-        # remove padding
         x = x[:, :H, :W, :].contiguous()
         return x
 
@@ -297,11 +280,15 @@ class SwinTransformerBlock(nn.Module):
 class BasicLayer(nn.Module):
     def __init__(self, dim: int, depth: int, num_heads: int, window_size: int):
         super().__init__()
-        blocks = []
-        for i in range(depth):
-            shift = 0 if (i % 2 == 0) else window_size // 2
-            blocks.append(SwinTransformerBlock(dim, num_heads, window_size=window_size, shift_size=shift))
-        self.blocks = nn.ModuleList(blocks)
+        self.blocks = nn.ModuleList([
+            SwinTransformerBlock(
+                dim=dim,
+                num_heads=num_heads,
+                window_size=window_size,
+                shift_size=(0 if (i % 2 == 0) else window_size // 2),
+            )
+            for i in range(depth)
+        ])
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         for blk in self.blocks:
@@ -313,12 +300,6 @@ class BasicLayer(nn.Module):
 # Plane conditioning
 # -------------------------
 class PlaneCondition(nn.Module):
-    """
-    plane_one_hot: [B,2] -> p: [B,C2]
-    Injection at Stage2 entry:
-      - add:  f = f + broadcast(p)
-      - film: f = f * gamma(p) + beta(p)
-    """
     def __init__(self, in_dim: int, feat_dim: int, method: str = "film", hidden: int = 128):
         super().__init__()
         self.method = method.lower().strip()
@@ -339,53 +320,40 @@ class PlaneCondition(nn.Module):
             )
 
     def forward(self, f: torch.Tensor, plane_one_hot: torch.Tensor) -> torch.Tensor:
-        # f: [B,H,W,C]
         B, H, W, C = f.shape
-        p = self.mlp(plane_one_hot)  # [B, C] or [B,2C]
+        p = self.mlp(plane_one_hot)
         if self.method == "add":
-            p = p.view(B, 1, 1, C)
-            return f + p
+            return f + p.view(B, 1, 1, C)
         gamma, beta = p.chunk(2, dim=-1)
-        gamma = gamma.view(B, 1, 1, C)
-        beta = beta.view(B, 1, 1, C)
-        return f * (1.0 + gamma) + beta
+        return f * (1.0 + gamma.view(B, 1, 1, C)) + beta.view(B, 1, 1, C)
 
 
 # -------------------------
-# Decoder blocks
+# Decoder up blocks
 # -------------------------
 class SwinUpBlock(nn.Module):
-    """
-    Upsample by 2x, concat skip, linear proj, then Swin blocks.
-    """
     def __init__(self, in_dim: int, skip_dim: int, out_dim: int, depth: int, num_heads: int, window_size: int):
         super().__init__()
-        self.up = PatchExpand(in_dim)  # -> out_dim (since out_dim = in_dim//2 in typical)
+        self.up = PatchExpand(in_dim)
         self.proj = nn.Linear((in_dim // 2) + skip_dim, out_dim)
         self.norm = nn.LayerNorm(out_dim)
         self.layer = BasicLayer(out_dim, depth=depth, num_heads=num_heads, window_size=window_size)
 
     def forward(self, x: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
         x = self.up(x)
-        # pad if mismatch
+        # align
         if x.shape[1] != skip.shape[1] or x.shape[2] != skip.shape[2]:
             dh = skip.shape[1] - x.shape[1]
             dw = skip.shape[2] - x.shape[2]
             x = F.pad(x, (0, 0, 0, max(dw, 0), 0, max(dh, 0)))
             x = x[:, :skip.shape[1], :skip.shape[2], :]
-
         x = torch.cat([x, skip], dim=-1)
-        x = self.proj(x)
-        x = self.norm(x)
+        x = self.norm(self.proj(x))
         x = self.layer(x)
         return x
 
 
-# -------------------------
-# Projection head for contrastive
-# -------------------------
 class ProjectionHead(nn.Module):
-    """2-layer MLP projection head -> normalized output."""
     def __init__(self, in_dim: int, proj_dim: int):
         super().__init__()
         self.net = nn.Sequential(
@@ -397,20 +365,13 @@ class ProjectionHead(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.net(x)
-        x = F.normalize(x, dim=-1)
-        return x
+        return F.normalize(x, dim=-1)
 
 
 # -------------------------
 # Main model
 # -------------------------
 class SwinUNetDualViewSSLPhase1(nn.Module):
-    """
-    Phase 1 model:
-      - dual view forward (masked + flipped-masked)
-      - reconstruction from view1 only
-      - contrastive embeddings from bottlenecks b1, b2 after shared trunk
-    """
     def __init__(
         self,
         in_ch: int = 1,
@@ -431,15 +392,12 @@ class SwinUNetDualViewSSLPhase1(nn.Module):
         self.num_heads = num_heads
         self.window_size = window_size
 
-        # channels: C0, C1=2C0, C2=4C0, C3=8C0
         C0 = embed_dim
         C1 = 2 * C0
         C2 = 2 * C1
         C3 = 2 * C2
 
-        # -----------------
-        # Early encoders (separate weights) up to Stage1
-        # -----------------
+        # Early encoders (separate)
         self.patch_embed_1 = PatchEmbed(in_ch=in_ch, embed_dim=C0, patch_size=patch_size)
         self.stage0_1 = BasicLayer(dim=C0, depth=depths[0], num_heads=num_heads[0], window_size=window_size)
         self.merge0_1 = PatchMerging(dim=C0)
@@ -450,82 +408,79 @@ class SwinUNetDualViewSSLPhase1(nn.Module):
         self.merge0_2 = PatchMerging(dim=C0)
         self.stage1_2 = BasicLayer(dim=C1, depth=depths[1], num_heads=num_heads[1], window_size=window_size)
 
-        # -----------------
-        # Shared trunk from Stage2
-        # -----------------
+        # Shared trunk (Stage2+)
         self.merge1 = PatchMerging(dim=C1)
         self.plane_cond = PlaneCondition(in_dim=2, feat_dim=C2, method=plane_inject_method)
         self.stage2 = BasicLayer(dim=C2, depth=depths[2], num_heads=num_heads[2], window_size=window_size)
-
         self.merge2 = PatchMerging(dim=C2)
         self.stage3 = BasicLayer(dim=C3, depth=depths[3], num_heads=num_heads[3], window_size=window_size)
 
-        # -----------------
-        # Contrastive head (shared)
-        # -----------------
+        # Contrastive head (unchanged)
         self.proj = ProjectionHead(in_dim=C3, proj_dim=proj_dim)
 
-        # -----------------
-        # Decoder (view1 only)
-        # Using mirrored depths/heads for up blocks (lightweight)
-        # -----------------
-        # Up from C3 -> C2, C2 -> C1, C1 -> C0
+        # Decoder trunk (view1 only), produces feat_full (shared for both recon heads)
         self.up2 = SwinUpBlock(in_dim=C3, skip_dim=C2, out_dim=C2, depth=2, num_heads=num_heads[2], window_size=window_size)
         self.up1 = SwinUpBlock(in_dim=C2, skip_dim=C1, out_dim=C1, depth=2, num_heads=num_heads[1], window_size=window_size)
         self.up0 = SwinUpBlock(in_dim=C1, skip_dim=C0, out_dim=C0, depth=2, num_heads=num_heads[0], window_size=window_size)
 
         self.final_up = FinalPatchExpand(dim=C0, patch_size=patch_size, out_dim=32)
-        self.recon_head = nn.Sequential(
+
+        # Phase A: two parallel lightweight reconstruction heads
+        self.recon_head_orig = nn.Sequential(
+            nn.Conv2d(32, 16, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(16, 1, kernel_size=1),
+        )
+        self.recon_head_flip = nn.Sequential(
             nn.Conv2d(32, 16, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
             nn.Conv2d(16, 1, kernel_size=1),
         )
 
-    # --------
-    # Encoder pieces
-    # --------
-    def _early_encode_view1(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        f0 = self.patch_embed_1(x)          # [B,H/P,W/P,C0]
-        s0 = self.stage0_1(f0)              # skip0
-        f1 = self.merge0_1(s0)              # [B,H/2P,W/2P,C1]
-        s1 = self.stage1_1(f1)              # skip1
-        return s0, s1, s1
-
-    def _early_encode_view2(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        f0 = self.patch_embed_2(x)
-        s0 = self.stage0_2(f0)
-        f1 = self.merge0_2(s0)
-        s1 = self.stage1_2(f1)
-        return s0, s1
-
-    def _shared_trunk(self, s1: torch.Tensor, plane_one_hot: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        u2 = self.merge1(s1)                # [B,H/4P,W/4P,C2]
+    def _shared_trunk(self, s1: torch.Tensor, plane_one_hot: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        u2 = self.merge1(s1)
         u2 = self.plane_cond(u2, plane_one_hot)
-        s2 = self.stage2(u2)                # skip2
-        u3 = self.merge2(s2)                # [B,H/8P,W/8P,C3]
-        b = self.stage3(u3)                 # bottleneck
-        return s2, b, s2
+        s2 = self.stage2(u2)
+        u3 = self.merge2(s2)
+        b = self.stage3(u3)
+        return s2, b
 
-    # --------
-    # Public APIs
-    # --------
-    def encode_bottleneck(self, x_masked: torch.Tensor, plane_one_hot: torch.Tensor, view: int = 1) -> torch.Tensor:
-        """
-        Encode one view to bottleneck b: [B,H/8P,W/8P,C3]
-        x_masked: NCHW
-        """
+    @torch.no_grad()
+    def encode_bottleneck(self, x: torch.Tensor, plane_one_hot: torch.Tensor, view: int = 1) -> torch.Tensor:
         if view == 1:
-            f0 = self.patch_embed_1(x_masked)
+            f0 = self.patch_embed_1(x)
             s0 = self.stage0_1(f0)
             f1 = self.merge0_1(s0)
             s1 = self.stage1_1(f1)
         else:
-            f0 = self.patch_embed_2(x_masked)
+            f0 = self.patch_embed_2(x)
             s0 = self.stage0_2(f0)
             f1 = self.merge0_2(s0)
             s1 = self.stage1_2(f1)
-        _, b, _ = self._shared_trunk(s1, plane_one_hot)
+        _, b = self._shared_trunk(s1, plane_one_hot)
         return b
+
+    def param_count_breakdown(self) -> Dict[str, int]:
+        """Return parameter counts for logging."""
+        encoder_modules = [
+            self.patch_embed_1, self.stage0_1, self.merge0_1, self.stage1_1,
+            self.patch_embed_2, self.stage0_2, self.merge0_2, self.stage1_2,
+            self.merge1, self.plane_cond, self.stage2, self.merge2, self.stage3,
+            self.proj,
+        ]
+        decoder_trunk_modules = [self.up2, self.up1, self.up0, self.final_up]
+        head_modules = [self.recon_head_orig, self.recon_head_flip]
+
+        enc = sum(count_parameters(m) for m in encoder_modules)
+        dec = sum(count_parameters(m) for m in decoder_trunk_modules)
+        heads = sum(count_parameters(m) for m in head_modules)
+        total = count_parameters(self)
+        return {
+            "total": total,
+            "encoder": enc,
+            "decoder_trunk": dec,
+            "recon_heads": heads,
+        }
 
     def forward(
         self,
@@ -533,65 +488,55 @@ class SwinUNetDualViewSSLPhase1(nn.Module):
         pixel_mask: torch.Tensor,
         plane_one_hot: torch.Tensor,
         return_embeddings: bool = True,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Inputs:
-          x: [B,1,H,W]
-          pixel_mask: [B,1,H,W], 1 = masked
-          plane_one_hot: [B,2]
         Returns:
-          recon_view1: [B,1,H,W]
-          z1: [B,D] (proj)
-          z2: [B,D] (proj)
+          recon_raw_orig: [B,1,H,W] logits
+          recon_raw_flip: [B,1,H,W] logits
+          z1, z2: [B,D] embeddings (if return_embeddings else empty)
         """
-        # construct views using SAME mask; mask is NOT flipped
+        # dual views for contrastive (unchanged)
         x1_masked = x * (1.0 - pixel_mask)
-        x2_masked = flip_lr(x) * (1.0 - pixel_mask)
+        x2_masked = flip_lr(x) * (1.0 - pixel_mask)  # mask NOT flipped
 
-        # -----------------
-        # View 1 encode (save skips for decoder)
-        # -----------------
+        # view1 early encode
         f0_1 = self.patch_embed_1(x1_masked)
-        s0_1 = self.stage0_1(f0_1)           # skip0_1
+        s0_1 = self.stage0_1(f0_1)
         f1_1 = self.merge0_1(s0_1)
-        s1_1 = self.stage1_1(f1_1)           # skip1_1
+        s1_1 = self.stage1_1(f1_1)
 
-        s2_1, b1, _ = self._shared_trunk(s1_1, plane_one_hot)  # skip2_1, bottleneck
+        s2_1, b1 = self._shared_trunk(s1_1, plane_one_hot)
 
-        # -----------------
-        # View 2 encode (shared trunk)
-        # -----------------
+        # view2 early encode
         f0_2 = self.patch_embed_2(x2_masked)
         s0_2 = self.stage0_2(f0_2)
         f1_2 = self.merge0_2(s0_2)
         s1_2 = self.stage1_2(f1_2)
+        _, b2 = self._shared_trunk(s1_2, plane_one_hot)
 
-        _, b2, _ = self._shared_trunk(s1_2, plane_one_hot)
-
-        # -----------------
-        # Contrastive embeddings (after shared bottleneck)
-        # -----------------
+        # contrastive embeddings
         if return_embeddings:
-            z1 = b1.mean(dim=(1, 2))  # GAP over H,W
-            z2 = b2.mean(dim=(1, 2))
-            z1 = self.proj(z1)
-            z2 = self.proj(z2)
+            z1 = self.proj(b1.mean(dim=(1, 2)))
+            z2 = self.proj(b2.mean(dim=(1, 2)))
         else:
             z1 = torch.empty((x.size(0), 0), device=x.device)
             z2 = torch.empty((x.size(0), 0), device=x.device)
 
-        # -----------------
-        # Decoder (view1 only) to reconstruct full resolution
-        # -----------------
+        # decoder trunk (view1 only) -> shared feature map
         d2 = self.up2(b1, s2_1)
         d1 = self.up1(d2, s1_1)
         d0 = self.up0(d1, s0_1)
+        feat_full = self.final_up(d0)                 # [B,H,W,32]
+        feat_full_nchw = nhwc_to_nchw(feat_full)      # [B,32,H,W]
 
-        feat_full = self.final_up(d0)  # [B,H,W,32]
-        recon = self.recon_head(nhwc_to_nchw(feat_full))
-        return recon, z1, z2
+        # Phase A: two parallel heads (logits)
+        recon_raw_orig = self.recon_head_orig(feat_full_nchw)
+        recon_raw_flip = self.recon_head_flip(feat_full_nchw)
+
+        return recon_raw_orig, recon_raw_flip, z1, z2
 
 
 __all__ = [
     "SwinUNetDualViewSSLPhase1",
+    "flip_lr",
 ]
