@@ -512,9 +512,11 @@ class PhaseATrainer:
             plane = plane.to(self.device, non_blocking=True)
 
         pixel_mask = sample_masks_anti_mirror(x.size(0), self.cfg.mask, self.device)
-        recon_raw_orig, _, _, _ = self.model(x, pixel_mask=pixel_mask, plane_one_hot=plane, return_embeddings=False)
+        recon_raw_orig, recon_raw_flip, _, _ = self.model(x, pixel_mask=pixel_mask, plane_one_hot=plane, return_embeddings=False)
         recon_img_orig = torch.sigmoid(recon_raw_orig.clamp(-10, 10))
+        recon_img_flip = torch.sigmoid(recon_raw_orig.clamp(-10, 10))
         self._visualize_recon(x, pixel_mask, recon_img_orig, epoch, tag)
+        self._visualize_recon(x, pixel_mask, recon_img_flip, epoch, tag+"_flip")
 
     def maybe_tsne(self, loader, epoch: int):
         if not self.cfg.logging.enable_tsne:

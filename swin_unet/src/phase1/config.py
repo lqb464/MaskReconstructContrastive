@@ -275,7 +275,7 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--epochs", type=int, default=200)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--weight-decay", type=float, default=1e-4)
-    p.add_argument("--lambda-recon", type=float, default=1.0)
+    p.add_argument("--lambda-recon", type=float, default=0.1)
     p.add_argument("--lambda-contrast", type=float, default=1.0)
     p.add_argument("--temperature", type=float, default=0.2)
     p.add_argument("--seed", type=int, default=42)
