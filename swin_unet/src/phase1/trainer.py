@@ -326,18 +326,18 @@ class PhaseATrainer:
                 if recon_loss_type == "weighted_bce_logits":
                     if self.cfg.training.enable_masked_loss:
                         loss_recon_flip = masked_bce_logits_weighted(
-                            recon_raw_flip, x_flip, pixel_mask, fg_eps=fg_eps, fg_weight=fg_weight
+                            recon_raw_flip, flip_lr(x_flip), pixel_mask, fg_eps=fg_eps, fg_weight=fg_weight
                         )
                     else:
                         loss_recon_flip = mixed_bce_logits_weighted(
-                            recon_raw_flip, x_flip, pixel_mask, fg_eps=fg_eps, fg_weight=fg_weight
+                            recon_raw_flip, flip_lr(x_flip), pixel_mask, fg_eps=fg_eps, fg_weight=fg_weight
                         )
                 else:
                     recon_img_flip = torch.sigmoid(recon_raw_flip.clamp(-10, 10))
                     if self.cfg.training.enable_masked_loss:
-                        loss_recon_flip = masked_l1_loss(recon_img_flip, x_flip, pixel_mask)
+                        loss_recon_flip = masked_l1_loss(recon_img_flip, flip_lr(x_flip), pixel_mask)
                     else:
-                        loss_recon_flip = mixed_l1_loss(recon_img_flip, x_flip, pixel_mask)
+                        loss_recon_flip = mixed_l1_loss(recon_img_flip, flip_lr(x_flip), pixel_mask)
 
                 loss_recon_total = loss_recon_orig + loss_recon_flip
 

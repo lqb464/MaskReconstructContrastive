@@ -10,11 +10,10 @@
 # - Contrastive head uses pooled bottleneck AFTER shared trunk (InfoNCE outside)
 #
 # Phase A extension:
-# - Dual Reconstruction Heads (Original + Flip)
-#   * Decoder trunk is shared (view1 only) producing a feature map at full resolution.
-#   * Two lightweight reconstruction heads run in parallel on the SAME decoder feature map:
-#       - recon_head_orig -> logits for original image
-#       - recon_head_flip -> logits for flipped image
+# - Dual Decoder Reconstruction (Original + Flip)
+#   * Decoder weights are shared, but decoding is run separately for each view using its own skips.
+#   * A single lightweight reconstruction head is applied to each decoded feature map:
+#       - recon_head -> shared logits head (applied to each decoded view)
 #
 # Outputs:
 #   recon_raw_orig: [B,1,H,W] logits
@@ -418,20 +417,15 @@ class SwinUNetDualViewSSLPhase1(nn.Module):
         # Contrastive head (unchanged)
         self.proj = ProjectionHead(in_dim=C3, proj_dim=proj_dim)
 
-        # Decoder trunk (view1 only), produces feat_full (shared for both recon heads)
+        # Decoder (shared weights) used for BOTH views
         self.up2 = SwinUpBlock(in_dim=C3, skip_dim=C2, out_dim=C2, depth=2, num_heads=num_heads[2], window_size=window_size)
         self.up1 = SwinUpBlock(in_dim=C2, skip_dim=C1, out_dim=C1, depth=2, num_heads=num_heads[1], window_size=window_size)
         self.up0 = SwinUpBlock(in_dim=C1, skip_dim=C0, out_dim=C0, depth=2, num_heads=num_heads[0], window_size=window_size)
 
         self.final_up = FinalPatchExpand(dim=C0, patch_size=patch_size, out_dim=32)
 
-        # Phase A: two parallel lightweight reconstruction heads
-        self.recon_head_orig = nn.Sequential(
-            nn.Conv2d(32, 16, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(16, 1, kernel_size=1),
-        )
-        self.recon_head_flip = nn.Sequential(
+        # Shared reconstruction head (applied to both decoded feature maps)
+        self.recon_head = nn.Sequential(
             nn.Conv2d(32, 16, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
             nn.Conv2d(16, 1, kernel_size=1),
@@ -469,7 +463,7 @@ class SwinUNetDualViewSSLPhase1(nn.Module):
             self.proj,
         ]
         decoder_trunk_modules = [self.up2, self.up1, self.up0, self.final_up]
-        head_modules = [self.recon_head_orig, self.recon_head_flip]
+        head_modules = [self.recon_head]
 
         enc = sum(count_parameters(m) for m in encoder_modules)
         dec = sum(count_parameters(m) for m in decoder_trunk_modules)
@@ -512,7 +506,7 @@ class SwinUNetDualViewSSLPhase1(nn.Module):
         s0_2 = self.stage0_2(f0_2)
         f1_2 = self.merge0_2(s0_2)
         s1_2 = self.stage1_2(f1_2)
-        _, b2 = self._shared_trunk(s1_2, plane_one_hot)
+        s2_2, b2 = self._shared_trunk(s1_2, plane_one_hot)
 
         # contrastive embeddings
         if return_embeddings:
@@ -522,16 +516,25 @@ class SwinUNetDualViewSSLPhase1(nn.Module):
             z1 = torch.empty((x.size(0), 0), device=x.device)
             z2 = torch.empty((x.size(0), 0), device=x.device)
 
-        # decoder trunk (view1 only) -> shared feature map
-        d2 = self.up2(b1, s2_1)
-        d1 = self.up1(d2, s1_1)
-        d0 = self.up0(d1, s0_1)
-        feat_full = self.final_up(d0)                 # [B,H,W,32]
-        feat_full_nchw = nhwc_to_nchw(feat_full)      # [B,32,H,W]
+        # ====================
+        # Dual decoder (shared weights)
+        # ====================
 
-        # Phase A: two parallel heads (logits)
-        recon_raw_orig = self.recon_head_orig(feat_full_nchw)
-        recon_raw_flip = self.recon_head_flip(feat_full_nchw)
+        # ---- view1 decode ----
+        d2_1 = self.up2(b1, s2_1)
+        d1_1 = self.up1(d2_1, s1_1)
+        d0_1 = self.up0(d1_1, s0_1)
+        feat1 = self.final_up(d0_1)            # [B,H,W,32]
+        feat1_nchw = nhwc_to_nchw(feat1)       # [B,32,H,W]
+        recon_raw_orig = self.recon_head(feat1_nchw)
+
+        # ---- view2 decode ----
+        d2_2 = self.up2(b2, s2_2)
+        d1_2 = self.up1(d2_2, s1_2)
+        d0_2 = self.up0(d1_2, s0_2)
+        feat2 = self.final_up(d0_2)            # [B,H,W,32]
+        feat2_nchw = nhwc_to_nchw(feat2)       # [B,32,H,W]
+        recon_raw_flip = self.recon_head(feat2_nchw)
 
         return recon_raw_orig, recon_raw_flip, z1, z2
 
