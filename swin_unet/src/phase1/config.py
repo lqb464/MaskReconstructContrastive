@@ -45,7 +45,7 @@ class ModelConfig:
     patch_size: int = 16
     embed_dim: int = 96
     enc_depths: tuple[int, int, int, int] = (2, 2, 6, 2)
-    dec_depth: tuple[int, int, int] = (6, 2, 2)
+    s: tuple[int, int, int] = (6, 2, 2)
     num_heads: tuple[int, int, int, int] = (3, 6, 12, 24)
     window_size: int = 7
 
