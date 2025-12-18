@@ -294,7 +294,6 @@ class PhaseATrainer:
         self.model.train()
         meter = MetricsAccumulator()
 
-        # Phase B accumulators (epoch means)
         loss_recon_orig_list = []
         loss_recon_flip_list = []
         loss_recon_total_list = []
@@ -307,8 +306,10 @@ class PhaseATrainer:
         vars_min = []
 
         pbar = tqdm(loader, desc=f"train {epoch}", leave=False)
+
         for step, batch in enumerate(pbar):
             x = batch["input"].to(self.device, non_blocking=True)
+
             plane = batch.get("plane_one_hot", None)
             if plane is None:
                 plane = torch.tensor([0.0, 1.0], device=self.device).view(1, 2).repeat(x.size(0), 1)
@@ -319,83 +320,87 @@ class PhaseATrainer:
 
             self.opt.zero_grad(set_to_none=True)
 
-            with autocast(device_type=self.device.type, enabled=(self.cfg.training.amp and self.device.type == "cuda")):
+            with autocast(
+                device_type=self.device.type,
+                enabled=(self.cfg.training.amp and self.device.type == "cuda"),
+            ):
                 recon_raw_orig, recon_raw_flip, z1, z2 = self.model(
-                    x, pixel_mask=pixel_mask, plane_one_hot=plane, return_embeddings=True
+                    x,
+                    pixel_mask=pixel_mask,
+                    plane_one_hot=plane,
+                    return_embeddings=True,
                 )
 
-                # targets
                 x_flip = flip_lr(x)
 
                 recon_loss_type = getattr(self.cfg.training, "recon_loss", "weighted_bce_logits")
                 fg_eps = float(getattr(self.cfg.training, "fg_eps", 0.02))
                 fg_weight = float(getattr(self.cfg.training, "fg_weight", 10.0))
 
-                # --- original recon loss ---
                 if recon_loss_type == "weighted_bce_logits":
                     if self.cfg.training.enable_masked_loss:
                         loss_recon_orig = masked_bce_logits_weighted(
                             recon_raw_orig, x, pixel_mask, fg_eps=fg_eps, fg_weight=fg_weight
                         )
+                        loss_recon_flip = masked_bce_logits_weighted(
+                            recon_raw_flip, x_flip, pixel_mask, fg_eps=fg_eps, fg_weight=fg_weight
+                        )
                     else:
                         loss_recon_orig = mixed_bce_logits_weighted(
                             recon_raw_orig, x, pixel_mask, fg_eps=fg_eps, fg_weight=fg_weight
                         )
+                        loss_recon_flip = mixed_bce_logits_weighted(
+                            recon_raw_flip, x_flip, pixel_mask, fg_eps=fg_eps, fg_weight=fg_weight
+                        )
                 else:
                     recon_img_orig = torch.sigmoid(recon_raw_orig.clamp(-10, 10))
+                    recon_img_flip = torch.sigmoid(recon_raw_flip.clamp(-10, 10))
+
                     if self.cfg.training.enable_masked_loss:
                         loss_recon_orig = masked_l1_loss(recon_img_orig, x, pixel_mask)
+                        loss_recon_flip = masked_l1_loss(recon_img_flip, x_flip, pixel_mask)
                     else:
                         loss_recon_orig = mixed_l1_loss(recon_img_orig, x, pixel_mask)
-
-                # --- flip recon loss ---
-                if recon_loss_type == "weighted_bce_logits":
-                    if self.cfg.training.enable_masked_loss:
-                        loss_recon_flip = masked_bce_logits_weighted(
-                            recon_raw_flip, flip_lr(x_flip), pixel_mask, fg_eps=fg_eps, fg_weight=fg_weight
-                        )
-                    else:
-                        loss_recon_flip = mixed_bce_logits_weighted(
-                            recon_raw_flip, flip_lr(x_flip), pixel_mask, fg_eps=fg_eps, fg_weight=fg_weight
-                        )
-                else:
-                    recon_img_flip = torch.sigmoid(recon_raw_flip.clamp(-10, 10))
-                    if self.cfg.training.enable_masked_loss:
-                        loss_recon_flip = masked_l1_loss(recon_img_flip, flip_lr(x_flip), pixel_mask)
-                    else:
-                        loss_recon_flip = mixed_l1_loss(recon_img_flip, flip_lr(x_flip), pixel_mask)
+                        loss_recon_flip = mixed_l1_loss(recon_img_flip, x_flip, pixel_mask)
 
                 loss_recon_total = loss_recon_orig + loss_recon_flip
 
-                # --- contrastive ---
                 if self.cfg.training.enable_contrastive:
                     loss_con = nt_xent_loss(z1, z2, temperature=self.cfg.training.temperature)
                 else:
                     loss_con = torch.zeros((), device=self.device)
 
-                # total (after lambdas)
-                loss_total = (self.cfg.training.lambda_recon * loss_recon_total) + (self.cfg.training.lambda_contrast * loss_con)
+                loss_total = (
+                    self.cfg.training.lambda_recon * loss_recon_total
+                    + self.cfg.training.lambda_contrast * loss_con
+                )
 
             self.scaler.scale(loss_total).backward()
             self.scaler.step(self.opt)
             self.scaler.update()
 
             with torch.no_grad():
-                # Metrics/visualization keep orig-only image (as before)
                 recon_img_orig_metric = torch.sigmoid(recon_raw_orig.clamp(-10, 10))
-                diff = (x - recon_img_orig_metric).abs().detach()
-                ssim_vals = ssim_index(x.float(), recon_img_orig_metric.float())
-                meter.update(diff, pixel_mask, ssim_sum=float(ssim_vals.sum().item()))
+                recon_img_flip_metric = torch.sigmoid(recon_raw_flip.clamp(-10, 10))
 
-                # Phase B accumulators
+                diff_orig = (x - recon_img_orig_metric).abs()
+                diff_flip = (x_flip - recon_img_flip_metric).abs()
+                diff_total = (0.5 * (diff_orig + diff_flip)).detach()
+
+                ssim_orig = ssim_index(x.float(), recon_img_orig_metric.float())
+                ssim_flip = ssim_index(x_flip.float(), recon_img_flip_metric.float())
+                ssim_sum = float((0.5 * (ssim_orig + ssim_flip)).sum().item())
+
+                meter.update(diff_total, pixel_mask, ssim_sum=ssim_sum)
+
                 loss_recon_orig_list.append(float(loss_recon_orig.item()))
                 loss_recon_flip_list.append(float(loss_recon_flip.item()))
                 loss_recon_total_list.append(float(loss_recon_total.item()))
-                loss_con_list.append(float(loss_con.item()) if torch.is_tensor(loss_con) else 0.0)
+                loss_con_list.append(float(loss_con.item()))
                 loss_total_list.append(float(loss_total.item()))
 
                 losses_total_scalar.append(float(loss_total.item()))
-                losses_con_scalar.append(float(loss_con.item()) if torch.is_tensor(loss_con) else 0.0)
+                losses_con_scalar.append(float(loss_con.item()))
 
                 if self.cfg.training.enable_contrastive:
                     mean_var, min_var = compute_embedding_variance([z1.detach(), z2.detach()])
@@ -405,19 +410,17 @@ class PhaseATrainer:
                     vars_mean.append(0.0)
                     vars_min.append(0.0)
 
-                # Optional per-iteration visibility: show decomposition in tqdm postfix
                 if getattr(self.cfg.logging, "log_losses_every_iter", False):
                     pbar.set_postfix({
                         "re_o": f"{loss_recon_orig.item():.4f}",
                         "re_f": f"{loss_recon_flip.item():.4f}",
                         "re_t": f"{loss_recon_total.item():.4f}",
-                        "con": f"{loss_con.item():.4f}" if torch.is_tensor(loss_con) else "0.0000",
+                        "con": f"{loss_con.item():.4f}",
                         "tot": f"{loss_total.item():.4f}",
                     })
 
         stats = meter.compute()
 
-        # Phase B epoch means
         decomp = {
             "loss_recon_orig": float(np.mean(loss_recon_orig_list)) if loss_recon_orig_list else 0.0,
             "loss_recon_flip": float(np.mean(loss_recon_flip_list)) if loss_recon_flip_list else 0.0,
@@ -425,10 +428,10 @@ class PhaseATrainer:
             "loss_contrastive": float(np.mean(loss_con_list)) if loss_con_list else 0.0,
             "loss_total": float(np.mean(loss_total_list)) if loss_total_list else 0.0,
         }
+
         self._append_loss_decomp_csv(epoch, "train", decomp)
 
         return {
-            # existing keys used by epoch_log.csv and plots
             "loss": float(np.mean(losses_total_scalar)) if losses_total_scalar else 0.0,
             "loss_contrast": float(np.mean(losses_con_scalar)) if losses_con_scalar else 0.0,
             "var_mean": float(np.mean(vars_mean)) if vars_mean else 0.0,
@@ -437,141 +440,140 @@ class PhaseATrainer:
             "recon_masked": float(stats.masked_l1),
             "recon_unmasked": float(stats.unmasked_l1),
             "ssim": float(stats.ssim),
-            # Phase B extras (for console summary)
             **decomp,
         }
 
-    @torch.no_grad()
-    def validate(self, loader, epoch: int) -> Dict[str, float]:
-        self.model.eval()
-        meter = MetricsAccumulator()
+@torch.no_grad()
+def validate(self, loader, epoch: int) -> Dict[str, float]:
+    self.model.eval()
+    meter = MetricsAccumulator()
 
-        losses_total = []
+    losses_total = []
+    loss_recon_orig_list = []
+    loss_recon_flip_list = []
+    loss_recon_total_list = []
+    loss_con_list = []
 
-        loss_recon_orig_list = []
-        loss_recon_flip_list = []
-        loss_recon_total_list = []
-        loss_con_list = []
+    vars_mean = []
+    vars_min = []
 
-        vars_mean = []
-        vars_min = []
+    for batch in tqdm(loader, desc=f"val {epoch}", leave=False):
+        x = batch["input"].to(self.device, non_blocking=True)
 
-        with torch.no_grad():
-            for batch in tqdm(loader, desc=f"val {epoch}", leave=False):
-                x = batch["input"].to(self.device, non_blocking=True)
+        plane = batch.get("plane_one_hot", None)
+        if plane is None:
+            plane = torch.tensor([0.0, 1.0], device=self.device).view(1, 2).repeat(x.size(0), 1)
+        else:
+            plane = plane.to(self.device, non_blocking=True)
 
-                plane = batch.get("plane_one_hot", None)
-                if plane is None:
-                    plane = torch.tensor([0.0, 1.0], device=self.device).view(1, 2).repeat(x.size(0), 1)
-                else:
-                    plane = plane.to(self.device, non_blocking=True)
+        pixel_mask = sample_masks_anti_mirror(x.size(0), self.cfg.mask, self.device)
 
-                pixel_mask = sample_masks_anti_mirror(x.size(0), self.cfg.mask, self.device)
+        with autocast(
+            device_type=self.device.type,
+            enabled=(self.cfg.training.amp and self.device.type == "cuda"),
+        ):
+            recon_raw_orig, recon_raw_flip, z1, z2 = self.model(
+                x,
+                pixel_mask=pixel_mask,
+                plane_one_hot=plane,
+                return_embeddings=self.cfg.training.enable_contrastive,
+            )
 
-                with autocast(
-                    device_type=self.device.type,
-                    enabled=(self.cfg.training.amp and self.device.type == "cuda"),
-                ):
-                    recon_raw_orig, recon_raw_flip, z1, z2 = self.model(
-                        x,
-                        pixel_mask=pixel_mask,
-                        plane_one_hot=plane,
-                        return_embeddings=self.cfg.training.enable_contrastive,
+            x_flip = flip_lr(x)
+
+            recon_loss_type = getattr(self.cfg.training, "recon_loss", "weighted_bce_logits")
+            fg_eps = float(getattr(self.cfg.training, "fg_eps", 0.02))
+            fg_weight = float(getattr(self.cfg.training, "fg_weight", 10.0))
+
+            if recon_loss_type == "weighted_bce_logits":
+                if self.cfg.training.enable_masked_loss:
+                    loss_recon_orig = masked_bce_logits_weighted(
+                        recon_raw_orig, x, pixel_mask, fg_eps=fg_eps, fg_weight=fg_weight
                     )
-
-                    x_flip = flip_lr(x)
-
-                    recon_loss_type = getattr(self.cfg.training, "recon_loss", "weighted_bce_logits")
-                    fg_eps = float(getattr(self.cfg.training, "fg_eps", 0.02))
-                    fg_weight = float(getattr(self.cfg.training, "fg_weight", 10.0))
-
-                    if recon_loss_type == "weighted_bce_logits":
-                        if self.cfg.training.enable_masked_loss:
-                            loss_recon_orig = masked_bce_logits_weighted(
-                                recon_raw_orig, x, pixel_mask, fg_eps=fg_eps, fg_weight=fg_weight
-                            )
-                            loss_recon_flip = masked_bce_logits_weighted(
-                                recon_raw_flip, x_flip, pixel_mask, fg_eps=fg_eps, fg_weight=fg_weight
-                            )
-                        else:
-                            loss_recon_orig = mixed_bce_logits_weighted(
-                                recon_raw_orig, x, pixel_mask, fg_eps=fg_eps, fg_weight=fg_weight
-                            )
-                            loss_recon_flip = mixed_bce_logits_weighted(
-                                recon_raw_flip, x_flip, pixel_mask, fg_eps=fg_eps, fg_weight=fg_weight
-                            )
-                    else:
-                        recon_img_orig = torch.sigmoid(recon_raw_orig.clamp(-10, 10))
-                        recon_img_flip = torch.sigmoid(recon_raw_flip.clamp(-10, 10))
-                        if self.cfg.training.enable_masked_loss:
-                            loss_recon_orig = masked_l1_loss(recon_img_orig, x, pixel_mask)
-                            loss_recon_flip = masked_l1_loss(recon_img_flip, x_flip, pixel_mask)
-                        else:
-                            loss_recon_orig = mixed_l1_loss(recon_img_orig, x, pixel_mask)
-                            loss_recon_flip = mixed_l1_loss(recon_img_flip, x_flip, pixel_mask)
-
-                    loss_recon_total = loss_recon_orig + loss_recon_flip
-
-                    if self.cfg.training.enable_contrastive:
-                        loss_con = nt_xent_loss(z1, z2, temperature=self.cfg.training.temperature)
-                    else:
-                        loss_con = torch.zeros((), device=self.device)
-
-                    loss_total = (self.cfg.training.lambda_recon * loss_recon_total) + (
-                        self.cfg.training.lambda_contrast * loss_con
+                    loss_recon_flip = masked_bce_logits_weighted(
+                        recon_raw_flip, x_flip, pixel_mask, fg_eps=fg_eps, fg_weight=fg_weight
                     )
-
-                # Metrics should reflect BOTH orig and flip
-                recon_img_orig_metric = torch.sigmoid(recon_raw_orig.clamp(-10, 10))
-                recon_img_flip_metric = torch.sigmoid(recon_raw_flip.clamp(-10, 10))
-
-                diff_orig = (x - recon_img_orig_metric).abs()
-                diff_flip = (x_flip - recon_img_flip_metric).abs()
-                diff_total = (diff_orig + diff_flip).detach()
-
-                ssim_orig = ssim_index(x.float(), recon_img_orig_metric.float())
-                ssim_flip = ssim_index(x_flip.float(), recon_img_flip_metric.float())
-                ssim_sum = float((ssim_orig + ssim_flip).sum().item())
-
-                meter.update(diff_total, pixel_mask, ssim_sum=ssim_sum)
-
-                losses_total.append(float(loss_total.item()))
-                loss_recon_orig_list.append(float(loss_recon_orig.item()))
-                loss_recon_flip_list.append(float(loss_recon_flip.item()))
-                loss_recon_total_list.append(float(loss_recon_total.item()))
-                loss_con_list.append(float(loss_con.item()))
-
-                if self.cfg.training.enable_contrastive:
-                    mean_var, min_var = compute_embedding_variance([z1.detach(), z2.detach()])
-                    vars_mean.append(float(mean_var))
-                    vars_min.append(float(min_var))
                 else:
-                    vars_mean.append(0.0)
-                    vars_min.append(0.0)
+                    loss_recon_orig = mixed_bce_logits_weighted(
+                        recon_raw_orig, x, pixel_mask, fg_eps=fg_eps, fg_weight=fg_weight
+                    )
+                    loss_recon_flip = mixed_bce_logits_weighted(
+                        recon_raw_flip, x_flip, pixel_mask, fg_eps=fg_eps, fg_weight=fg_weight
+                    )
+            else:
+                recon_img_orig = torch.sigmoid(recon_raw_orig.clamp(-10, 10))
+                recon_img_flip = torch.sigmoid(recon_raw_flip.clamp(-10, 10))
 
-        stats = meter.compute()
+                if self.cfg.training.enable_masked_loss:
+                    loss_recon_orig = masked_l1_loss(recon_img_orig, x, pixel_mask)
+                    loss_recon_flip = masked_l1_loss(recon_img_flip, x_flip, pixel_mask)
+                else:
+                    loss_recon_orig = mixed_l1_loss(recon_img_orig, x, pixel_mask)
+                    loss_recon_flip = mixed_l1_loss(recon_img_flip, x_flip, pixel_mask)
 
-        decomp = {
-            "loss_recon_orig": float(np.mean(loss_recon_orig_list)) if loss_recon_orig_list else 0.0,
-            "loss_recon_flip": float(np.mean(loss_recon_flip_list)) if loss_recon_flip_list else 0.0,
-            "loss_recon_total": float(np.mean(loss_recon_total_list)) if loss_recon_total_list else 0.0,
-            "loss_contrastive": float(np.mean(loss_con_list)) if loss_con_list else 0.0,
-            "loss_total": float(np.mean(losses_total)) if losses_total else 0.0,
-        }
+            loss_recon_total = loss_recon_orig + loss_recon_flip
 
-        self._append_loss_decomp_csv(epoch, "val", decomp)
+            if self.cfg.training.enable_contrastive:
+                loss_con = nt_xent_loss(z1, z2, temperature=self.cfg.training.temperature)
+            else:
+                loss_con = torch.zeros((), device=self.device)
 
-        return {
-            "loss": float(np.mean(losses_total)) if losses_total else 0.0,
-            "loss_contrast": float(np.mean(loss_con_list)) if loss_con_list else 0.0,
-            "var_mean": float(np.mean(vars_mean)) if vars_mean else 0.0,
-            "var_min": float(np.mean(vars_min)) if vars_min else 0.0,
-            "recon_total": float(stats.total_l1),
-            "recon_masked": float(stats.masked_l1),
-            "recon_unmasked": float(stats.unmasked_l1),
-            "ssim": float(stats.ssim),
-            **decomp,
-        }
+            loss_total = (
+                self.cfg.training.lambda_recon * loss_recon_total
+                + self.cfg.training.lambda_contrast * loss_con
+            )
+
+        recon_img_orig_metric = torch.sigmoid(recon_raw_orig.clamp(-10, 10))
+        recon_img_flip_metric = torch.sigmoid(recon_raw_flip.clamp(-10, 10))
+
+        diff_orig = (x - recon_img_orig_metric).abs()
+        diff_flip = (x_flip - recon_img_flip_metric).abs()
+        diff_total = (0.5 * (diff_orig + diff_flip)).detach()
+
+        ssim_orig = ssim_index(x.float(), recon_img_orig_metric.float())
+        ssim_flip = ssim_index(x_flip.float(), recon_img_flip_metric.float())
+        ssim_sum = float((0.5 * (ssim_orig + ssim_flip)).sum().item())
+
+        meter.update(diff_total, pixel_mask, ssim_sum=ssim_sum)
+
+        losses_total.append(float(loss_total.item()))
+        loss_recon_orig_list.append(float(loss_recon_orig.item()))
+        loss_recon_flip_list.append(float(loss_recon_flip.item()))
+        loss_recon_total_list.append(float(loss_recon_total.item()))
+        loss_con_list.append(float(loss_con.item()))
+
+        if self.cfg.training.enable_contrastive:
+            mean_var, min_var = compute_embedding_variance([z1.detach(), z2.detach()])
+            vars_mean.append(float(mean_var))
+            vars_min.append(float(min_var))
+        else:
+            vars_mean.append(0.0)
+            vars_min.append(0.0)
+
+    stats = meter.compute()
+
+    decomp = {
+        "loss_recon_orig": float(np.mean(loss_recon_orig_list)) if loss_recon_orig_list else 0.0,
+        "loss_recon_flip": float(np.mean(loss_recon_flip_list)) if loss_recon_flip_list else 0.0,
+        "loss_recon_total": float(np.mean(loss_recon_total_list)) if loss_recon_total_list else 0.0,
+        "loss_contrastive": float(np.mean(loss_con_list)) if loss_con_list else 0.0,
+        "loss_total": float(np.mean(losses_total)) if losses_total else 0.0,
+    }
+
+    self._append_loss_decomp_csv(epoch, "val", decomp)
+
+    return {
+        "loss": float(np.mean(losses_total)) if losses_total else 0.0,
+        "loss_contrast": float(np.mean(loss_con_list)) if loss_con_list else 0.0,
+        "var_mean": float(np.mean(vars_mean)) if vars_mean else 0.0,
+        "var_min": float(np.mean(vars_min)) if vars_min else 0.0,
+        "recon_total": float(stats.total_l1),
+        "recon_masked": float(stats.masked_l1),
+        "recon_unmasked": float(stats.unmasked_l1),
+        "ssim": float(stats.ssim),
+        **decomp,
+    }
+
 
     # -------- hooks --------
     def maybe_visualize(self, loader, epoch: int, tag: str):
