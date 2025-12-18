@@ -168,17 +168,27 @@ class PhaseATrainer:
         # Parameter logging (Phase A DoD)
         try:
             pc = self.model.param_count_breakdown()
+
             print("[params] total:", pc.get("total", 0))
+
             print("[params] enc_early_view1:", pc.get("enc_early_view1", 0))
-            print("[params] enc_early_view2:", pc.get("enc_early_view2", 0))  
-            print("[params] enc_shared_trunk:", pc.get("enc_shared_trunk", 0))            
-            print("[params] contrastive_head:", pc.get("contrastive_head", 0))            
-            print("[params] decoder_trunk:", pc.get("decoder_trunk", 0))            
-            print("[params] recon_head:", pc.get("recon_head", 0))
-            print("[params] check_sum: ", pc.get("check_sum", 0))
+            print("[params] enc_early_view2:", pc.get("enc_early_view2", 0))
+            print("[params] enc_shared_trunk:", pc.get("enc_shared_trunk", 0))
+
+            print("[params] contrastive_head:", pc.get("contrastive_head", 0))
+
+            print("[params] decoder_shared_up2:", pc.get("decoder_shared_up2", 0))
+            print("[params] decoder_branch_v1:", pc.get("decoder_branch_v1", 0))
+            print("[params] decoder_branch_v2:", pc.get("decoder_branch_v2", 0))
+
+            print("[params] recon_heads:", pc.get("recon_heads", 0))
+
+            print("[params] check_sum:", pc.get("check_sum", 0))
             print("[params] delta_total_minus_check:", pc.get("delta_total_minus_check", 0))
+
         except Exception as e:
             print("[params] unable to compute breakdown:", repr(e))
+
 
         self.opt = AdamW(self.model.parameters(), lr=cfg.training.lr, weight_decay=cfg.training.weight_decay)
         self.scaler = GradScaler(enabled=(cfg.training.amp and device.type == "cuda"))

@@ -374,7 +374,7 @@ class SwinUNetDualViewSSLPhase1(nn.Module):
     def __init__(
         self,
         in_ch: int = 1,
-        image_size: int = 192,
+        image_size: int = 256,
         patch_size: int = 16,
         embed_dim: int = 96,
         enc_depths: Tuple[int, int, int, int] = (2, 2, 6, 2),
@@ -419,15 +419,60 @@ class SwinUNetDualViewSSLPhase1(nn.Module):
         # Contrastive head (unchanged)
         self.proj = ProjectionHead(in_dim=C3, proj_dim=proj_dim)
 
-        # Decoder (shared weights) used for BOTH views
-        self.up2 = SwinUpBlock(in_dim=C3, skip_dim=C2, out_dim=C2, depth=dec_depths[0], num_heads=num_heads[2], window_size=window_size)
-        self.up1 = SwinUpBlock(in_dim=C2, skip_dim=C1, out_dim=C1, depth=dec_depths[1], num_heads=num_heads[1], window_size=window_size)
-        self.up0 = SwinUpBlock(in_dim=C1, skip_dim=C0, out_dim=C0, depth=dec_depths[2], num_heads=num_heads[0], window_size=window_size)
+        # Decoder OPTION X1
+        # Up2 shared
+        self.up2_shared = SwinUpBlock(
+            in_dim=C3,
+            skip_dim=C2,
+            out_dim=C2,
+            depth=dec_depths[0],
+            num_heads=num_heads[2],
+            window_size=window_size,
+        )
 
-        self.final_up = FinalPatchExpand(dim=C0, patch_size=patch_size, out_dim=32)
+        # View1 branch
+        self.up1_v1 = SwinUpBlock(
+            in_dim=C2,
+            skip_dim=C1,
+            out_dim=C1,
+            depth=dec_depths[1],
+            num_heads=num_heads[1],
+            window_size=window_size,
+        )
+        self.up0_v1 = SwinUpBlock(
+            in_dim=C1,
+            skip_dim=C0,
+            out_dim=C0,
+            depth=dec_depths[2],
+            num_heads=num_heads[0],
+            window_size=window_size,
+        )
+        self.final_up_v1 = FinalPatchExpand(dim=C0, patch_size=patch_size, out_dim=32)
+        self.recon_head_v1 = nn.Sequential(
+            nn.Conv2d(32, 16, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(16, 1, kernel_size=1),
+        )
 
-        # Shared reconstruction head (applied to both decoded feature maps)
-        self.recon_head = nn.Sequential(
+        # View2 branch
+        self.up1_v2 = SwinUpBlock(
+            in_dim=C2,
+            skip_dim=C1,
+            out_dim=C1,
+            depth=dec_depths[1],
+            num_heads=num_heads[1],
+            window_size=window_size,
+        )
+        self.up0_v2 = SwinUpBlock(
+            in_dim=C1,
+            skip_dim=C0,
+            out_dim=C0,
+            depth=dec_depths[2],
+            num_heads=num_heads[0],
+            window_size=window_size,
+        )
+        self.final_up_v2 = FinalPatchExpand(dim=C0, patch_size=patch_size, out_dim=32)
+        self.recon_head_v2 = nn.Sequential(
             nn.Conv2d(32, 16, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
             nn.Conv2d(16, 1, kernel_size=1),
@@ -460,24 +505,57 @@ class SwinUNetDualViewSSLPhase1(nn.Module):
         """Return parameter counts for logging.
 
         Notes:
-        - Shared modules (trunk, decoder, heads) are counted once.
+        - Shared modules are counted once.
+        - View-specific modules are counted separately.
         - Running decoder twice in forward does NOT mean double parameters.
         """
+
         # 1) Early encoders (view-specific)
-        early_view1 = [self.patch_embed_1, self.stage0_1, self.merge0_1, self.stage1_1]
-        early_view2 = [self.patch_embed_2, self.stage0_2, self.merge0_2, self.stage1_2]
+        early_view1 = [
+            self.patch_embed_1,
+            self.stage0_1,
+            self.merge0_1,
+            self.stage1_1,
+        ]
+        early_view2 = [
+            self.patch_embed_2,
+            self.stage0_2,
+            self.merge0_2,
+            self.stage1_2,
+        ]
 
         # 2) Shared encoder trunk (Stage2+)
-        shared_trunk = [self.merge1, self.plane_cond, self.stage2, self.merge2, self.stage3]
+        shared_trunk = [
+            self.merge1,
+            self.plane_cond,
+            self.stage2,
+            self.merge2,
+            self.stage3,
+        ]
 
         # 3) Contrastive head
         contrastive_head = [self.proj]
 
-        # 4) Shared decoder trunk (used for BOTH views but counted once)
-        decoder_trunk = [self.up2, self.up1, self.up0, self.final_up]
+        # 4) Decoder OPTION X1
+        decoder_shared = [self.up2_shared]
 
-        # 5) Reconstruction head (shared)
-        recon_heads = [self.recon_head]
+        decoder_branch_v1 = [
+            self.up1_v1,
+            self.up0_v1,
+            self.final_up_v1,
+        ]
+
+        decoder_branch_v2 = [
+            self.up1_v2,
+            self.up0_v2,
+            self.final_up_v2,
+        ]
+
+        # 5) Reconstruction heads (view-specific)
+        recon_heads = [
+            self.recon_head_v1,
+            self.recon_head_v2,
+        ]
 
         def _count(mods) -> int:
             return sum(count_parameters(m) for m in mods)
@@ -486,11 +564,25 @@ class SwinUNetDualViewSSLPhase1(nn.Module):
         n_early_v2 = _count(early_view2)
         n_trunk = _count(shared_trunk)
         n_contrast = _count(contrastive_head)
-        n_decoder = _count(decoder_trunk)
+
+        n_dec_shared = _count(decoder_shared)
+        n_dec_v1 = _count(decoder_branch_v1)
+        n_dec_v2 = _count(decoder_branch_v2)
+
         n_recon = _count(recon_heads)
 
         total = count_parameters(self)
-        check_sum = n_early_v1 + n_early_v2 + n_trunk + n_contrast + n_decoder + n_recon
+
+        check_sum = (
+            n_early_v1
+            + n_early_v2
+            + n_trunk
+            + n_contrast
+            + n_dec_shared
+            + n_dec_v1
+            + n_dec_v2
+            + n_recon
+        )
 
         return {
             "total": total,
@@ -501,13 +593,15 @@ class SwinUNetDualViewSSLPhase1(nn.Module):
 
             "contrastive_head": n_contrast,
 
-            "decoder_trunk": n_decoder,
-            "recon_head": n_recon,
+            "decoder_shared_up2": n_dec_shared,
+            "decoder_branch_v1": n_dec_v1,
+            "decoder_branch_v2": n_dec_v2,
+
+            "recon_heads": n_recon,
 
             "check_sum": check_sum,
             "delta_total_minus_check": total - check_sum,
         }
-
 
     def forward(
         self,
@@ -550,24 +644,24 @@ class SwinUNetDualViewSSLPhase1(nn.Module):
             z2 = torch.empty((x.size(0), 0), device=x.device)
 
         # ====================
-        # Dual decoder (shared weights)
+        # Dual decoder
         # ====================
 
-        # ---- view1 decode ----
-        d2_1 = self.up2(b1, s2_1)
-        d1_1 = self.up1(d2_1, s1_1)
-        d0_1 = self.up0(d1_1, s0_1)
-        feat1 = self.final_up(d0_1)            # [B,H,W,32]
-        feat1_nchw = nhwc_to_nchw(feat1)       # [B,32,H,W]
-        recon_raw_orig = self.recon_head(feat1_nchw)
+        # Shared Up2
+        d2_1 = self.up2_shared(b1, s2_1)
+        d2_2 = self.up2_shared(b2, s2_2)
 
-        # ---- view2 decode ----
-        d2_2 = self.up2(b2, s2_2)
-        d1_2 = self.up1(d2_2, s1_2)
-        d0_2 = self.up0(d1_2, s0_2)
-        feat2 = self.final_up(d0_2)            # [B,H,W,32]
-        feat2_nchw = nhwc_to_nchw(feat2)       # [B,32,H,W]
-        recon_raw_flip = self.recon_head(feat2_nchw)
+        # View1 branch
+        d1_1 = self.up1_v1(d2_1, s1_1)
+        d0_1 = self.up0_v1(d1_1, s0_1)
+        feat1 = self.final_up_v1(d0_1)                 # NHWC
+        recon_raw_orig = self.recon_head_v1(nhwc_to_nchw(feat1))
+
+        # View2 branch
+        d1_2 = self.up1_v2(d2_2, s1_2)
+        d0_2 = self.up0_v2(d1_2, s0_2)
+        feat2 = self.final_up_v2(d0_2)                 # NHWC
+        recon_raw_flip = self.recon_head_v2(nhwc_to_nchw(feat2))
 
         return recon_raw_orig, recon_raw_flip, z1, z2
 
