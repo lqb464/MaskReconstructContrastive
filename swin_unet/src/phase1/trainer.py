@@ -29,7 +29,7 @@ from augmentation import sample_masks_anti_mirror
 from losses import masked_l1_loss, mixed_l1_loss, nt_xent_loss, compute_embedding_variance, ssim_index
 from metrics import MetricsAccumulator
 from visualization import save_image_grid, plot_training_curves, run_tsne_visualization
-from model_phaseA import SwinUNetDualViewSSLPhase1, flip_lr
+from model import SwinUNetDualViewSSLPhase1, flip_lr
 
 
 # -------------------------
