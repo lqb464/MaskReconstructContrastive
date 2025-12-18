@@ -44,7 +44,8 @@ class ModelConfig:
     # Swin/UNet knobs (Phase 1 implementation)
     patch_size: int = 16
     embed_dim: int = 96
-    depths: tuple[int, int, int, int] = (2, 2, 6, 2)
+    enc_depths: tuple[int, int, int, int] = (2, 2, 6, 2)
+    dec_depth: tuple[int, int, int] = (6, 2, 2)
     num_heads: tuple[int, int, int, int] = (3, 6, 12, 24)
     window_size: int = 7
 
@@ -148,7 +149,8 @@ class ExperimentConfig:
                 in_ch=args.in_ch,
                 patch_size=args.patch_size,
                 embed_dim=args.embed_dim,
-                depths=tuple(args.depths),
+                enc_depths=tuple(args.enc_depths),
+                dec_depths=tuple(args.dec_depths),
                 num_heads=tuple(args.num_heads),
                 window_size=args.window_size,
                 proj_dim=args.proj_dim,
@@ -248,7 +250,8 @@ def build_argparser() -> argparse.ArgumentParser:
     # Model
     p.add_argument("--in-ch", type=int, default=1)
     p.add_argument("--embed-dim", type=int, default=96)
-    p.add_argument("--depths", type=int, nargs=4, default=[2, 2, 6, 2])
+    p.add_argument("--enc-depths", type=int, nargs=4, default=[2, 2, 6, 2])
+    p.add_argument("--dec-depths", type=int, nargs=3, default=[6, 2, 2])
     p.add_argument("--num-heads", type=int, nargs=4, default=[3, 6, 12, 24])
     p.add_argument("--window-size", type=int, default=7)
 

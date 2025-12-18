@@ -157,7 +157,8 @@ class PhaseATrainer:
             image_size=cfg.data.image_size,
             patch_size=cfg.model.patch_size,
             embed_dim=cfg.model.embed_dim,
-            enc_depths=tuple(cfg.model.depths),
+            enc_depths=tuple(cfg.model.enc_depths),
+            dec_depths=tuple(cfg.model.dec_depths)
             num_heads=tuple(cfg.model.num_heads),
             window_size=cfg.model.window_size,
             proj_dim=cfg.model.proj_dim,
