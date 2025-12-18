@@ -284,7 +284,7 @@ class PhaseATrainer:
                     vars_mean.append(0.0)
                     vars_min.append(0.0)
 
-        stats = meter.finalize()
+        stats = meter.compute()
         return {
             "loss": float(np.mean(losses)) if losses else 0.0,
             "loss_contrast": float(np.mean(losses_con)) if losses_con else 0.0,
@@ -347,7 +347,7 @@ class PhaseATrainer:
             meter.update(diff, pixel_mask, ssim_sum=float(ssim_vals.sum().item()))
             losses.append(float(loss.item()))
 
-        stats = meter.finalize()
+        stats = meter.compute()
         return {
             "loss": float(np.mean(losses)) if losses else 0.0,
             "recon_total": stats.get("recon_total", 0.0),
