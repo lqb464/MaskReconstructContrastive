@@ -290,10 +290,10 @@ class PhaseATrainer:
             "loss_contrast": float(np.mean(losses_con)) if losses_con else 0.0,
             "var_mean": float(np.mean(vars_mean)) if vars_mean else 0.0,
             "var_min": float(np.mean(vars_min)) if vars_min else 0.0,
-            "recon_total": stats.get("recon_total", 0.0),
-            "recon_masked": stats.get("recon_masked", 0.0),
-            "recon_unmasked": stats.get("recon_unmasked", 0.0),
-            "ssim": stats.get("ssim", 0.0),
+            "recon_total": float(stats.total_l1),
+            "recon_masked": float(stats.masked_l1),
+            "recon_unmasked": float(stats.unmasked_l1),
+            "ssim": float(stats.ssim),
         }
 
     @torch.no_grad()
@@ -350,10 +350,10 @@ class PhaseATrainer:
         stats = meter.compute()
         return {
             "loss": float(np.mean(losses)) if losses else 0.0,
-            "recon_total": stats.get("recon_total", 0.0),
-            "recon_masked": stats.get("recon_masked", 0.0),
-            "recon_unmasked": stats.get("recon_unmasked", 0.0),
-            "ssim": stats.get("ssim", 0.0),
+            "recon_total": float(stats.total_l1),
+            "recon_masked": float(stats.masked_l1),
+            "recon_unmasked": float(stats.unmasked_l1),
+            "ssim": float(stats.ssim),
         }
 
     def maybe_visualize(self, loader, epoch: int, tag: str):
