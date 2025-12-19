@@ -1,24 +1,11 @@
-
 # =============================================
 # File: model.py
 # SwinUNet Dual View SSL with Plane Conditioning (Phase 1 + Phase A)
 #
-# Phase 1 baseline:
-# - Dual view: view1 masked, view2 flip_lr(x) masked with SAME mask (mask NOT flipped)
-# - Split weights up to Stage1 (PatchEmbed, Stage0, Merge0, Stage1 separate per view)
-# - Shared trunk from Stage2 (Merge1, PlaneCondition, Stage2, Merge2, Stage3 shared)
-# - Contrastive head uses pooled bottleneck AFTER shared trunk (InfoNCE outside)
-#
-# Phase A extension:
-# - Dual Decoder Reconstruction (Original + Flip)
-#   * Decoder weights are shared, but decoding is run separately for each view using its own skips.
-#   * A single lightweight reconstruction head is applied to each decoded feature map:
-#       - recon_head -> shared logits head (applied to each decoded view)
-#
-# Outputs:
-#   recon_raw_orig: [B,1,H,W] logits
-#   recon_raw_flip: [B,1,H,W] logits
-#   z1, z2: [B,D] embeddings (contrastive) unchanged
+# Option A extension:
+# - Add SACA-style window cross attention between s1_1 and s1_2 (stage1 tokens)
+# - Align view2 tokens by flipping width in token space before cross-attn,
+#   then flip back to preserve view2 native orientation for subsequent path.
 # =============================================
 from __future__ import annotations
 
@@ -36,6 +23,11 @@ from einops import rearrange
 def flip_lr(x: torch.Tensor) -> torch.Tensor:
     """Left-right flip on width dimension for NCHW tensor."""
     return torch.flip(x, dims=[-1])
+
+
+def flip_lr_nhwc(x: torch.Tensor) -> torch.Tensor:
+    """Left-right flip on width dimension for NHWC tensor."""
+    return torch.flip(x, dims=[2])
 
 
 def nchw_to_nhwc(x: torch.Tensor) -> torch.Tensor:
@@ -296,6 +288,159 @@ class BasicLayer(nn.Module):
 
 
 # -------------------------
+# SACA-style window cross attention (Option A at Stage1)
+# -------------------------
+class WindowCrossAttention(nn.Module):
+    """
+    Window-based cross attention:
+      Q from x_q, K/V from x_kv, both are [Bn, N, C] where N=ws*ws.
+    Uses the same relative position bias scheme as WindowAttention.
+    """
+    def __init__(self, dim: int, window_size: int, num_heads: int, qkv_bias: bool = True, attn_drop: float = 0.0, proj_drop: float = 0.0):
+        super().__init__()
+        self.dim = dim
+        self.window_size = window_size
+        self.num_heads = num_heads
+        head_dim = dim // num_heads
+        self.scale = head_dim ** -0.5
+
+        self.q = nn.Linear(dim, dim, bias=qkv_bias)
+        self.kv = nn.Linear(dim, dim * 2, bias=qkv_bias)
+
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.proj = nn.Linear(dim, dim)
+        self.proj_drop = nn.Dropout(proj_drop)
+
+        ws = window_size
+        self.relative_position_bias_table = nn.Parameter(torch.zeros((2 * ws - 1) * (2 * ws - 1), num_heads))
+
+        coords_h = torch.arange(ws)
+        coords_w = torch.arange(ws)
+        coords = torch.stack(torch.meshgrid(coords_h, coords_w, indexing="ij"))
+        coords_flatten = torch.flatten(coords, 1)
+        rel_coords = coords_flatten[:, :, None] - coords_flatten[:, None, :]
+        rel_coords = rel_coords.permute(1, 2, 0).contiguous()
+        rel_coords[:, :, 0] += ws - 1
+        rel_coords[:, :, 1] += ws - 1
+        rel_coords[:, :, 0] *= 2 * ws - 1
+        rel_pos_index = rel_coords.sum(-1)
+        self.register_buffer("relative_position_index", rel_pos_index)
+
+        nn.init.trunc_normal_(self.relative_position_bias_table, std=0.02)
+
+    def forward(self, x_q: torch.Tensor, x_kv: torch.Tensor) -> torch.Tensor:
+        Bn, N, C = x_q.shape
+
+        q = self.q(x_q).reshape(Bn, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        kv = self.kv(x_kv).reshape(Bn, N, 2, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+        k, v = kv[0], kv[1]
+
+        q = q * self.scale
+        attn = q @ k.transpose(-2, -1)
+
+        rel_bias = self.relative_position_bias_table[self.relative_position_index.view(-1)].view(N, N, -1)
+        rel_bias = rel_bias.permute(2, 0, 1).contiguous()
+        attn = attn + rel_bias.unsqueeze(0)
+
+        attn = self.attn_drop(attn.softmax(dim=-1))
+        out = (attn @ v).transpose(1, 2).reshape(Bn, N, C)
+        out = self.proj_drop(self.proj(out))
+        return out
+
+
+class SACAStage1Block(nn.Module):
+    """
+    SACA-style symmetric cross attention between view1 and view2 stage1 tokens.
+    Input/Output: NHWC tensors [B,H,W,C] for each view.
+
+    Steps:
+      - Align view2 tokens into view1 coordinate system by flipping width in token space
+      - Window cross attention: v1 attends to v2_aligned, and v2_aligned attends to v1
+      - Residual with learnable gate
+      - Flip back to keep view2 native orientation for downstream branches
+    """
+    def __init__(self, dim: int, window_size: int, num_heads: int, mlp_ratio: float = 4.0, gate_init: float = 0.0):
+        super().__init__()
+        self.window_size = window_size
+
+        self.norm_q1 = nn.LayerNorm(dim)
+        self.norm_kv1 = nn.LayerNorm(dim)
+        self.xattn_12 = WindowCrossAttention(dim=dim, window_size=window_size, num_heads=num_heads)
+
+        self.norm_q2 = nn.LayerNorm(dim)
+        self.norm_kv2 = nn.LayerNorm(dim)
+        self.xattn_21 = WindowCrossAttention(dim=dim, window_size=window_size, num_heads=num_heads)
+
+        self.gate = nn.Parameter(torch.tensor(float(gate_init)))
+
+        self.norm2_1 = nn.LayerNorm(dim)
+        self.mlp1 = Mlp(dim, mlp_ratio=mlp_ratio)
+
+        self.norm2_2 = nn.LayerNorm(dim)
+        self.mlp2 = Mlp(dim, mlp_ratio=mlp_ratio)
+
+    @staticmethod
+    def _pad_to_window(x: torch.Tensor, ws: int) -> Tuple[torch.Tensor, int, int]:
+        B, H, W, C = x.shape
+        pad_b = (ws - H % ws) % ws
+        pad_r = (ws - W % ws) % ws
+        if pad_b or pad_r:
+            x = F.pad(x, (0, 0, 0, pad_r, 0, pad_b))
+        return x, pad_b, pad_r
+
+    def forward(self, s1_1: torch.Tensor, s1_2: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Align view2 tokens to view1 coordinates (token-space flip)
+        s1_2a = flip_lr_nhwc(s1_2)
+
+        ws = self.window_size
+
+        # Pad both to window
+        x1p, pad_b1, pad_r1 = self._pad_to_window(s1_1, ws)
+        x2p, pad_b2, pad_r2 = self._pad_to_window(s1_2a, ws)
+
+        # Require same padded spatial size for window pairing
+        Hp = max(x1p.shape[1], x2p.shape[1])
+        Wp = max(x1p.shape[2], x2p.shape[2])
+
+        if x1p.shape[1] != Hp or x1p.shape[2] != Wp:
+            x1p = F.pad(x1p, (0, 0, 0, Wp - x1p.shape[2], 0, Hp - x1p.shape[1]))
+        if x2p.shape[1] != Hp or x2p.shape[2] != Wp:
+            x2p = F.pad(x2p, (0, 0, 0, Wp - x2p.shape[2], 0, Hp - x2p.shape[1]))
+
+        B, H1, W1, C = x1p.shape
+
+        # Window partition
+        w1 = window_partition(self.norm_q1(x1p), ws).view(-1, ws * ws, C)
+        w2 = window_partition(self.norm_kv1(x2p), ws).view(-1, ws * ws, C)
+        delta1 = self.xattn_12(w1, w2).view(-1, ws, ws, C)
+        delta1 = window_reverse(delta1, ws, H1, W1, B)
+
+        w2q = window_partition(self.norm_q2(x2p), ws).view(-1, ws * ws, C)
+        w1kv = window_partition(self.norm_kv2(x1p), ws).view(-1, ws * ws, C)
+        delta2 = self.xattn_21(w2q, w1kv).view(-1, ws, ws, C)
+        delta2 = window_reverse(delta2, ws, H1, W1, B)
+
+        # Residual with gate
+        x1 = x1p + self.gate * delta1
+        x2 = x2p + self.gate * delta2
+
+        # Per-view MLP refinement (keeps same style as Swin blocks)
+        x1 = x1 + self.mlp1(self.norm2_1(x1))
+        x2 = x2 + self.mlp2(self.norm2_2(x2))
+
+        # Crop back to original s1 sizes (before padding)
+        H0, W0 = s1_1.shape[1], s1_1.shape[2]
+        x1 = x1[:, :H0, :W0, :].contiguous()
+
+        H2, W2 = s1_2a.shape[1], s1_2a.shape[2]
+        x2 = x2[:, :H2, :W2, :].contiguous()
+
+        # Flip back to keep view2 native orientation
+        s1_2_out = flip_lr_nhwc(x2)
+        return x1, s1_2_out
+
+
+# -------------------------
 # Plane conditioning
 # -------------------------
 class PlaneCondition(nn.Module):
@@ -340,7 +485,6 @@ class SwinUpBlock(nn.Module):
 
     def forward(self, x: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
         x = self.up(x)
-        # align
         if x.shape[1] != skip.shape[1] or x.shape[2] != skip.shape[2]:
             dh = skip.shape[1] - x.shape[1]
             dw = skip.shape[2] - x.shape[2]
@@ -383,6 +527,8 @@ class SwinUNetDualViewSSLPhase1(nn.Module):
         window_size: int = 7,
         proj_dim: int = 128,
         plane_inject_method: str = "film",
+        enable_saca_stage1: bool = True,
+        saca_gate_init: float = 0.0,
     ):
         super().__init__()
         self.image_size = image_size
@@ -392,6 +538,7 @@ class SwinUNetDualViewSSLPhase1(nn.Module):
         self.dec_depths = dec_depths
         self.num_heads = num_heads
         self.window_size = window_size
+        self.enable_saca_stage1 = enable_saca_stage1
 
         C0 = embed_dim
         C1 = 2 * C0
@@ -409,6 +556,15 @@ class SwinUNetDualViewSSLPhase1(nn.Module):
         self.merge0_2 = PatchMerging(dim=C0)
         self.stage1_2 = BasicLayer(dim=C1, depth=enc_depths[1], num_heads=num_heads[1], window_size=window_size)
 
+        # SACA at Stage1 (Option A)
+        self.saca_stage1 = SACAStage1Block(
+            dim=C1,
+            window_size=window_size,
+            num_heads=num_heads[1],
+            mlp_ratio=4.0,
+            gate_init=saca_gate_init,
+        )
+
         # Shared trunk (Stage2+)
         self.merge1 = PatchMerging(dim=C1)
         self.plane_cond = PlaneCondition(in_dim=2, feat_dim=C2, method=plane_inject_method)
@@ -420,7 +576,6 @@ class SwinUNetDualViewSSLPhase1(nn.Module):
         self.proj = ProjectionHead(in_dim=C3, proj_dim=proj_dim)
 
         # Decoder OPTION X1
-        # Up2 shared
         self.up2_shared = SwinUpBlock(
             in_dim=C3,
             skip_dim=C2,
@@ -498,64 +653,24 @@ class SwinUNetDualViewSSLPhase1(nn.Module):
             s0 = self.stage0_2(f0)
             f1 = self.merge0_2(s0)
             s1 = self.stage1_2(f1)
+
+        if self.enable_saca_stage1:
+            # For encode_bottleneck we do not have the other view, so we skip SACA.
+            pass
+
         _, b = self._shared_trunk(s1, plane_one_hot)
         return b
 
     def param_count_breakdown(self) -> Dict[str, int]:
-        """Return parameter counts for logging.
-
-        Notes:
-        - Shared modules are counted once.
-        - View-specific modules are counted separately.
-        - Running decoder twice in forward does NOT mean double parameters.
-        """
-
-        # 1) Early encoders (view-specific)
-        early_view1 = [
-            self.patch_embed_1,
-            self.stage0_1,
-            self.merge0_1,
-            self.stage1_1,
-        ]
-        early_view2 = [
-            self.patch_embed_2,
-            self.stage0_2,
-            self.merge0_2,
-            self.stage1_2,
-        ]
-
-        # 2) Shared encoder trunk (Stage2+)
-        shared_trunk = [
-            self.merge1,
-            self.plane_cond,
-            self.stage2,
-            self.merge2,
-            self.stage3,
-        ]
-
-        # 3) Contrastive head
+        early_view1 = [self.patch_embed_1, self.stage0_1, self.merge0_1, self.stage1_1]
+        early_view2 = [self.patch_embed_2, self.stage0_2, self.merge0_2, self.stage1_2]
+        shared_trunk = [self.merge1, self.plane_cond, self.stage2, self.merge2, self.stage3]
         contrastive_head = [self.proj]
-
-        # 4) Decoder OPTION X1
         decoder_shared = [self.up2_shared]
-
-        decoder_branch_v1 = [
-            self.up1_v1,
-            self.up0_v1,
-            self.final_up_v1,
-        ]
-
-        decoder_branch_v2 = [
-            self.up1_v2,
-            self.up0_v2,
-            self.final_up_v2,
-        ]
-
-        # 5) Reconstruction heads (view-specific)
-        recon_heads = [
-            self.recon_head_v1,
-            self.recon_head_v2,
-        ]
+        decoder_branch_v1 = [self.up1_v1, self.up0_v1, self.final_up_v1]
+        decoder_branch_v2 = [self.up1_v2, self.up0_v2, self.final_up_v2]
+        recon_heads = [self.recon_head_v1, self.recon_head_v2]
+        saca = [self.saca_stage1]
 
         def _count(mods) -> int:
             return sum(count_parameters(m) for m in mods)
@@ -564,41 +679,28 @@ class SwinUNetDualViewSSLPhase1(nn.Module):
         n_early_v2 = _count(early_view2)
         n_trunk = _count(shared_trunk)
         n_contrast = _count(contrastive_head)
-
         n_dec_shared = _count(decoder_shared)
         n_dec_v1 = _count(decoder_branch_v1)
         n_dec_v2 = _count(decoder_branch_v2)
-
         n_recon = _count(recon_heads)
+        n_saca = _count(saca)
 
         total = count_parameters(self)
-
         check_sum = (
-            n_early_v1
-            + n_early_v2
-            + n_trunk
-            + n_contrast
-            + n_dec_shared
-            + n_dec_v1
-            + n_dec_v2
-            + n_recon
+            n_early_v1 + n_early_v2 + n_saca + n_trunk + n_contrast + n_dec_shared + n_dec_v1 + n_dec_v2 + n_recon
         )
 
         return {
             "total": total,
-
             "enc_early_view1": n_early_v1,
             "enc_early_view2": n_early_v2,
+            "saca_stage1": n_saca,
             "enc_shared_trunk": n_trunk,
-
             "contrastive_head": n_contrast,
-
             "decoder_shared_up2": n_dec_shared,
             "decoder_branch_v1": n_dec_v1,
             "decoder_branch_v2": n_dec_v2,
-
             "recon_heads": n_recon,
-
             "check_sum": check_sum,
             "delta_total_minus_check": total - check_sum,
         }
@@ -616,7 +718,6 @@ class SwinUNetDualViewSSLPhase1(nn.Module):
           recon_raw_flip: [B,1,H,W] logits
           z1, z2: [B,D] embeddings (if return_embeddings else empty)
         """
-        # dual views for contrastive (unchanged)
         x1_masked = x * (1.0 - pixel_mask)
         x2_masked = flip_lr(x) * (1.0 - pixel_mask)  # mask NOT flipped
 
@@ -626,13 +727,18 @@ class SwinUNetDualViewSSLPhase1(nn.Module):
         f1_1 = self.merge0_1(s0_1)
         s1_1 = self.stage1_1(f1_1)
 
-        s2_1, b1 = self._shared_trunk(s1_1, plane_one_hot)
-
         # view2 early encode
         f0_2 = self.patch_embed_2(x2_masked)
         s0_2 = self.stage0_2(f0_2)
         f1_2 = self.merge0_2(s0_2)
         s1_2 = self.stage1_2(f1_2)
+
+        # Option A: SACA between s1_1 and s1_2
+        if self.enable_saca_stage1:
+            s1_1, s1_2 = self.saca_stage1(s1_1, s1_2)
+
+        # shared trunk
+        s2_1, b1 = self._shared_trunk(s1_1, plane_one_hot)
         s2_2, b2 = self._shared_trunk(s1_2, plane_one_hot)
 
         # contrastive embeddings
@@ -642,10 +748,6 @@ class SwinUNetDualViewSSLPhase1(nn.Module):
         else:
             z1 = torch.empty((x.size(0), 0), device=x.device)
             z2 = torch.empty((x.size(0), 0), device=x.device)
-
-        # ====================
-        # Dual decoder
-        # ====================
 
         # Shared Up2
         d2_1 = self.up2_shared(b1, s2_1)
