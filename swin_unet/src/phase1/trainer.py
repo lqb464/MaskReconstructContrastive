@@ -692,7 +692,7 @@ class PhaseATrainer:
                 f"train: recon_o={tr['loss_recon_orig']:.4f} recon_f={tr['loss_recon_flip']:.4f} recon_t={tr['loss_recon_total']:.4f} "
                 f"con={tr['loss_contrastive']:.4f} total={tr['loss_total']:.4f} | "
                 f"val: recon_o={va['loss_recon_orig']:.4f} recon_f={va['loss_recon_flip']:.4f} recon_t={va['loss_recon_total']:.4f} "
-                f"total={va['loss_total']:.4f} | time={dt:.1f}s"
+                f"con={va['loss_contrastive']:.4f} total={va['loss_total']:.4f} | time={dt:.1f}s"
             )
 
 
