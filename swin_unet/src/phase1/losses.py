@@ -198,37 +198,43 @@ def mixed_bce_logits_weighted(
     return alpha_mask * masked + beta_unmask * unmasked
 
 
-
-
 def nt_xent_loss(z1: torch.Tensor, z2: torch.Tensor, temperature: float = 0.2) -> torch.Tensor:
     """
     NT-Xent (Normalized Temperature-scaled Cross Entropy) loss for contrastive learning
     Used in SimCLR
-    
+
     Args:
         z1: First set of embeddings (B, D)
         z2: Second set of embeddings (B, D)
         temperature: Temperature parameter for softmax
-        
+
     Returns:
         Scalar loss
     """
+    # L2-normalize embeddings to make similarities scale-stable.
+    # This matches the intended "Normalized" part of NT-Xent.
+    z1 = F.normalize(z1, dim=1, eps=1e-8)
+    z2 = F.normalize(z2, dim=1, eps=1e-8)
+
     B, _ = z1.size()
     z = torch.cat([z1, z2], dim=0)  # (2B, D)
     sim = torch.matmul(z, z.t()) / temperature  # (2B, 2B)
     sim = sim.to(torch.float32)
-    
+
     # Mask out self-similarity
     diag = torch.eye(2 * B, device=sim.device, dtype=torch.bool)
-    sim = sim.masked_fill(diag, -float('inf'))
-    
+    sim = sim.masked_fill(diag, -float("inf"))
+
     # Positive pairs: (i, B+i) and (B+i, i)
-    pos = torch.cat([
-        torch.arange(B, 2 * B, device=sim.device),
-        torch.arange(0, B, device=sim.device)
-    ], dim=0)
+    pos = torch.cat(
+        [
+            torch.arange(B, 2 * B, device=sim.device),
+            torch.arange(0, B, device=sim.device),
+        ],
+        dim=0,
+    )
     labels = pos
-    
+
     loss = F.cross_entropy(sim, labels)
     return loss
 
