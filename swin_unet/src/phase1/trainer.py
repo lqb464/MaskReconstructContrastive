@@ -281,11 +281,28 @@ class PhaseATrainer:
 
         resid = (target_view - ((1.0 - pixel_mask) * target_view + pixel_mask * recon_img)).abs().clamp(0, 1)
 
+        # Per-image residual statistics on masked pixels.
+        # Note: residual is defined so that unmasked pixels are exactly 0.
+        b = int(resid.size(0))
+        resid_ann = []
+        for i in range(b):
+            m = pixel_mask[i] > 0.5
+            v = resid[i][m]
+            if v.numel() == 0:
+                r_min = r_mean = r_max = 0.0
+            else:
+                r_min = float(v.min().item())
+                r_mean = float(v.mean().item())
+                r_max = float(v.max().item())
+            resid_ann.append(f"min={r_min:.4f}\nmean={r_mean:.4f}\nmax={r_max:.4f}")
+
         out_path = str(self.vis_dir / f"{tag}_epoch_{epoch:03d}.png")
         save_image_grid(
             [shown_target, pixel_mask, masked_in, recon_img.clamp(0, 1), resid],
             [shown_title, "mask", "masked_in", "recon", "abs_resid"],
             out_path,
+            annotations={4: resid_ann},
+            panel_vmax={4: 0.05},
         )
 
 

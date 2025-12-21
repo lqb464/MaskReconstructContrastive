@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import os
-from typing import List
+from typing import List, Dict, Optional
 from pathlib import Path
 
 import numpy as np
@@ -19,7 +19,13 @@ import pandas as pd
 from sklearn.manifold import TSNE
 
 
-def save_image_grid(tensors: List[torch.Tensor], titles: List[str], out_path: str):
+def save_image_grid(
+    tensors: List[torch.Tensor],
+    titles: List[str],
+    out_path: str,
+    annotations: Optional[Dict[int, List[str]]] = None,
+    panel_vmax: Optional[Dict[int, float]] = None,
+):
     """
     Save a grid of images for visualization
     
@@ -47,7 +53,25 @@ def save_image_grid(tensors: List[torch.Tensor], titles: List[str], out_path: st
             for j, p in enumerate(panels):
                 ax = axes[i, j]
                 img = p[i].detach().cpu().numpy()
-                ax.imshow(img, cmap="gray", vmin=0, vmax=1)
+                vmax = 1.0
+                if panel_vmax is not None and j in panel_vmax:
+                    vmax = float(panel_vmax[j])
+                ax.imshow(img, cmap="gray", vmin=0, vmax=vmax)
+
+                if annotations is not None and j in annotations:
+                    ann_list = annotations[j]
+                    if i < len(ann_list):
+                        ax.text(
+                            0.02,
+                            0.02,
+                            str(ann_list[i]),
+                            transform=ax.transAxes,
+                            fontsize=8,
+                            color="white",
+                            bbox=dict(facecolor="black", alpha=0.5, pad=2),
+                            verticalalignment="bottom",
+                            horizontalalignment="left",
+                        )
                 if i == 0 and j < len(titles):
                     ax.set_title(titles[j], fontsize=10)
                 ax.axis("off")
