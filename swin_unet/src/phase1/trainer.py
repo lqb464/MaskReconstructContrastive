@@ -663,20 +663,30 @@ class PhaseATrainer:
 
         return _Wrap(self.model).to(self.device)
 
-    def save_checkpoint(self, epoch: int):
-        path = self.ckpt_dir / f"epoch_{epoch:03d}.pt"
-        obj = {"epoch": epoch, "model": self.model.state_dict(), "opt": self.opt.state_dict(), "cfg": asdict(self.cfg)}
+    def save_checkpoint(self, *, path: Path, epoch: int, best_val: float):
+        obj = {
+            "epoch": epoch,
+            "best_val": float(best_val),
+            "model": self.model.state_dict(),
+            "opt": self.opt.state_dict(),
+            "scaler": self.scaler.state_dict(),  # để resume AMP đúng
+            "cfg": asdict(self.cfg),
+        }
         torch.save(obj, path)
+
 
     def fit(self, train_loader, val_loader):
         best_val = float("inf")
+
+        best_path = self.ckpt_dir / "best.pt"
+        latest_path = self.ckpt_dir / "latest.pt"
+
         for epoch in range(1, self.cfg.training.epochs + 1):
             t0 = time.time()
             tr = self.train_one_epoch(train_loader, epoch)
             va = self.validate(val_loader, epoch)
             dt = time.time() - t0
 
-            # existing epoch log (kept stable for plots)
             self._append_epoch_csv({
                 "epoch": epoch,
                 "train_loss": tr["loss"],
@@ -697,13 +707,16 @@ class PhaseATrainer:
             self.maybe_visualize(val_loader, epoch, tag="val")
             self.maybe_tsne(val_loader, epoch)
 
+            # Save latest every epoch (overwrite)
+            self.save_checkpoint(path=latest_path, epoch=epoch, best_val=best_val)
+
+            # Save best only when improved (overwrite best.pt)
             if va["loss"] < best_val:
                 best_val = va["loss"]
-                self.save_checkpoint(epoch)
+                self.save_checkpoint(path=best_path, epoch=epoch, best_val=best_val)
 
             plot_training_curves(self.log_csv_path, self.plots_dir)
 
-            # Phase B: explicit console summary
             print(
                 f"[epoch {epoch:03d}] "
                 f"train: recon_o={tr['loss_recon_orig']:.4f} recon_f={tr['loss_recon_flip']:.4f} recon_t={tr['loss_recon_total']:.4f} "
@@ -711,7 +724,6 @@ class PhaseATrainer:
                 f"val: recon_o={va['loss_recon_orig']:.4f} recon_f={va['loss_recon_flip']:.4f} recon_t={va['loss_recon_total']:.4f} "
                 f"con={va['loss_contrastive']:.4f} total={va['loss_total']:.4f} | time={dt:.1f}s"
             )
-
 
 def main():
     parser = build_argparser()
