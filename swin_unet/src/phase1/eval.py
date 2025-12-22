@@ -11,7 +11,8 @@ from __future__ import annotations
 import json
 from dataclasses import fields, is_dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, get_origin, get_args
+from typing import Any, Dict, Optional, get_origin, get_args, get_type_hints, Union
+
 
 import numpy as np
 import torch
@@ -45,10 +46,13 @@ def ensure_dir(p: Path) -> Path:
 
 def dataclass_from_dict(dc_type, raw: dict):
     """
-    Rebuild a nested dataclass from a dict using type annotations.
+    Rebuild nested dataclass from dict, resolving forward refs via get_type_hints().
     """
     if not is_dataclass(dc_type):
         raise TypeError(f"{dc_type} is not a dataclass")
+
+    # IMPORTANT: resolve real field types (handles postponed annotations / ForwardRef)
+    type_hints = get_type_hints(dc_type)
 
     kwargs = {}
     for f in fields(dc_type):
@@ -57,24 +61,26 @@ def dataclass_from_dict(dc_type, raw: dict):
             continue
 
         val = raw[name]
-        ftype = f.type
+        ftype = type_hints.get(name, f.type)
 
         # Case 1: nested dataclass
         if is_dataclass(ftype) and isinstance(val, dict):
             kwargs[name] = dataclass_from_dict(ftype, val)
             continue
 
-        # Case 2: Optional[Dataclass]
+        # Case 2: Optional[Dataclass] or Union[Dataclass, None]
         origin = get_origin(ftype)
         args = get_args(ftype)
-        if origin is not None and is_dataclass(args[0]) and isinstance(val, dict):
-            kwargs[name] = dataclass_from_dict(args[0], val)
-            continue
+        if origin is Union and isinstance(val, dict):
+            dc_candidates = [a for a in args if is_dataclass(a)]
+            if dc_candidates:
+                kwargs[name] = dataclass_from_dict(dc_candidates[0], val)
+                continue
 
-        # Case 3: normal value
         kwargs[name] = val
 
     return dc_type(**kwargs)
+
 
 def resolve_ckpt_path(ckpt: str, ckpt_dir: Optional[str]) -> Path:
     """
