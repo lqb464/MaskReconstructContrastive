@@ -22,7 +22,7 @@ from torch.utils.data import DataLoader
 
 from augmentation import sample_masks_anti_mirror
 from config import ExperimentConfig
-from data import FolderSubfolderImageDataset, load_label_map_csv
+from data import FolderSubfolderImageDataset, load_label_map_from_csv
 from losses import masked_l1_loss, mixed_l1_loss, nt_xent_loss, compute_embedding_variance, ssim_index
 from metrics import MetricsAccumulator
 from model import SwinUNetDualViewSSLPhase1, flip_lr
@@ -437,7 +437,7 @@ def main():
     # dataset and loader
     label_map = None
     if args.label_csv:
-        label_map = load_label_map_csv(
+        label_map = load_label_map_from_csv(
             csv_path=args.label_csv,
             root_dir=args.data_root,
             path_col=args.label_path_col,
