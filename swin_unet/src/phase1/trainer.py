@@ -36,7 +36,7 @@ from torch.optim import AdamW
 from tqdm import tqdm
 
 from config import ExperimentConfig, build_argparser
-from data import create_dataloaders_from_folder, create_inference_dataloader_from_folder
+from data import create_dataloaders_from_folder
 from augmentation import sample_masks_anti_mirror
 from losses import masked_l1_loss, mixed_l1_loss, nt_xent_loss, compute_embedding_variance, ssim_index
 from metrics import MetricsAccumulator

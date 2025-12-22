@@ -288,7 +288,7 @@ class BasicLayer(nn.Module):
 
 
 # -------------------------
-# SACA-style window cross attention (Option A at Stage1)
+# SACA-style window cross attention
 # -------------------------
 class WindowCrossAttention(nn.Module):
     """
