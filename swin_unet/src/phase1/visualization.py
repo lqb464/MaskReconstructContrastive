@@ -241,8 +241,82 @@ def run_tsne_visualization(
         plt.close()
 
 
+def plot_loss_decomposition_curves(loss_decomp_csv_path: Path, output_dir: Path):
+    """
+    Tạo 3 plot:
+    1. Reconstruction loss (orig / flip / total) cho train + val trong 1 ảnh
+    2. Contrastive loss cho train + val trong 1 ảnh
+    3. Total loss (recon + contrast) cho train + val trong 1 ảnh
+    """
+    if not loss_decomp_csv_path.exists():
+        return
+
+    df = pd.read_csv(loss_decomp_csv_path)
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # =====================================================
+    # 1) Reconstruction losses
+    # =====================================================
+    plt.figure(figsize=(10, 6))
+    for split in ["train", "val"]:
+        sub = df[df["split"] == split]
+        plt.plot(sub["epoch"], sub["loss_recon_orig"],
+                 label=f"{split}-recon-orig")
+        plt.plot(sub["epoch"], sub["loss_recon_flip"],
+                 label=f"{split}-recon-flip")
+        plt.plot(sub["epoch"], sub["loss_recon_total"],
+                 label=f"{split}-recon-total")
+
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.title("Reconstruction Loss (orig / flip / total)")
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(output_dir / "reconstruction_loss_curves.png")
+    plt.close()
+
+    # =====================================================
+    # 2) Contrastive loss
+    # =====================================================
+    plt.figure(figsize=(8, 5))
+    for split in ["train", "val"]:
+        sub = df[df["split"] == split]
+        plt.plot(sub["epoch"], sub["loss_contrastive"],
+                 label=f"{split}-contrastive")
+
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.title("Contrastive Loss")
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(output_dir / "contrastive_loss_curves.png")
+    plt.close()
+
+    # =====================================================
+    # 3) Total loss
+    # =====================================================
+    plt.figure(figsize=(8, 5))
+    for split in ["train", "val"]:
+        sub = df[df["split"] == split]
+        plt.plot(sub["epoch"], sub["loss_total"],
+                 label=f"{split}-total")
+
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.title("Total Loss (recon + contrast)")
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(output_dir / "total_loss_curves.png")
+    plt.close()
+
 __all__ = [
     "save_image_grid",
     "plot_training_curves",
     "run_tsne_visualization",
+    "plot_loss_decomposition_curves",
 ]

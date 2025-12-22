@@ -40,7 +40,7 @@ from data import create_dataloaders_from_folder
 from augmentation import sample_masks_anti_mirror
 from losses import masked_l1_loss, mixed_l1_loss, nt_xent_loss, compute_embedding_variance, ssim_index
 from metrics import MetricsAccumulator
-from visualization import save_image_grid, plot_training_curves, run_tsne_visualization
+from visualization import save_image_grid, plot_training_curves, run_tsne_visualization, plot_loss_decomposition_curves
 from model import SwinUNetDualViewSSLPhase1, flip_lr
 
 
@@ -716,6 +716,10 @@ class PhaseATrainer:
                 self.save_checkpoint(path=best_path, epoch=epoch, best_val=best_val)
 
             plot_training_curves(self.log_csv_path, self.plots_dir)
+            plot_loss_decomposition_curves(
+                self.loss_decomp_csv_path,
+                self.plots_dir,
+            )
 
             print(
                 f"[epoch {epoch:03d}] "
