@@ -25,7 +25,7 @@ import csv
 import time
 from dataclasses import asdict
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, Any
 
 import numpy as np
 import torch
@@ -36,7 +36,7 @@ from torch.optim import AdamW
 from tqdm import tqdm
 
 from config import ExperimentConfig, build_argparser
-from data import create_dataloaders_from_folder
+from data import create_dataloaders_from_folder, create_inference_dataloader_from_folder
 from augmentation import sample_masks_anti_mirror
 from losses import masked_l1_loss, mixed_l1_loss, nt_xent_loss, compute_embedding_variance, ssim_index
 from metrics import MetricsAccumulator
@@ -724,6 +724,11 @@ class PhaseATrainer:
                 f"val: recon_o={va['loss_recon_orig']:.4f} recon_f={va['loss_recon_flip']:.4f} recon_t={va['loss_recon_total']:.4f} "
                 f"con={va['loss_contrastive']:.4f} total={va['loss_total']:.4f} | time={dt:.1f}s"
             )
+
+    def load_checkpoint_weights(self, ckpt_path: Path) -> Dict[str, Any]:
+        obj = torch.load(ckpt_path, map_location=self.device)
+        self.model.load_state_dict(obj["model"], strict=True)
+        return obj
 
 def main():
     parser = build_argparser()
