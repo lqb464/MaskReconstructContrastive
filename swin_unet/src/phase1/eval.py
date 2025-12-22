@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from dataclasses import fields, is_dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, get_origin, get_args
 
 import numpy as np
 import torch
@@ -43,30 +43,38 @@ def ensure_dir(p: Path) -> Path:
     return p
 
 
-def dataclass_from_dict(dc_type, raw: Dict[str, Any]):
+def dataclass_from_dict(dc_type, raw: dict):
     """
-    Reconstruct nested dataclass (ExperimentConfig and children) from dict.
+    Rebuild a nested dataclass from a dict using type annotations.
     """
     if not is_dataclass(dc_type):
-        raise TypeError(f"Expected dataclass type, got: {dc_type}")
+        raise TypeError(f"{dc_type} is not a dataclass")
 
     kwargs = {}
     for f in fields(dc_type):
-        key = f.name
-        if key not in raw:
+        name = f.name
+        if name not in raw:
             continue
-        val = raw[key]
-        ft = f.type
-        # nested dataclass
-        try:
-            if is_dataclass(ft) and isinstance(val, dict):
-                kwargs[key] = dataclass_from_dict(ft, val)
-            else:
-                kwargs[key] = val
-        except Exception:
-            kwargs[key] = val
-    return dc_type(**kwargs)
 
+        val = raw[name]
+        ftype = f.type
+
+        # Case 1: nested dataclass
+        if is_dataclass(ftype) and isinstance(val, dict):
+            kwargs[name] = dataclass_from_dict(ftype, val)
+            continue
+
+        # Case 2: Optional[Dataclass]
+        origin = get_origin(ftype)
+        args = get_args(ftype)
+        if origin is not None and is_dataclass(args[0]) and isinstance(val, dict):
+            kwargs[name] = dataclass_from_dict(args[0], val)
+            continue
+
+        # Case 3: normal value
+        kwargs[name] = val
+
+    return dc_type(**kwargs)
 
 def resolve_ckpt_path(ckpt: str, ckpt_dir: Optional[str]) -> Path:
     """
