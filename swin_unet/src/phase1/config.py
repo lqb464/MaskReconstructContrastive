@@ -228,7 +228,6 @@ class ExperimentConfig:
                 tsne_max_items=args.tsne_max_items,
             ),
             eval=EvalConfig(
-                enable=bool(args.eval_enable),
                 data_root=args.eval_data_root,
                 ckpt=args.eval_ckpt,
                 label_csv=args.eval_label_csv,
