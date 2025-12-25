@@ -132,22 +132,6 @@ class LoggingConfig:
     tsne_max_items: int = 1000
 
 
-
-@dataclass
-class EvalConfig:
-    enable: bool = False
-    data_root: str = ""
-    ckpt: str = "best" 
-
-    label_csv: str = ""
-    label_path_col: str = "image_path"
-    label_col: str = "label"
-
-    # eval dataloader
-    batch_size: int = 64
-    plane: str = "axial"  # "axial" | "coronal" | "auto"
-
-
 @dataclass
 class ExperimentConfig:
     """Complete experiment configuration"""
@@ -156,7 +140,6 @@ class ExperimentConfig:
     data: DataConfig = field(default_factory=DataConfig)
     mask: MaskConfig = field(default_factory=MaskConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
-    eval: EvalConfig = field(default_factory=EvalConfig)
 
     @classmethod
     def from_args(cls, args: argparse.Namespace) -> "ExperimentConfig":
@@ -227,17 +210,7 @@ class ExperimentConfig:
                 tsne_every=args.tsne_every,
                 tsne_max_items=args.tsne_max_items,
             ),
-            eval=EvalConfig(
-                data_root=args.eval_data_root,
-                ckpt=args.eval_ckpt,
-                label_csv=args.eval_label_csv,
-                label_path_col=args.eval_label_path_col,
-                label_col=args.eval_label_col,
-                batch_size=args.eval_batch_size,
-                plane=args.eval_plane,
-            ),
         )
-
 
 
 
