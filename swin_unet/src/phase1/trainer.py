@@ -196,6 +196,27 @@ class PhaseATrainer:
         # Optional: stored for TSNE tool compatibility
         self.data_module = None
 
+    def _lambda_contrastive_eff(self, epoch: int) -> float:
+        """
+        Linear ramp for contrastive weight:
+          epoch 1..ramp_epochs: scale from ~0 -> 1
+          epoch > ramp_epochs: scale = 1
+        If ramp is disabled (<=0), return base lambda_contrast.
+       """
+        base = float(getattr(self.cfg.training, "lambda_contrast", 0.0))
+        # Accept a few possible config names to be robust
+        ramp_epochs = int(
+            getattr(
+                self.cfg.training,
+                "ramp_contrastive",
+                getattr(self.cfg.training, "ramp_contrastive_epochs", 0),
+            )
+        )
+        if ramp_epochs <= 0:
+            return base
+        scale = min(1.0, float(epoch) / float(ramp_epochs))
+        return base * scale
+
     # -------- CSV init/append --------
     def _init_epoch_csv(self):
         if self.log_csv_path.exists():
@@ -323,6 +344,7 @@ class PhaseATrainer:
         vars_min = []
 
         pbar = tqdm(loader, desc=f"train {epoch}", leave=False)
+        lambda_contrast_eff = self._lambda_contrastive_eff(epoch)
 
         for step, batch in enumerate(pbar):
             x = batch["input"].to(self.device, non_blocking=True)
@@ -389,7 +411,7 @@ class PhaseATrainer:
 
                 loss_total = (
                     self.cfg.training.lambda_recon * loss_recon_total
-                    + self.cfg.training.lambda_contrast * loss_con
+                    + lambda_contrast_eff * loss_con
                 )
 
             self.scaler.scale(loss_total).backward()
@@ -464,6 +486,8 @@ class PhaseATrainer:
     def validate(self, loader, epoch: int) -> Dict[str, float]:
         self.model.eval()
         meter = MetricsAccumulator()
+        
+        lambda_contrast_eff = self._lambda_contrastive_eff(epoch)
 
         losses_total = []
         loss_recon_orig_list = []
@@ -537,7 +561,7 @@ class PhaseATrainer:
 
                 loss_total = (
                     self.cfg.training.lambda_recon * loss_recon_total
-                    + self.cfg.training.lambda_contrast * loss_con
+                    + lambda_contrast_eff * loss_con
                 )
 
             recon_img_orig_metric = torch.sigmoid(recon_raw_orig.clamp(-10, 10))

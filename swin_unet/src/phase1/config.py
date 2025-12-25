@@ -296,6 +296,7 @@ def build_argparser() -> argparse.ArgumentParser:
 
     # Training
     p.add_argument("--enable-contrastive", action="store_true")
+    p.add_argument("--ramp-contrastive", type=int, default=20)
     p.add_argument("--disable-contrastive", dest="enable_contrastive", action="store_false")
     p.set_defaults(enable_contrastive=True)
 
