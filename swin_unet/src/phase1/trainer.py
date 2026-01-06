@@ -165,6 +165,8 @@ class PhaseATrainer:
             proj_dim=cfg.model.proj_dim,
             plane_inject_method=cfg.model.plane_inject_method,
         ).to(device)
+        
+        print(model)
 
         # Parameter logging (Phase A DoD)
         try:
