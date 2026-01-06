@@ -30,6 +30,7 @@ from typing import Dict, Optional, Tuple, Any
 import numpy as np
 import torch
 import torch.nn.functional as F
+from torchinfo import summary
 from torch import nn
 from torch.amp import autocast, GradScaler
 from torch.optim import AdamW
@@ -188,6 +189,39 @@ class PhaseATrainer:
 
         except Exception as e:
             print("[params] unable to compute breakdown:", repr(e))
+            
+        try:
+            B = cfg.train.batch_size if hasattr(cfg, "train") else 1
+            H = cfg.data.image_size
+            W = cfg.data.image_size
+            in_ch = cfg.model.in_ch
+
+            dummy_x = torch.zeros(B, in_ch, H, W, device=device)
+            dummy_pixel_mask = torch.zeros(B, 1, H, W, device=device)
+            dummy_plane_one_hot = torch.zeros(B, 2, device=device)
+
+            print("\n[torchinfo] Model architecture summary\n")
+
+            summary(
+                self.model,
+                input_data=(
+                    dummy_x,
+                    dummy_pixel_mask,
+                    dummy_plane_one_hot,
+                ),
+                depth=4,                  # 3–5 là hợp lý, sâu hơn rất dài
+                col_names=(
+                    "input_size",
+                    "output_size",
+                    "num_params",
+                    "trainable",
+                ),
+                verbose=1,
+                device=device,
+            )
+
+        except Exception as e:
+            print("[torchinfo] unable to print model summary:", repr(e))
 
 
         self.opt = AdamW(self.model.parameters(), lr=cfg.training.lr, weight_decay=cfg.training.weight_decay)
