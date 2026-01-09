@@ -30,7 +30,7 @@ from viz.visualization import (
     run_tsne_visualization,
     save_image_grid,
 )
-from model.swin_unet_dualview_ssl import SwinUNetDualViewSSL, flip_lr
+from models.swin_unet_dualview_ssl import SwinUNetDualViewSSL, flip_lr
 
 from .training.batch_ops import prepare_inputs
 from .training.ckpt_io import load_checkpoint_weights, save_checkpoint
