@@ -4,7 +4,7 @@ from typing import Dict, Tuple
 
 import torch
 
-from swin_unet.src.ver2.augmentation import sample_masks_anti_mirror
+from swin_unet.src.ver2.data.augmentation import sample_masks_anti_mirror
 
 
 def prepare_inputs(
