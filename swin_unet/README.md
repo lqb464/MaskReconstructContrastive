@@ -60,7 +60,7 @@ Total:
   L = λc*L_contrast + λr1*L_recon1 + λr2*L_recon2
 ```
 
-áp dụng trực tiếp model:
+Áp dụng trực tiếp model:
 - Refine lại attention: cross attention trước swin (trực tiếp trên token) (bật/tắt)
 - Thử lại contrastive (vị trí đặt, loại loss)
 - Sau khi cross attention: pretrained encoder: finetune
