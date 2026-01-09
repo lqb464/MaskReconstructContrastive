@@ -4,7 +4,7 @@ from typing import Tuple
 
 import torch
 
-from swin_unet.ver2.src.common.losses import ssim_index
+from swin_unet.src.ver2.common.losses import ssim_index
 
 
 def update_recon_metrics(
