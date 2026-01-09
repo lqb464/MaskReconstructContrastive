@@ -1,0 +1,669 @@
+SwinUNetDualViewSSLPhase1(
+  (patch_embed_1): PatchEmbed(
+    (proj): Conv2d(1, 96, kernel_size=(16, 16), stride=(16, 16))
+  )
+  (stage0_1): BasicLayer(
+    (blocks): ModuleList(
+      (0-1): 2 x SwinTransformerBlock(
+        (norm1): LayerNorm((96,), eps=1e-05, elementwise_affine=True)
+        (attn): WindowAttention(
+          (qkv): Linear(in_features=96, out_features=288, bias=True)
+          (attn_drop): Dropout(p=0.0, inplace=False)
+          (proj): Linear(in_features=96, out_features=96, bias=True)
+          (proj_drop): Dropout(p=0.0, inplace=False)
+        )
+        (norm2): LayerNorm((96,), eps=1e-05, elementwise_affine=True)
+        (mlp): Mlp(
+          (fc1): Linear(in_features=96, out_features=384, bias=True)
+          (act): GELU(approximate='none')
+          (fc2): Linear(in_features=384, out_features=96, bias=True)
+          (drop): Dropout(p=0.0, inplace=False)
+        )
+      )
+    )
+  )
+  (merge0_1): PatchMerging(
+    (reduction): Linear(in_features=384, out_features=192, bias=False)
+    (norm): LayerNorm((384,), eps=1e-05, elementwise_affine=True)
+  )
+  (stage1_1): BasicLayer(
+    (blocks): ModuleList(
+      (0-1): 2 x SwinTransformerBlock(
+        (norm1): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+        (attn): WindowAttention(
+          (qkv): Linear(in_features=192, out_features=576, bias=True)
+          (attn_drop): Dropout(p=0.0, inplace=False)
+          (proj): Linear(in_features=192, out_features=192, bias=True)
+          (proj_drop): Dropout(p=0.0, inplace=False)
+        )
+        (norm2): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+        (mlp): Mlp(
+          (fc1): Linear(in_features=192, out_features=768, bias=True)
+          (act): GELU(approximate='none')
+          (fc2): Linear(in_features=768, out_features=192, bias=True)
+          (drop): Dropout(p=0.0, inplace=False)
+        )
+      )
+    )
+  )
+  (patch_embed_2): PatchEmbed(
+    (proj): Conv2d(1, 96, kernel_size=(16, 16), stride=(16, 16))
+  )
+  (stage0_2): BasicLayer(
+    (blocks): ModuleList(
+      (0-1): 2 x SwinTransformerBlock(
+        (norm1): LayerNorm((96,), eps=1e-05, elementwise_affine=True)
+        (attn): WindowAttention(
+          (qkv): Linear(in_features=96, out_features=288, bias=True)
+          (attn_drop): Dropout(p=0.0, inplace=False)
+          (proj): Linear(in_features=96, out_features=96, bias=True)
+          (proj_drop): Dropout(p=0.0, inplace=False)
+        )
+        (norm2): LayerNorm((96,), eps=1e-05, elementwise_affine=True)
+        (mlp): Mlp(
+          (fc1): Linear(in_features=96, out_features=384, bias=True)
+          (act): GELU(approximate='none')
+          (fc2): Linear(in_features=384, out_features=96, bias=True)
+          (drop): Dropout(p=0.0, inplace=False)
+        )
+      )
+    )
+  )
+  (merge0_2): PatchMerging(
+    (reduction): Linear(in_features=384, out_features=192, bias=False)
+    (norm): LayerNorm((384,), eps=1e-05, elementwise_affine=True)
+  )
+  (stage1_2): BasicLayer(
+    (blocks): ModuleList(
+      (0-1): 2 x SwinTransformerBlock(
+        (norm1): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+        (attn): WindowAttention(
+          (qkv): Linear(in_features=192, out_features=576, bias=True)
+          (attn_drop): Dropout(p=0.0, inplace=False)
+          (proj): Linear(in_features=192, out_features=192, bias=True)
+          (proj_drop): Dropout(p=0.0, inplace=False)
+        )
+        (norm2): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+        (mlp): Mlp(
+          (fc1): Linear(in_features=192, out_features=768, bias=True)
+          (act): GELU(approximate='none')
+          (fc2): Linear(in_features=768, out_features=192, bias=True)
+          (drop): Dropout(p=0.0, inplace=False)
+        )
+      )
+    )
+  )
+  (saca_stage1): SACAStage1Block(
+    (norm_q1): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+    (norm_kv1): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+    (xattn_12): WindowCrossAttention(
+      (q): Linear(in_features=192, out_features=192, bias=True)
+      (kv): Linear(in_features=192, out_features=384, bias=True)
+      (attn_drop): Dropout(p=0.0, inplace=False)
+      (proj): Linear(in_features=192, out_features=192, bias=True)
+      (proj_drop): Dropout(p=0.0, inplace=False)
+    )
+    (norm_q2): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+    (norm_kv2): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+    (xattn_21): WindowCrossAttention(
+      (q): Linear(in_features=192, out_features=192, bias=True)
+      (kv): Linear(in_features=192, out_features=384, bias=True)
+      (attn_drop): Dropout(p=0.0, inplace=False)
+      (proj): Linear(in_features=192, out_features=192, bias=True)
+      (proj_drop): Dropout(p=0.0, inplace=False)
+    )
+    (norm2_1): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+    (mlp1): Mlp(
+      (fc1): Linear(in_features=192, out_features=768, bias=True)
+      (act): GELU(approximate='none')
+      (fc2): Linear(in_features=768, out_features=192, bias=True)
+      (drop): Dropout(p=0.0, inplace=False)
+    )
+    (norm2_2): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+    (mlp2): Mlp(
+      (fc1): Linear(in_features=192, out_features=768, bias=True)
+      (act): GELU(approximate='none')
+      (fc2): Linear(in_features=768, out_features=192, bias=True)
+      (drop): Dropout(p=0.0, inplace=False)
+    )
+  )
+  (merge1): PatchMerging(
+    (reduction): Linear(in_features=768, out_features=384, bias=False)
+    (norm): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+  )
+  (plane_cond): PlaneCondition(
+    (mlp): Sequential(
+      (0): Linear(in_features=2, out_features=128, bias=True)
+      (1): GELU(approximate='none')
+      (2): Linear(in_features=128, out_features=768, bias=True)
+    )
+  )
+  (stage2): BasicLayer(
+    (blocks): ModuleList(
+      (0-5): 6 x SwinTransformerBlock(
+        (norm1): LayerNorm((384,), eps=1e-05, elementwise_affine=True)
+        (attn): WindowAttention(
+          (qkv): Linear(in_features=384, out_features=1152, bias=True)
+          (attn_drop): Dropout(p=0.0, inplace=False)
+          (proj): Linear(in_features=384, out_features=384, bias=True)
+          (proj_drop): Dropout(p=0.0, inplace=False)
+        )
+        (norm2): LayerNorm((384,), eps=1e-05, elementwise_affine=True)
+        (mlp): Mlp(
+          (fc1): Linear(in_features=384, out_features=1536, bias=True)
+          (act): GELU(approximate='none')
+          (fc2): Linear(in_features=1536, out_features=384, bias=True)
+          (drop): Dropout(p=0.0, inplace=False)
+        )
+      )
+    )
+  )
+  (merge2): PatchMerging(
+    (reduction): Linear(in_features=1536, out_features=768, bias=False)
+    (norm): LayerNorm((1536,), eps=1e-05, elementwise_affine=True)
+  )
+  (stage3): BasicLayer(
+    (blocks): ModuleList(
+      (0-1): 2 x SwinTransformerBlock(
+        (norm1): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+        (attn): WindowAttention(
+          (qkv): Linear(in_features=768, out_features=2304, bias=True)
+          (attn_drop): Dropout(p=0.0, inplace=False)
+          (proj): Linear(in_features=768, out_features=768, bias=True)
+          (proj_drop): Dropout(p=0.0, inplace=False)
+        )
+        (norm2): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+        (mlp): Mlp(
+          (fc1): Linear(in_features=768, out_features=3072, bias=True)
+          (act): GELU(approximate='none')
+          (fc2): Linear(in_features=3072, out_features=768, bias=True)
+          (drop): Dropout(p=0.0, inplace=False)
+        )
+      )
+    )
+  )
+  (proj): ProjectionHead(
+    (net): Sequential(
+      (0): Linear(in_features=768, out_features=768, bias=False)
+      (1): BatchNorm1d(768, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (2): ReLU(inplace=True)
+      (3): Linear(in_features=768, out_features=128, bias=True)
+    )
+  )
+  (up2_shared): SwinUpBlock(
+    (up): PatchExpand(
+      (expand): Linear(in_features=768, out_features=1536, bias=False)
+      (norm): LayerNorm((384,), eps=1e-05, elementwise_affine=True)
+    )
+    (proj): Linear(in_features=768, out_features=384, bias=True)
+    (norm): LayerNorm((384,), eps=1e-05, elementwise_affine=True)
+    (layer): BasicLayer(
+      (blocks): ModuleList(
+        (0-5): 6 x SwinTransformerBlock(
+          (norm1): LayerNorm((384,), eps=1e-05, elementwise_affine=True)
+          (attn): WindowAttention(
+            (qkv): Linear(in_features=384, out_features=1152, bias=True)
+            (attn_drop): Dropout(p=0.0, inplace=False)
+            (proj): Linear(in_features=384, out_features=384, bias=True)
+            (proj_drop): Dropout(p=0.0, inplace=False)
+          )
+          (norm2): LayerNorm((384,), eps=1e-05, elementwise_affine=True)
+          (mlp): Mlp(
+            (fc1): Linear(in_features=384, out_features=1536, bias=True)
+            (act): GELU(approximate='none')
+            (fc2): Linear(in_features=1536, out_features=384, bias=True)
+            (drop): Dropout(p=0.0, inplace=False)
+          )
+        )
+      )
+    )
+  )
+  (up1_v1): SwinUpBlock(
+    (up): PatchExpand(
+      (expand): Linear(in_features=384, out_features=768, bias=False)
+      (norm): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+    )
+    (proj): Linear(in_features=384, out_features=192, bias=True)
+    (norm): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+    (layer): BasicLayer(
+      (blocks): ModuleList(
+        (0-1): 2 x SwinTransformerBlock(
+          (norm1): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+          (attn): WindowAttention(
+            (qkv): Linear(in_features=192, out_features=576, bias=True)
+            (attn_drop): Dropout(p=0.0, inplace=False)
+            (proj): Linear(in_features=192, out_features=192, bias=True)
+            (proj_drop): Dropout(p=0.0, inplace=False)
+          )
+          (norm2): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+          (mlp): Mlp(
+            (fc1): Linear(in_features=192, out_features=768, bias=True)
+            (act): GELU(approximate='none')
+            (fc2): Linear(in_features=768, out_features=192, bias=True)
+            (drop): Dropout(p=0.0, inplace=False)
+          )
+        )
+      )
+    )
+  )
+  (up0_v1): SwinUpBlock(
+    (up): PatchExpand(
+      (expand): Linear(in_features=192, out_features=384, bias=False)
+      (norm): LayerNorm((96,), eps=1e-05, elementwise_affine=True)
+    )
+    (proj): Linear(in_features=192, out_features=96, bias=True)
+    (norm): LayerNorm((96,), eps=1e-05, elementwise_affine=True)
+    (layer): BasicLayer(
+      (blocks): ModuleList(
+        (0-1): 2 x SwinTransformerBlock(
+          (norm1): LayerNorm((96,), eps=1e-05, elementwise_affine=True)
+          (attn): WindowAttention(
+            (qkv): Linear(in_features=96, out_features=288, bias=True)
+            (attn_drop): Dropout(p=0.0, inplace=False)
+            (proj): Linear(in_features=96, out_features=96, bias=True)
+            (proj_drop): Dropout(p=0.0, inplace=False)
+          )
+          (norm2): LayerNorm((96,), eps=1e-05, elementwise_affine=True)
+          (mlp): Mlp(
+            (fc1): Linear(in_features=96, out_features=384, bias=True)
+            (act): GELU(approximate='none')
+            (fc2): Linear(in_features=384, out_features=96, bias=True)
+            (drop): Dropout(p=0.0, inplace=False)
+          )
+        )
+      )
+    )
+  )
+  (final_up_v1): FinalPatchExpand(
+    (proj): Linear(in_features=96, out_features=8192, bias=False)
+  )
+  (recon_head_v1): Sequential(
+    (0): Conv2d(32, 16, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+    (1): ReLU(inplace=True)
+    (2): Conv2d(16, 1, kernel_size=(1, 1), stride=(1, 1))
+  )
+  (up1_v2): SwinUpBlock(
+    (up): PatchExpand(
+      (expand): Linear(in_features=384, out_features=768, bias=False)
+      (norm): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+    )
+    (proj): Linear(in_features=384, out_features=192, bias=True)
+    (norm): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+    (layer): BasicLayer(
+      (blocks): ModuleList(
+        (0-1): 2 x SwinTransformerBlock(
+          (norm1): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+          (attn): WindowAttention(
+            (qkv): Linear(in_features=192, out_features=576, bias=True)
+            (attn_drop): Dropout(p=0.0, inplace=False)
+            (proj): Linear(in_features=192, out_features=192, bias=True)
+            (proj_drop): Dropout(p=0.0, inplace=False)
+          )
+          (norm2): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+          (mlp): Mlp(
+            (fc1): Linear(in_features=192, out_features=768, bias=True)
+            (act): GELU(approximate='none')
+            (fc2): Linear(in_features=768, out_features=192, bias=True)
+            (drop): Dropout(p=0.0, inplace=False)
+          )
+        )
+      )
+    )
+  )
+  (up0_v2): SwinUpBlock(
+    (up): PatchExpand(
+      (expand): Linear(in_features=192, out_features=384, bias=False)
+      (norm): LayerNorm((96,), eps=1e-05, elementwise_affine=True)
+    )
+    (proj): Linear(in_features=192, out_features=96, bias=True)
+    (norm): LayerNorm((96,), eps=1e-05, elementwise_affine=True)
+    (layer): BasicLayer(
+      (blocks): ModuleList(
+        (0-1): 2 x SwinTransformerBlock(
+          (norm1): LayerNorm((96,), eps=1e-05, elementwise_affine=True)
+          (attn): WindowAttention(
+            (qkv): Linear(in_features=96, out_features=288, bias=True)
+            (attn_drop): Dropout(p=0.0, inplace=False)
+            (proj): Linear(in_features=96, out_features=96, bias=True)
+            (proj_drop): Dropout(p=0.0, inplace=False)
+          )
+          (norm2): LayerNorm((96,), eps=1e-05, elementwise_affine=True)
+          (mlp): Mlp(
+            (fc1): Linear(in_features=96, out_features=384, bias=True)
+            (act): GELU(approximate='none')
+            (fc2): Linear(in_features=384, out_features=96, bias=True)
+            (drop): Dropout(p=0.0, inplace=False)
+          )
+        )
+      )
+    )
+  )
+  (final_up_v2): FinalPatchExpand(
+    (proj): Linear(in_features=96, out_features=8192, bias=False)
+  )
+  (recon_head_v2): Sequential(
+    (0): Conv2d(32, 16, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+    (1): ReLU(inplace=True)
+    (2): Conv2d(16, 1, kernel_size=(1, 1), stride=(1, 1))
+  )
+)
+[params] total: 47309943
+[params] enc_early_view1: 1215618
+[params] enc_early_view2: 1215618
+[params] enc_shared_trunk: 26421432
+[params] contrastive_head: 689792
+[params] decoder_shared_up2: 12135432
+[params] decoder_branch_v1: 2365122
+[params] decoder_branch_v2: 2365122
+[params] recon_heads: 9282
+[params] check_sum: 47309943
+[params] delta_total_minus_check: 0
+
+[torchinfo] Model architecture summary
+
+======================================================================================================================================================
+Layer (type:depth-idx)                             Input Shape               Output Shape              Param #                   Trainable
+======================================================================================================================================================
+SwinUNetDualViewSSLPhase1                          [1, 1, 256, 256]          [1, 1, 256, 256]          --                        True
+├─PatchEmbed: 1-1                                  [1, 1, 256, 256]          [1, 16, 16, 96]           --                        True
+│    └─Conv2d: 2-1                                 [1, 1, 256, 256]          [1, 96, 16, 16]           24,672                    True
+├─BasicLayer: 1-2                                  [1, 16, 16, 96]           [1, 16, 16, 96]           --                        True
+│    └─ModuleList: 2-2                             --                        --                        --                        True
+│    │    └─SwinTransformerBlock: 3-1              [1, 16, 16, 96]           [1, 16, 16, 96]           --                        True
+│    │    │    └─LayerNorm: 4-1                    [1, 21, 21, 96]           [1, 21, 21, 96]           192                       True
+│    │    │    └─WindowAttention: 4-2              [9, 49, 96]               [9, 49, 96]               37,755                    True
+│    │    │    └─LayerNorm: 4-3                    [1, 21, 21, 96]           [1, 21, 21, 96]           192                       True
+│    │    │    └─Mlp: 4-4                          [1, 21, 21, 96]           [1, 21, 21, 96]           74,208                    True
+│    │    └─SwinTransformerBlock: 3-2              [1, 16, 16, 96]           [1, 16, 16, 96]           --                        True
+│    │    │    └─LayerNorm: 4-5                    [1, 21, 21, 96]           [1, 21, 21, 96]           192                       True
+│    │    │    └─WindowAttention: 4-6              [9, 49, 96]               [9, 49, 96]               37,755                    True
+│    │    │    └─LayerNorm: 4-7                    [1, 21, 21, 96]           [1, 21, 21, 96]           192                       True
+│    │    │    └─Mlp: 4-8                          [1, 21, 21, 96]           [1, 21, 21, 96]           74,208                    True
+├─PatchMerging: 1-3                                [1, 16, 16, 96]           [1, 8, 8, 192]            --                        True
+│    └─LayerNorm: 2-3                              [1, 8, 8, 384]            [1, 8, 8, 384]            768                       True
+│    └─Linear: 2-4                                 [1, 8, 8, 384]            [1, 8, 8, 192]            73,728                    True
+├─BasicLayer: 1-4                                  [1, 8, 8, 192]            [1, 8, 8, 192]            --                        True
+│    └─ModuleList: 2-5                             --                        --                        --                        True
+│    │    └─SwinTransformerBlock: 3-3              [1, 8, 8, 192]            [1, 8, 8, 192]            --                        True
+│    │    │    └─LayerNorm: 4-9                    [1, 14, 14, 192]          [1, 14, 14, 192]          384                       True
+│    │    │    └─WindowAttention: 4-10             [4, 49, 192]              [4, 49, 192]              149,238                   True
+│    │    │    └─LayerNorm: 4-11                   [1, 14, 14, 192]          [1, 14, 14, 192]          384                       True
+│    │    │    └─Mlp: 4-12                         [1, 14, 14, 192]          [1, 14, 14, 192]          295,872                   True
+│    │    └─SwinTransformerBlock: 3-4              [1, 8, 8, 192]            [1, 8, 8, 192]            --                        True
+│    │    │    └─LayerNorm: 4-13                   [1, 14, 14, 192]          [1, 14, 14, 192]          384                       True
+│    │    │    └─WindowAttention: 4-14             [4, 49, 192]              [4, 49, 192]              149,238                   True
+│    │    │    └─LayerNorm: 4-15                   [1, 14, 14, 192]          [1, 14, 14, 192]          384                       True
+│    │    │    └─Mlp: 4-16                         [1, 14, 14, 192]          [1, 14, 14, 192]          295,872                   True
+├─PatchEmbed: 1-5                                  [1, 1, 256, 256]          [1, 16, 16, 96]           --                        True
+│    └─Conv2d: 2-6                                 [1, 1, 256, 256]          [1, 96, 16, 16]           24,672                    True
+├─BasicLayer: 1-6                                  [1, 16, 16, 96]           [1, 16, 16, 96]           --                        True
+│    └─ModuleList: 2-7                             --                        --                        --                        True
+│    │    └─SwinTransformerBlock: 3-5              [1, 16, 16, 96]           [1, 16, 16, 96]           --                        True
+│    │    │    └─LayerNorm: 4-17                   [1, 21, 21, 96]           [1, 21, 21, 96]           192                       True
+│    │    │    └─WindowAttention: 4-18             [9, 49, 96]               [9, 49, 96]               37,755                    True
+│    │    │    └─LayerNorm: 4-19                   [1, 21, 21, 96]           [1, 21, 21, 96]           192                       True
+│    │    │    └─Mlp: 4-20                         [1, 21, 21, 96]           [1, 21, 21, 96]           74,208                    True
+│    │    └─SwinTransformerBlock: 3-6              [1, 16, 16, 96]           [1, 16, 16, 96]           --                        True
+│    │    │    └─LayerNorm: 4-21                   [1, 21, 21, 96]           [1, 21, 21, 96]           192                       True
+│    │    │    └─WindowAttention: 4-22             [9, 49, 96]               [9, 49, 96]               37,755                    True
+│    │    │    └─LayerNorm: 4-23                   [1, 21, 21, 96]           [1, 21, 21, 96]           192                       True
+│    │    │    └─Mlp: 4-24                         [1, 21, 21, 96]           [1, 21, 21, 96]           74,208                    True
+├─PatchMerging: 1-7                                [1, 16, 16, 96]           [1, 8, 8, 192]            --                        True
+│    └─LayerNorm: 2-8                              [1, 8, 8, 384]            [1, 8, 8, 384]            768                       True
+│    └─Linear: 2-9                                 [1, 8, 8, 384]            [1, 8, 8, 192]            73,728                    True
+├─BasicLayer: 1-8                                  [1, 8, 8, 192]            [1, 8, 8, 192]            --                        True
+│    └─ModuleList: 2-10                            --                        --                        --                        True
+│    │    └─SwinTransformerBlock: 3-7              [1, 8, 8, 192]            [1, 8, 8, 192]            --                        True
+│    │    │    └─LayerNorm: 4-25                   [1, 14, 14, 192]          [1, 14, 14, 192]          384                       True
+│    │    │    └─WindowAttention: 4-26             [4, 49, 192]              [4, 49, 192]              149,238                   True
+│    │    │    └─LayerNorm: 4-27                   [1, 14, 14, 192]          [1, 14, 14, 192]          384                       True
+│    │    │    └─Mlp: 4-28                         [1, 14, 14, 192]          [1, 14, 14, 192]          295,872                   True
+│    │    └─SwinTransformerBlock: 3-8              [1, 8, 8, 192]            [1, 8, 8, 192]            --                        True
+│    │    │    └─LayerNorm: 4-29                   [1, 14, 14, 192]          [1, 14, 14, 192]          384                       True
+│    │    │    └─WindowAttention: 4-30             [4, 49, 192]              [4, 49, 192]              149,238                   True
+│    │    │    └─LayerNorm: 4-31                   [1, 14, 14, 192]          [1, 14, 14, 192]          384                       True
+│    │    │    └─Mlp: 4-32                         [1, 14, 14, 192]          [1, 14, 14, 192]          295,872                   True
+├─SACAStage1Block: 1-9                             [1, 8, 8, 192]            [1, 8, 8, 192]            1                         True
+│    └─LayerNorm: 2-11                             [1, 14, 14, 192]          [1, 14, 14, 192]          384                       True
+│    └─LayerNorm: 2-12                             [1, 14, 14, 192]          [1, 14, 14, 192]          384                       True
+│    └─WindowCrossAttention: 2-13                  [4, 49, 192]              [4, 49, 192]              1,014                     True
+│    │    └─Linear: 3-9                            [4, 49, 192]              [4, 49, 192]              37,056                    True
+│    │    └─Linear: 3-10                           [4, 49, 192]              [4, 49, 384]              74,112                    True
+│    │    └─Dropout: 3-11                          [4, 6, 49, 49]            [4, 6, 49, 49]            --                        --
+│    │    └─Linear: 3-12                           [4, 49, 192]              [4, 49, 192]              37,056                    True
+│    │    └─Dropout: 3-13                          [4, 49, 192]              [4, 49, 192]              --                        --
+│    └─LayerNorm: 2-14                             [1, 14, 14, 192]          [1, 14, 14, 192]          384                       True
+│    └─LayerNorm: 2-15                             [1, 14, 14, 192]          [1, 14, 14, 192]          384                       True
+│    └─WindowCrossAttention: 2-16                  [4, 49, 192]              [4, 49, 192]              1,014                     True
+│    │    └─Linear: 3-14                           [4, 49, 192]              [4, 49, 192]              37,056                    True
+│    │    └─Linear: 3-15                           [4, 49, 192]              [4, 49, 384]              74,112                    True
+│    │    └─Dropout: 3-16                          [4, 6, 49, 49]            [4, 6, 49, 49]            --                        --
+│    │    └─Linear: 3-17                           [4, 49, 192]              [4, 49, 192]              37,056                    True
+│    │    └─Dropout: 3-18                          [4, 49, 192]              [4, 49, 192]              --                        --
+│    └─LayerNorm: 2-17                             [1, 14, 14, 192]          [1, 14, 14, 192]          384                       True
+│    └─Mlp: 2-18                                   [1, 14, 14, 192]          [1, 14, 14, 192]          --                        True
+│    │    └─Linear: 3-19                           [1, 14, 14, 192]          [1, 14, 14, 768]          148,224                   True
+│    │    └─GELU: 3-20                             [1, 14, 14, 768]          [1, 14, 14, 768]          --                        --
+│    │    └─Dropout: 3-21                          [1, 14, 14, 768]          [1, 14, 14, 768]          --                        --
+│    │    └─Linear: 3-22                           [1, 14, 14, 768]          [1, 14, 14, 192]          147,648                   True
+│    │    └─Dropout: 3-23                          [1, 14, 14, 192]          [1, 14, 14, 192]          --                        --
+│    └─LayerNorm: 2-19                             [1, 14, 14, 192]          [1, 14, 14, 192]          384                       True
+│    └─Mlp: 2-20                                   [1, 14, 14, 192]          [1, 14, 14, 192]          --                        True
+│    │    └─Linear: 3-24                           [1, 14, 14, 192]          [1, 14, 14, 768]          148,224                   True
+│    │    └─GELU: 3-25                             [1, 14, 14, 768]          [1, 14, 14, 768]          --                        --
+│    │    └─Dropout: 3-26                          [1, 14, 14, 768]          [1, 14, 14, 768]          --                        --
+│    │    └─Linear: 3-27                           [1, 14, 14, 768]          [1, 14, 14, 192]          147,648                   True
+│    │    └─Dropout: 3-28                          [1, 14, 14, 192]          [1, 14, 14, 192]          --                        --
+├─PatchMerging: 1-10                               [1, 8, 8, 192]            [1, 4, 4, 384]            --                        True
+│    └─LayerNorm: 2-21                             [1, 4, 4, 768]            [1, 4, 4, 768]            1,536                     True
+│    └─Linear: 2-22                                [1, 4, 4, 768]            [1, 4, 4, 384]            294,912                   True
+├─PlaneCondition: 1-11                             [1, 4, 4, 384]            [1, 4, 4, 384]            --                        True
+│    └─Sequential: 2-23                            [1, 2]                    [1, 768]                  --                        True
+│    │    └─Linear: 3-29                           [1, 2]                    [1, 128]                  384                       True
+│    │    └─GELU: 3-30                             [1, 128]                  [1, 128]                  --                        --
+│    │    └─Linear: 3-31                           [1, 128]                  [1, 768]                  99,072                    True
+├─BasicLayer: 1-12                                 [1, 4, 4, 384]            [1, 4, 4, 384]            --                        True
+│    └─ModuleList: 2-31                            --                        --                        (recursive)               True
+│    │    └─SwinTransformerBlock: 3-32             [1, 4, 4, 384]            [1, 4, 4, 384]            --                        True
+│    │    │    └─LayerNorm: 4-33                   [1, 7, 7, 384]            [1, 7, 7, 384]            768                       True
+│    │    │    └─WindowAttention: 4-34             [1, 49, 384]              [1, 49, 384]              593,388                   True
+│    │    │    └─LayerNorm: 4-35                   [1, 7, 7, 384]            [1, 7, 7, 384]            768                       True
+│    │    │    └─Mlp: 4-36                         [1, 7, 7, 384]            [1, 7, 7, 384]            1,181,568                 True
+│    │    └─SwinTransformerBlock: 3-33             [1, 4, 4, 384]            [1, 4, 4, 384]            --                        True
+│    │    │    └─LayerNorm: 4-37                   [1, 7, 7, 384]            [1, 7, 7, 384]            768                       True
+│    │    │    └─WindowAttention: 4-38             [1, 49, 384]              [1, 49, 384]              593,388                   True
+│    │    │    └─LayerNorm: 4-39                   [1, 7, 7, 384]            [1, 7, 7, 384]            768                       True
+│    │    │    └─Mlp: 4-40                         [1, 7, 7, 384]            [1, 7, 7, 384]            1,181,568                 True
+│    │    └─SwinTransformerBlock: 3-34             [1, 4, 4, 384]            [1, 4, 4, 384]            --                        True
+│    │    │    └─LayerNorm: 4-41                   [1, 7, 7, 384]            [1, 7, 7, 384]            768                       True
+│    │    │    └─WindowAttention: 4-42             [1, 49, 384]              [1, 49, 384]              593,388                   True
+│    │    │    └─LayerNorm: 4-43                   [1, 7, 7, 384]            [1, 7, 7, 384]            768                       True
+│    │    │    └─Mlp: 4-44                         [1, 7, 7, 384]            [1, 7, 7, 384]            1,181,568                 True
+│    │    └─SwinTransformerBlock: 3-35             [1, 4, 4, 384]            [1, 4, 4, 384]            --                        True
+│    │    │    └─LayerNorm: 4-45                   [1, 7, 7, 384]            [1, 7, 7, 384]            768                       True
+│    │    │    └─WindowAttention: 4-46             [1, 49, 384]              [1, 49, 384]              593,388                   True
+│    │    │    └─LayerNorm: 4-47                   [1, 7, 7, 384]            [1, 7, 7, 384]            768                       True
+│    │    │    └─Mlp: 4-48                         [1, 7, 7, 384]            [1, 7, 7, 384]            1,181,568                 True
+│    │    └─SwinTransformerBlock: 3-36             [1, 4, 4, 384]            [1, 4, 4, 384]            --                        True
+│    │    │    └─LayerNorm: 4-49                   [1, 7, 7, 384]            [1, 7, 7, 384]            768                       True
+│    │    │    └─WindowAttention: 4-50             [1, 49, 384]              [1, 49, 384]              593,388                   True
+│    │    │    └─LayerNorm: 4-51                   [1, 7, 7, 384]            [1, 7, 7, 384]            768                       True
+│    │    │    └─Mlp: 4-52                         [1, 7, 7, 384]            [1, 7, 7, 384]            1,181,568                 True
+│    │    └─SwinTransformerBlock: 3-37             [1, 4, 4, 384]            [1, 4, 4, 384]            --                        True
+│    │    │    └─LayerNorm: 4-53                   [1, 7, 7, 384]            [1, 7, 7, 384]            768                       True
+│    │    │    └─WindowAttention: 4-54             [1, 49, 384]              [1, 49, 384]              593,388                   True
+│    │    │    └─LayerNorm: 4-55                   [1, 7, 7, 384]            [1, 7, 7, 384]            768                       True
+│    │    │    └─Mlp: 4-56                         [1, 7, 7, 384]            [1, 7, 7, 384]            1,181,568                 True
+├─PatchMerging: 1-13                               [1, 4, 4, 384]            [1, 2, 2, 768]            --                        True
+│    └─LayerNorm: 2-25                             [1, 2, 2, 1536]           [1, 2, 2, 1536]           3,072                     True
+│    └─Linear: 2-26                                [1, 2, 2, 1536]           [1, 2, 2, 768]            1,179,648                 True
+├─BasicLayer: 1-14                                 [1, 2, 2, 768]            [1, 2, 2, 768]            --                        True
+│    └─ModuleList: 2-34                            --                        --                        (recursive)               True
+│    │    └─SwinTransformerBlock: 3-38             [1, 2, 2, 768]            [1, 2, 2, 768]            --                        True
+│    │    │    └─LayerNorm: 4-57                   [1, 7, 7, 768]            [1, 7, 7, 768]            1,536                     True
+│    │    │    └─WindowAttention: 4-58             [1, 49, 768]              [1, 49, 768]              2,366,424                 True
+│    │    │    └─LayerNorm: 4-59                   [1, 7, 7, 768]            [1, 7, 7, 768]            1,536                     True
+│    │    │    └─Mlp: 4-60                         [1, 7, 7, 768]            [1, 7, 7, 768]            4,722,432                 True
+│    │    └─SwinTransformerBlock: 3-39             [1, 2, 2, 768]            [1, 2, 2, 768]            --                        True
+│    │    │    └─LayerNorm: 4-61                   [1, 7, 7, 768]            [1, 7, 7, 768]            1,536                     True
+│    │    │    └─WindowAttention: 4-62             [1, 49, 768]              [1, 49, 768]              2,366,424                 True
+│    │    │    └─LayerNorm: 4-63                   [1, 7, 7, 768]            [1, 7, 7, 768]            1,536                     True
+│    │    │    └─Mlp: 4-64                         [1, 7, 7, 768]            [1, 7, 7, 768]            4,722,432                 True
+├─PatchMerging: 1-15                               [1, 8, 8, 192]            [1, 4, 4, 384]            (recursive)               True
+│    └─LayerNorm: 2-28                             [1, 4, 4, 768]            [1, 4, 4, 768]            (recursive)               True
+│    └─Linear: 2-29                                [1, 4, 4, 768]            [1, 4, 4, 384]            (recursive)               True
+├─PlaneCondition: 1-16                             [1, 4, 4, 384]            [1, 4, 4, 384]            (recursive)               True
+│    └─Sequential: 2-30                            [1, 2]                    [1, 768]                  (recursive)               True
+│    │    └─Linear: 3-40                           [1, 2]                    [1, 128]                  (recursive)               True
+│    │    └─GELU: 3-41                             [1, 128]                  [1, 128]                  --                        --
+│    │    └─Linear: 3-42                           [1, 128]                  [1, 768]                  (recursive)               True
+├─BasicLayer: 1-17                                 [1, 4, 4, 384]            [1, 4, 4, 384]            (recursive)               True
+│    └─ModuleList: 2-31                            --                        --                        (recursive)               True
+│    │    └─SwinTransformerBlock: 3-43             [1, 4, 4, 384]            [1, 4, 4, 384]            (recursive)               True
+│    │    │    └─LayerNorm: 4-65                   [1, 7, 7, 384]            [1, 7, 7, 384]            (recursive)               True
+│    │    │    └─WindowAttention: 4-66             [1, 49, 384]              [1, 49, 384]              (recursive)               True
+│    │    │    └─LayerNorm: 4-67                   [1, 7, 7, 384]            [1, 7, 7, 384]            (recursive)               True
+│    │    │    └─Mlp: 4-68                         [1, 7, 7, 384]            [1, 7, 7, 384]            (recursive)               True
+│    │    └─SwinTransformerBlock: 3-44             [1, 4, 4, 384]            [1, 4, 4, 384]            (recursive)               True
+│    │    │    └─LayerNorm: 4-69                   [1, 7, 7, 384]            [1, 7, 7, 384]            (recursive)               True
+│    │    │    └─WindowAttention: 4-70             [1, 49, 384]              [1, 49, 384]              (recursive)               True
+│    │    │    └─LayerNorm: 4-71                   [1, 7, 7, 384]            [1, 7, 7, 384]            (recursive)               True
+│    │    │    └─Mlp: 4-72                         [1, 7, 7, 384]            [1, 7, 7, 384]            (recursive)               True
+│    │    └─SwinTransformerBlock: 3-45             [1, 4, 4, 384]            [1, 4, 4, 384]            (recursive)               True
+│    │    │    └─LayerNorm: 4-73                   [1, 7, 7, 384]            [1, 7, 7, 384]            (recursive)               True
+│    │    │    └─WindowAttention: 4-74             [1, 49, 384]              [1, 49, 384]              (recursive)               True
+│    │    │    └─LayerNorm: 4-75                   [1, 7, 7, 384]            [1, 7, 7, 384]            (recursive)               True
+│    │    │    └─Mlp: 4-76                         [1, 7, 7, 384]            [1, 7, 7, 384]            (recursive)               True
+│    │    └─SwinTransformerBlock: 3-46             [1, 4, 4, 384]            [1, 4, 4, 384]            (recursive)               True
+│    │    │    └─LayerNorm: 4-77                   [1, 7, 7, 384]            [1, 7, 7, 384]            (recursive)               True
+│    │    │    └─WindowAttention: 4-78             [1, 49, 384]              [1, 49, 384]              (recursive)               True
+│    │    │    └─LayerNorm: 4-79                   [1, 7, 7, 384]            [1, 7, 7, 384]            (recursive)               True
+│    │    │    └─Mlp: 4-80                         [1, 7, 7, 384]            [1, 7, 7, 384]            (recursive)               True
+│    │    └─SwinTransformerBlock: 3-47             [1, 4, 4, 384]            [1, 4, 4, 384]            (recursive)               True
+│    │    │    └─LayerNorm: 4-81                   [1, 7, 7, 384]            [1, 7, 7, 384]            (recursive)               True
+│    │    │    └─WindowAttention: 4-82             [1, 49, 384]              [1, 49, 384]              (recursive)               True
+│    │    │    └─LayerNorm: 4-83                   [1, 7, 7, 384]            [1, 7, 7, 384]            (recursive)               True
+│    │    │    └─Mlp: 4-84                         [1, 7, 7, 384]            [1, 7, 7, 384]            (recursive)               True
+│    │    └─SwinTransformerBlock: 3-48             [1, 4, 4, 384]            [1, 4, 4, 384]            (recursive)               True
+│    │    │    └─LayerNorm: 4-85                   [1, 7, 7, 384]            [1, 7, 7, 384]            (recursive)               True
+│    │    │    └─WindowAttention: 4-86             [1, 49, 384]              [1, 49, 384]              (recursive)               True
+│    │    │    └─LayerNorm: 4-87                   [1, 7, 7, 384]            [1, 7, 7, 384]            (recursive)               True
+│    │    │    └─Mlp: 4-88                         [1, 7, 7, 384]            [1, 7, 7, 384]            (recursive)               True
+├─PatchMerging: 1-18                               [1, 4, 4, 384]            [1, 2, 2, 768]            (recursive)               True
+│    └─LayerNorm: 2-32                             [1, 2, 2, 1536]           [1, 2, 2, 1536]           (recursive)               True
+│    └─Linear: 2-33                                [1, 2, 2, 1536]           [1, 2, 2, 768]            (recursive)               True
+├─BasicLayer: 1-19                                 [1, 2, 2, 768]            [1, 2, 2, 768]            (recursive)               True
+│    └─ModuleList: 2-34                            --                        --                        (recursive)               True
+│    │    └─SwinTransformerBlock: 3-49             [1, 2, 2, 768]            [1, 2, 2, 768]            (recursive)               True
+│    │    │    └─LayerNorm: 4-89                   [1, 7, 7, 768]            [1, 7, 7, 768]            (recursive)               True
+│    │    │    └─WindowAttention: 4-90             [1, 49, 768]              [1, 49, 768]              (recursive)               True
+│    │    │    └─LayerNorm: 4-91                   [1, 7, 7, 768]            [1, 7, 7, 768]            (recursive)               True
+│    │    │    └─Mlp: 4-92                         [1, 7, 7, 768]            [1, 7, 7, 768]            (recursive)               True
+│    │    └─SwinTransformerBlock: 3-50             [1, 2, 2, 768]            [1, 2, 2, 768]            (recursive)               True
+│    │    │    └─LayerNorm: 4-93                   [1, 7, 7, 768]            [1, 7, 7, 768]            (recursive)               True
+│    │    │    └─WindowAttention: 4-94             [1, 49, 768]              [1, 49, 768]              (recursive)               True
+│    │    │    └─LayerNorm: 4-95                   [1, 7, 7, 768]            [1, 7, 7, 768]            (recursive)               True
+│    │    │    └─Mlp: 4-96                         [1, 7, 7, 768]            [1, 7, 7, 768]            (recursive)               True
+├─ProjectionHead: 1-20                             [1, 768]                  [1, 128]                  --                        True
+│    └─Sequential: 2-35                            [1, 768]                  [1, 128]                  --                        True
+│    │    └─Linear: 3-51                           [1, 768]                  [1, 768]                  589,824                   True
+│    │    └─BatchNorm1d: 3-52                      [1, 768]                  [1, 768]                  1,536                     True
+│    │    └─ReLU: 3-53                             [1, 768]                  [1, 768]                  --                        --
+│    │    └─Linear: 3-54                           [1, 768]                  [1, 128]                  98,432                    True
+├─ProjectionHead: 1-21                             [1, 768]                  [1, 128]                  (recursive)               True
+│    └─Sequential: 2-36                            [1, 768]                  [1, 128]                  (recursive)               True
+│    │    └─Linear: 3-55                           [1, 768]                  [1, 768]                  (recursive)               True
+│    │    └─BatchNorm1d: 3-56                      [1, 768]                  [1, 768]                  (recursive)               True
+│    │    └─ReLU: 3-57                             [1, 768]                  [1, 768]                  --                        --
+│    │    └─Linear: 3-58                           [1, 768]                  [1, 128]                  (recursive)               True
+├─SwinUpBlock: 1-22                                [1, 2, 2, 768]            [1, 4, 4, 384]            --                        True
+│    └─PatchExpand: 2-37                           [1, 2, 2, 768]            [1, 4, 4, 384]            --                        True
+│    │    └─Linear: 3-59                           [1, 2, 2, 768]            [1, 2, 2, 1536]           1,179,648                 True
+│    │    └─LayerNorm: 3-60                        [1, 4, 4, 384]            [1, 4, 4, 384]            768                       True
+│    └─Linear: 2-38                                [1, 4, 4, 768]            [1, 4, 4, 384]            295,296                   True
+│    └─LayerNorm: 2-39                             [1, 4, 4, 384]            [1, 4, 4, 384]            768                       True
+│    └─BasicLayer: 2-40                            [1, 4, 4, 384]            [1, 4, 4, 384]            --                        True
+│    │    └─ModuleList: 3-64                       --                        --                        (recursive)               True
+│    │    │    └─SwinTransformerBlock: 4-97        [1, 4, 4, 384]            [1, 4, 4, 384]            1,776,492                 True
+│    │    │    └─SwinTransformerBlock: 4-98        [1, 4, 4, 384]            [1, 4, 4, 384]            1,776,492                 True
+│    │    │    └─SwinTransformerBlock: 4-99        [1, 4, 4, 384]            [1, 4, 4, 384]            1,776,492                 True
+│    │    │    └─SwinTransformerBlock: 4-100       [1, 4, 4, 384]            [1, 4, 4, 384]            1,776,492                 True
+│    │    │    └─SwinTransformerBlock: 4-101       [1, 4, 4, 384]            [1, 4, 4, 384]            1,776,492                 True
+│    │    │    └─SwinTransformerBlock: 4-102       [1, 4, 4, 384]            [1, 4, 4, 384]            1,776,492                 True
+├─SwinUpBlock: 1-23                                [1, 2, 2, 768]            [1, 4, 4, 384]            (recursive)               True
+│    └─PatchExpand: 2-41                           [1, 2, 2, 768]            [1, 4, 4, 384]            (recursive)               True
+│    │    └─Linear: 3-62                           [1, 2, 2, 768]            [1, 2, 2, 1536]           (recursive)               True
+│    │    └─LayerNorm: 3-63                        [1, 4, 4, 384]            [1, 4, 4, 384]            (recursive)               True
+│    └─Linear: 2-42                                [1, 4, 4, 768]            [1, 4, 4, 384]            (recursive)               True
+│    └─LayerNorm: 2-43                             [1, 4, 4, 384]            [1, 4, 4, 384]            (recursive)               True
+│    └─BasicLayer: 2-44                            [1, 4, 4, 384]            [1, 4, 4, 384]            (recursive)               True
+│    │    └─ModuleList: 3-64                       --                        --                        (recursive)               True
+│    │    │    └─SwinTransformerBlock: 4-103       [1, 4, 4, 384]            [1, 4, 4, 384]            (recursive)               True
+│    │    │    └─SwinTransformerBlock: 4-104       [1, 4, 4, 384]            [1, 4, 4, 384]            (recursive)               True
+│    │    │    └─SwinTransformerBlock: 4-105       [1, 4, 4, 384]            [1, 4, 4, 384]            (recursive)               True
+│    │    │    └─SwinTransformerBlock: 4-106       [1, 4, 4, 384]            [1, 4, 4, 384]            (recursive)               True
+│    │    │    └─SwinTransformerBlock: 4-107       [1, 4, 4, 384]            [1, 4, 4, 384]            (recursive)               True
+│    │    │    └─SwinTransformerBlock: 4-108       [1, 4, 4, 384]            [1, 4, 4, 384]            (recursive)               True
+├─SwinUpBlock: 1-24                                [1, 4, 4, 384]            [1, 8, 8, 192]            --                        True
+│    └─PatchExpand: 2-45                           [1, 4, 4, 384]            [1, 8, 8, 192]            --                        True
+│    │    └─Linear: 3-65                           [1, 4, 4, 384]            [1, 4, 4, 768]            294,912                   True
+│    │    └─LayerNorm: 3-66                        [1, 8, 8, 192]            [1, 8, 8, 192]            384                       True
+│    └─Linear: 2-46                                [1, 8, 8, 384]            [1, 8, 8, 192]            73,920                    True
+│    └─LayerNorm: 2-47                             [1, 8, 8, 192]            [1, 8, 8, 192]            384                       True
+│    └─BasicLayer: 2-48                            [1, 8, 8, 192]            [1, 8, 8, 192]            --                        True
+│    │    └─ModuleList: 3-67                       --                        --                        --                        True
+│    │    │    └─SwinTransformerBlock: 4-109       [1, 8, 8, 192]            [1, 8, 8, 192]            445,878                   True
+│    │    │    └─SwinTransformerBlock: 4-110       [1, 8, 8, 192]            [1, 8, 8, 192]            445,878                   True
+├─SwinUpBlock: 1-25                                [1, 8, 8, 192]            [1, 16, 16, 96]           --                        True
+│    └─PatchExpand: 2-49                           [1, 8, 8, 192]            [1, 16, 16, 96]           --                        True
+│    │    └─Linear: 3-68                           [1, 8, 8, 192]            [1, 8, 8, 384]            73,728                    True
+│    │    └─LayerNorm: 3-69                        [1, 16, 16, 96]           [1, 16, 16, 96]           192                       True
+│    └─Linear: 2-50                                [1, 16, 16, 192]          [1, 16, 16, 96]           18,528                    True
+│    └─LayerNorm: 2-51                             [1, 16, 16, 96]           [1, 16, 16, 96]           192                       True
+│    └─BasicLayer: 2-52                            [1, 16, 16, 96]           [1, 16, 16, 96]           --                        True
+│    │    └─ModuleList: 3-70                       --                        --                        --                        True
+│    │    │    └─SwinTransformerBlock: 4-111       [1, 16, 16, 96]           [1, 16, 16, 96]           112,347                   True
+│    │    │    └─SwinTransformerBlock: 4-112       [1, 16, 16, 96]           [1, 16, 16, 96]           112,347                   True
+├─FinalPatchExpand: 1-26                           [1, 16, 16, 96]           [1, 256, 256, 32]         --                        True
+│    └─Linear: 2-53                                [1, 16, 16, 96]           [1, 16, 16, 8192]         786,432                   True
+├─Sequential: 1-27                                 [1, 32, 256, 256]         [1, 1, 256, 256]          --                        True
+│    └─Conv2d: 2-54                                [1, 32, 256, 256]         [1, 16, 256, 256]         4,624                     True
+│    └─ReLU: 2-55                                  [1, 16, 256, 256]         [1, 16, 256, 256]         --                        --
+│    └─Conv2d: 2-56                                [1, 16, 256, 256]         [1, 1, 256, 256]          17                        True
+├─SwinUpBlock: 1-28                                [1, 4, 4, 384]            [1, 8, 8, 192]            --                        True
+│    └─PatchExpand: 2-57                           [1, 4, 4, 384]            [1, 8, 8, 192]            --                        True
+│    │    └─Linear: 3-71                           [1, 4, 4, 384]            [1, 4, 4, 768]            294,912                   True
+│    │    └─LayerNorm: 3-72                        [1, 8, 8, 192]            [1, 8, 8, 192]            384                       True
+│    └─Linear: 2-58                                [1, 8, 8, 384]            [1, 8, 8, 192]            73,920                    True
+│    └─LayerNorm: 2-59                             [1, 8, 8, 192]            [1, 8, 8, 192]            384                       True
+│    └─BasicLayer: 2-60                            [1, 8, 8, 192]            [1, 8, 8, 192]            --                        True
+│    │    └─ModuleList: 3-73                       --                        --                        --                        True
+│    │    │    └─SwinTransformerBlock: 4-113       [1, 8, 8, 192]            [1, 8, 8, 192]            445,878                   True
+│    │    │    └─SwinTransformerBlock: 4-114       [1, 8, 8, 192]            [1, 8, 8, 192]            445,878                   True
+├─SwinUpBlock: 1-29                                [1, 8, 8, 192]            [1, 16, 16, 96]           --                        True
+│    └─PatchExpand: 2-61                           [1, 8, 8, 192]            [1, 16, 16, 96]           --                        True
+│    │    └─Linear: 3-74                           [1, 8, 8, 192]            [1, 8, 8, 384]            73,728                    True
+│    │    └─LayerNorm: 3-75                        [1, 16, 16, 96]           [1, 16, 16, 96]           192                       True
+│    └─Linear: 2-62                                [1, 16, 16, 192]          [1, 16, 16, 96]           18,528                    True
+│    └─LayerNorm: 2-63                             [1, 16, 16, 96]           [1, 16, 16, 96]           192                       True
+│    └─BasicLayer: 2-64                            [1, 16, 16, 96]           [1, 16, 16, 96]           --                        True
+│    │    └─ModuleList: 3-76                       --                        --                        --                        True
+│    │    │    └─SwinTransformerBlock: 4-115       [1, 16, 16, 96]           [1, 16, 16, 96]           112,347                   True
+│    │    │    └─SwinTransformerBlock: 4-116       [1, 16, 16, 96]           [1, 16, 16, 96]           112,347                   True
+├─FinalPatchExpand: 1-30                           [1, 16, 16, 96]           [1, 256, 256, 32]         --                        True
+│    └─Linear: 2-65                                [1, 16, 16, 96]           [1, 16, 16, 8192]         786,432                   True
+├─Sequential: 1-31                                 [1, 32, 256, 256]         [1, 1, 256, 256]          --                        True
+│    └─Conv2d: 2-66                                [1, 32, 256, 256]         [1, 16, 256, 256]         4,624                     True
+│    └─ReLU: 2-67                                  [1, 16, 256, 256]         [1, 16, 256, 256]         --                        --
+│    └─Conv2d: 2-68                                [1, 16, 256, 256]         [1, 1, 256, 256]          17                        True
+======================================================================================================================================================
+Total params: 47,309,943
+Trainable params: 47,309,943
+Non-trainable params: 0
+Total mult-adds (Units.MEGABYTES): 714.19
+======================================================================================================================================================
+Input size (MB): 0.52
+Forward/backward pass size (MB): 172.11
+Params size (MB): 189.05
+Estimated Total Size (MB): 361.69
+======================================================================================================================================================
