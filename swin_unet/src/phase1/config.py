@@ -61,6 +61,7 @@ class ModelConfig:
     plane_in_dim: int = 2
     plane_inject_stage: int = 2
     plane_inject_method: str = "film"  # "film" or "add"
+    enable_saca_stage1: bool = False
 
 
 @dataclass

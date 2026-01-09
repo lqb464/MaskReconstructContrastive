@@ -164,6 +164,7 @@ class PhaseATrainer:
             window_size=cfg.model.window_size,
             proj_dim=cfg.model.proj_dim,
             plane_inject_method=cfg.model.plane_inject_method,
+            enable_saca_stage1=cfg.model.enable_saca_stage1,
         ).to(device)
         
         print(self.model)
