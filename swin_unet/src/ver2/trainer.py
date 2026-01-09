@@ -20,7 +20,7 @@ from torch.optim import AdamW
 from torchinfo import summary
 from tqdm import tqdm
 
-from config.experiment import ExperimentConfig, build_argparser
+from .config.experiment import ExperimentConfig, build_argparser
 from data.dataset import create_dataloaders_from_folder
 from common.losses import nt_xent_loss, compute_embedding_variance
 from common.metrics import MetricsAccumulator
