@@ -4,10 +4,7 @@ from typing import Tuple
 
 import torch
 
-try:
-    from losses import ssim_index
-except Exception:  # pragma: no cover
-    from phase1.common.losses import ssim_index
+from swin_unet.ver2.common.losses import ssim_index
 
 
 def update_recon_metrics(

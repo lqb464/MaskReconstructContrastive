@@ -4,11 +4,7 @@ from typing import Dict, Tuple
 
 import torch
 
-# Keep legacy imports working (trainer/eval might run from different CWDs)
-try:
-    from augmentation import sample_masks_anti_mirror
-except Exception:  # pragma: no cover
-    from phase1.data.augmentation import sample_masks_anti_mirror
+from swin_unet.src.ver2.augmentation import sample_masks_anti_mirror
 
 
 def prepare_inputs(

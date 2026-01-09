@@ -4,10 +4,7 @@ from typing import Tuple
 
 import torch
 
-try:
-    from losses import masked_l1_loss, mixed_l1_loss
-except Exception:  # pragma: no cover
-    from phase1.common.losses import masked_l1_loss, mixed_l1_loss
+from swin_unet.src.ver2.common.losses import masked_l1_loss, mixed_l1_loss
 
 from .recon_losses import masked_bce_logits_weighted, mixed_bce_logits_weighted
 
