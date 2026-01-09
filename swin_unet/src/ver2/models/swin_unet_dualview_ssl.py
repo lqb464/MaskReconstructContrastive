@@ -514,7 +514,7 @@ class ProjectionHead(nn.Module):
 # -------------------------
 # Main model
 # -------------------------
-class SwinUNetDualViewSSLPhase1(nn.Module):
+class SwinUNetDualViewSSL(nn.Module):
     def __init__(
         self,
         in_ch: int = 1,
@@ -769,6 +769,6 @@ class SwinUNetDualViewSSLPhase1(nn.Module):
 
 
 __all__ = [
-    "SwinUNetDualViewSSLPhase1",
+    "SwinUNetDualViewSSL",
     "flip_lr",
 ]
