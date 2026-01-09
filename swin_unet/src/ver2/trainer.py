@@ -21,23 +21,23 @@ from torchinfo import summary
 from tqdm import tqdm
 
 from .config.experiment import ExperimentConfig, build_argparser
-from data.dataset import create_dataloaders_from_folder
-from common.losses import nt_xent_loss, compute_embedding_variance
-from common.metrics import MetricsAccumulator
-from viz.visualization import (
+from .data.dataset import create_dataloaders_from_folder
+from .common.losses import nt_xent_loss, compute_embedding_variance
+from .common.metrics import MetricsAccumulator
+from .viz.visualization import (
     plot_loss_decomposition_curves,
     plot_training_curves,
     run_tsne_visualization,
     save_image_grid,
 )
-from models.swin_unet_dualview_ssl import SwinUNetDualViewSSL, flip_lr
+from .models.swin_unet_dualview_ssl import SwinUNetDualViewSSL, flip_lr
 
-from training.batch_ops import prepare_inputs
-from training.ckpt_io import load_checkpoint_weights, save_checkpoint
-from training.loggers import EpochCSVLogger, LossDecompCSVLogger
-from training.metric_compute import update_recon_metrics
-from training.recon_compute import compute_recon_losses
-from training.utils import ensure_dir, get_device, has_labels_in_batch, set_seed
+from .training.batch_ops import prepare_inputs
+from .training.ckpt_io import load_checkpoint_weights, save_checkpoint
+from .training.loggers import EpochCSVLogger, LossDecompCSVLogger
+from .training.metric_compute import update_recon_metrics
+from .training.recon_compute import compute_recon_losses
+from .training.utils import ensure_dir, get_device, has_labels_in_batch, set_seed
 
 
 class PhaseATrainer:
