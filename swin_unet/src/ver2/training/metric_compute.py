@@ -32,4 +32,4 @@ def update_recon_metrics(
     ssim_sum = float((0.5 * (ssim_orig + ssim_flip)).sum().item())
 
     meter.update(diff_total, pixel_mask, ssim_sum=ssim_sum)
-    return recon_img_orig_metric, recon_img_flip_metric, diff_total, ssim_sum
+    return recon_img_orig_metric, recon_img_flip_metric, diff_total, ssim_sum # no need to return 

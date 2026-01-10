@@ -62,4 +62,3 @@ def compute_attn_mask(H: int, W: int, window_size: int, shift_size: int, device:
     attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
     attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(attn_mask == 0, float(0.0))
     return attn_mask
-

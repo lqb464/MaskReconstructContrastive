@@ -479,6 +479,8 @@ class SwinUNetDualViewSSL(nn.Module):
         saca_position: str = "after_stage1",
         saca_gate_init: float = 0.0,
         saca_warmup_epochs: int = 0,
+        enable_reconstruct: bool = True,
+        enable_contrastive: bool = True,
     ):
         super().__init__()
         
@@ -495,6 +497,10 @@ class SwinUNetDualViewSSL(nn.Module):
         self.saca_position = saca_position
         self.saca_warmup_epochs = saca_warmup_epochs
         self.current_epoch = 0  # safe default
+        
+        # ---- Training mode ----
+        self.enable_reconstruct = enable_reconstruct
+        self.enable_contrastive = enable_contrastive
 
         C0 = embed_dim
         C1 = 2 * C0
@@ -532,70 +538,92 @@ class SwinUNetDualViewSSL(nn.Module):
             gate_init=saca_gate_init,
         )
 
-        # ---- Shared trunk (unchanged) ----
+        # ---- Shared trunk  ----
         self.merge1 = PatchMerging(dim=C1)
         self.plane_cond = PlaneCondition(in_dim=2, feat_dim=C2, method=plane_inject_method)
         self.stage2 = BasicLayer(dim=C2, depth=enc_depths[2], num_heads=num_heads[2], window_size=window_size)
         self.merge2 = PatchMerging(dim=C2)
         self.stage3 = BasicLayer(dim=C3, depth=enc_depths[3], num_heads=num_heads[3], window_size=window_size)
 
-        self.proj = ProjectionHead(in_dim=C3, proj_dim=proj_dim)
+        # ---- Contrastive Head ----
+        if self.enable_contrastive:
+            self.proj = ProjectionHead(in_dim=C3, proj_dim=proj_dim)
+        else:
+            self.proj = None
 
-        # ---- Decoder (unchanged) ----
-        self.up2_shared = SwinUpBlock(
-            in_dim=C3,
-            skip_dim=C2,
-            out_dim=C2,
-            depth=dec_depths[0],
-            num_heads=num_heads[2],
-            window_size=window_size,
-        )
+        # ---- Decoder ----
+        if self.enable_reconstruct:
+            self.up2_shared = SwinUpBlock(
+                in_dim=C3,
+                skip_dim=C2,
+                out_dim=C2,
+                depth=dec_depths[0],
+                num_heads=num_heads[2],
+                window_size=window_size,
+            )
 
-        self.up1_v1 = SwinUpBlock(
-            in_dim=C2,
-            skip_dim=C1,
-            out_dim=C1,
-            depth=dec_depths[1],
-            num_heads=num_heads[1],
-            window_size=window_size,
-        )
-        self.up0_v1 = SwinUpBlock(
-            in_dim=C1,
-            skip_dim=C0,
-            out_dim=C0,
-            depth=dec_depths[2],
-            num_heads=num_heads[0],
-            window_size=window_size,
-        )
-        self.final_up_v1 = FinalPatchExpand(dim=C0, patch_size=patch_size, out_dim=32)
-        self.recon_head_v1 = nn.Sequential(
-            nn.Conv2d(32, 16, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(16, 1, kernel_size=1),
-        )
+            self.up1_v1 = SwinUpBlock(
+                in_dim=C2,
+                skip_dim=C1,
+                out_dim=C1,
+                depth=dec_depths[1],
+                num_heads=num_heads[1],
+                window_size=window_size,
+            )
+            self.up0_v1 = SwinUpBlock(
+                in_dim=C1,
+                skip_dim=C0,
+                out_dim=C0,
+                depth=dec_depths[2],
+                num_heads=num_heads[0],
+                window_size=window_size,
+            )
+            self.final_up_v1 = FinalPatchExpand(dim=C0, patch_size=patch_size, out_dim=32)
+            self.recon_head_v1 = nn.Sequential(
+                nn.Conv2d(32, 16, kernel_size=3, padding=1),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(16, 1, kernel_size=1),
+            )
 
-        self.up1_v2 = SwinUpBlock(
-            in_dim=C2,
-            skip_dim=C1,
-            out_dim=C1,
-            depth=dec_depths[1],
-            num_heads=num_heads[1],
-            window_size=window_size,
-        )
-        self.up0_v2 = SwinUpBlock(
-            in_dim=C1,
-            skip_dim=C0,
-            out_dim=C0,
-            depth=dec_depths[2],
-            num_heads=num_heads[0],
-            window_size=window_size,
-        )
-        self.final_up_v2 = FinalPatchExpand(dim=C0, patch_size=patch_size, out_dim=32)
-        self.recon_head_v2 = nn.Sequential(
-            nn.Conv2d(32, 16, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(16, 1, kernel_size=1),
-        )
+            self.up1_v2 = SwinUpBlock(
+                in_dim=C2,
+                skip_dim=C1,
+                out_dim=C1,
+                depth=dec_depths[1],
+                num_heads=num_heads[1],
+                window_size=window_size,
+            )
+            self.up0_v2 = SwinUpBlock(
+                in_dim=C1,
+                skip_dim=C0,
+                out_dim=C0,
+                depth=dec_depths[2],
+                num_heads=num_heads[0],
+                window_size=window_size,
+            )
+            self.final_up_v2 = FinalPatchExpand(dim=C0, patch_size=patch_size, out_dim=32)
+            self.recon_head_v2 = nn.Sequential(
+                nn.Conv2d(32, 16, kernel_size=3, padding=1),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(16, 1, kernel_size=1),
+            )
+        else:
+            self.up2_shared = None
+            self.up1_v1 = None
+            self.up0_v1 = None
+            self.final_up_v1 = None
+            self.recon_head_v1 = None
+
+            self.up1_v2 = None
+            self.up0_v2 = None
+            self.final_up_v2 = None
+            self.recon_head_v2 = None
+
+        if self.enable_contrastive and (self.proj is None):
+            raise RuntimeError("enable_contrastive=True but projection head is not initialized")
+
+        if self.enable_reconstruct and (self.up2_shared is None):
+            raise RuntimeError("enable_reconstruct=True but decoder is not initialized")
         
         print(self.get_saca_debug_info())
 
@@ -604,6 +632,8 @@ class SwinUNetDualViewSSL(nn.Module):
         Lightweight debug info for logging.
         Safe to call every epoch.
         """
+        
+        print("#"*100)
         info = {
             "saca_enable": bool(self.enable_saca),
             "saca_position": self.saca_position if self.enable_saca else "disabled",
@@ -614,7 +644,6 @@ class SwinUNetDualViewSSL(nn.Module):
         if self.enable_saca:
             info["saca_gate_c0"] = float(self.saca_c0.gate.detach().cpu())
             info["saca_gate_c1"] = float(self.saca_c1.gate.detach().cpu())
-
         return info
 
     
@@ -698,6 +727,7 @@ class SwinUNetDualViewSSL(nn.Module):
         saca = [self.saca_c0, self.saca_c1]
 
         def _count(mods) -> int:
+            mods = [m for m in mods if m is not None]
             return sum(count_parameters(m) for m in mods)
 
         return {
@@ -718,10 +748,14 @@ class SwinUNetDualViewSSL(nn.Module):
         x: torch.Tensor,
         pixel_mask: torch.Tensor,
         plane_one_hot: torch.Tensor,
-        return_embeddings: bool = True,
     ):
         x1_masked = x * (1.0 - pixel_mask)
-        x2_masked = flip_lr(x) * (1.0 - pixel_mask)  # mask NOT flipped
+        # NOTE:
+        # View2 uses a flipped image but the SAME pixel mask (mask is NOT flipped).
+        # This is intentional to create mask diversity between views,
+        # encouraging invariance beyond exact masked-region alignment.
+        x2_masked = flip_lr(x) * (1.0 - pixel_mask)
+
 
         # ---- patch embed ----
         f0_1 = self.patch_embed_1(x1_masked)
@@ -753,12 +787,16 @@ class SwinUNetDualViewSSL(nn.Module):
         s2_2, b2 = self._shared_trunk(s1_2, plane_one_hot)
 
         # ---- contrastive head ----
-        if return_embeddings:
+        if self.enable_contrastive:
             z1 = self.proj(b1.mean(dim=(1, 2)))
             z2 = self.proj(b2.mean(dim=(1, 2)))
         else:
-            z1 = torch.empty((x.size(0), 0), device=x.device)
-            z2 = torch.empty((x.size(0), 0), device=x.device)
+            z1, z2 = None, None
+            
+        if not self.enable_reconstruct:
+            recon_raw_orig = None
+            recon_raw_flip = None
+            return recon_raw_orig, recon_raw_flip, z1, z2
 
         # ---- shared up2 ----
         d2_1 = self.up2_shared(b1, s2_1)

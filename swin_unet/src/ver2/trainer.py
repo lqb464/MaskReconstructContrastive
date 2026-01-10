@@ -80,6 +80,8 @@ class Trainer:
             saca_position=cfg.model.saca_position,
             saca_gate_init=cfg.model.saca_gate_init,
             saca_warmup_epochs=cfg.model.saca_warmup_epochs,
+            enable_reconstruct=cfg.training.enable_reconstruct,
+            enable_contrastive=cfg.training.enable_contrastive,
         ).to(device)
 
         print(self.model)
@@ -236,41 +238,53 @@ class Trainer:
                     x,
                     pixel_mask=pixel_mask,
                     plane_one_hot=plane,
-                    return_embeddings=True,
-                )
+                )                
+                x_flip = flip_lr(x) if self.cfg.training.enable_reconstruct else None
 
-                x_flip = flip_lr(x)
+                if self.cfg.training.enable_reconstruct:
+                    loss_recon_orig, loss_recon_flip, loss_recon_total = compute_recon_losses(
+                        recon_raw_orig=recon_raw_orig,
+                        recon_raw_flip=recon_raw_flip,
+                        x=x,
+                        x_flip=x_flip,
+                        pixel_mask=pixel_mask,
+                        training_cfg=self.cfg.training,
+                    )
+                else:
+                    loss_recon_orig = torch.zeros((), device=self.device)
+                    loss_recon_flip = torch.zeros((), device=self.device)
+                    loss_recon_total = torch.zeros((), device=self.device)
 
-                loss_recon_orig, loss_recon_flip, loss_recon_total = compute_recon_losses(
-                    recon_raw_orig=recon_raw_orig,
-                    recon_raw_flip=recon_raw_flip,
-                    x=x,
-                    x_flip=x_flip,
-                    pixel_mask=pixel_mask,
-                    training_cfg=self.cfg.training,
-                )
 
                 if self.cfg.training.enable_contrastive:
                     loss_con = nt_xent_loss(z1, z2, temperature=self.cfg.training.temperature)
                 else:
                     loss_con = torch.zeros((), device=self.device)
 
-                loss_total = self.cfg.training.lambda_recon * loss_recon_total + lambda_contrast_eff * loss_con
+                # contrastive and reconstruct
+                if self.cfg.training.enable_contrastive and self.cfg.training.enable_reconstruct:
+                    loss_total = self.cfg.training.lambda_recon * loss_recon_total + lambda_contrast_eff * loss_con
+                # reconstruct only
+                elif not self.cfg.training.enable_contrastive:
+                    loss_total = self.cfg.training.lambda_recon * loss_recon_total
+                # contrastive only
+                elif not self.cfg.training.enable_reconstruct:
+                    loss_total = lambda_contrast_eff * loss_con            
 
             self.scaler.scale(loss_total).backward()
             self.scaler.step(self.opt)
             self.scaler.update()
 
             with torch.no_grad():
-                x_flip = flip_lr(x)
-                _, _, _, ssim_sum = update_recon_metrics(
-                    meter=meter,
-                    x=x,
-                    x_flip=x_flip,
-                    recon_raw_orig=recon_raw_orig,
-                    recon_raw_flip=recon_raw_flip,
-                    pixel_mask=pixel_mask,
-                )
+                if self.cfg.training.enable_reconstruct:
+                    update_recon_metrics(
+                        meter=meter,
+                        x=x,
+                        x_flip=x_flip,
+                        recon_raw_orig=recon_raw_orig,
+                        recon_raw_flip=recon_raw_flip,
+                        pixel_mask=pixel_mask,
+                    )
 
                 loss_recon_orig_list.append(float(loss_recon_orig.item()))
                 loss_recon_flip_list.append(float(loss_recon_flip.item()))
@@ -349,36 +363,48 @@ class Trainer:
                     x,
                     pixel_mask=pixel_mask,
                     plane_one_hot=plane,
-                    return_embeddings=self.cfg.training.enable_contrastive,
                 )
+                x_flip = flip_lr(x) if self.cfg.training.enable_reconstruct else None
 
-                x_flip = flip_lr(x)
-
-                loss_recon_orig, loss_recon_flip, loss_recon_total = compute_recon_losses(
-                    recon_raw_orig=recon_raw_orig,
-                    recon_raw_flip=recon_raw_flip,
-                    x=x,
-                    x_flip=x_flip,
-                    pixel_mask=pixel_mask,
-                    training_cfg=self.cfg.training,
-                )
+                if self.cfg.training.enable_reconstruct:
+                    loss_recon_orig, loss_recon_flip, loss_recon_total = compute_recon_losses(
+                        recon_raw_orig=recon_raw_orig,
+                        recon_raw_flip=recon_raw_flip,
+                        x=x,
+                        x_flip=x_flip,
+                        pixel_mask=pixel_mask,
+                        training_cfg=self.cfg.training,
+                    )
+                else:
+                    loss_recon_orig = torch.zeros((), device=self.device)
+                    loss_recon_flip = torch.zeros((), device=self.device)
+                    loss_recon_total = torch.zeros((), device=self.device)
 
                 if self.cfg.training.enable_contrastive:
                     loss_con = nt_xent_loss(z1, z2, temperature=self.cfg.training.temperature)
                 else:
                     loss_con = torch.zeros((), device=self.device)
 
-                loss_total = self.cfg.training.lambda_recon * loss_recon_total + lambda_contrast_eff * loss_con
+                # contrastive and reconstruct
+                if self.cfg.training.enable_contrastive and self.cfg.training.enable_reconstruct:
+                    loss_total = self.cfg.training.lambda_recon * loss_recon_total + lambda_contrast_eff * loss_con
+                # reconstruct only
+                elif not self.cfg.training.enable_contrastive:
+                    loss_total = self.cfg.training.lambda_recon * loss_recon_total
+                # contrastive only
+                elif not self.cfg.training.enable_reconstruct:
+                    loss_total = lambda_contrast_eff * loss_con 
 
-            x_flip = flip_lr(x)
-            update_recon_metrics(
-                meter=meter,
-                x=x,
-                x_flip=x_flip,
-                recon_raw_orig=recon_raw_orig,
-                recon_raw_flip=recon_raw_flip,
-                pixel_mask=pixel_mask,
-            )
+            if self.cfg.training.enable_reconstruct:
+                update_recon_metrics(
+                    meter=meter,
+                    x=x,
+                    x_flip=x_flip,
+                    recon_raw_orig=recon_raw_orig,
+                    recon_raw_flip=recon_raw_flip,
+                    pixel_mask=pixel_mask,
+                )
+
 
             losses_total.append(float(loss_total.item()))
             loss_recon_orig_list.append(float(loss_recon_orig.item()))
@@ -419,6 +445,9 @@ class Trainer:
         }
 
     def maybe_visualize(self, loader, epoch: int, tag: str):
+        if not self.cfg.training.enable_reconstruct:
+            return
+        
         if (epoch % self.cfg.logging.vis_every) != 0:
             return
         self.model.eval()
@@ -426,7 +455,7 @@ class Trainer:
         x, plane, pixel_mask = prepare_inputs(batch, device=self.device, cfg_mask=self.cfg.mask)
 
         recon_raw_orig, recon_raw_flip, _, _ = self.model(
-            x, pixel_mask=pixel_mask, plane_one_hot=plane, return_embeddings=False
+            x, pixel_mask=pixel_mask, plane_one_hot=plane,
         )
 
         recon_img_orig = torch.sigmoid(recon_raw_orig.clamp(-10, 10))
@@ -556,7 +585,7 @@ def main():
     print("="*100)
     
     if not cfg.training.enable_reconstruct and not cfg.training.enable_contrastive:
-        raise Exception("Please choose flags for run mode: --enable_reconstruct | --enable_constrastive")
+        raise Exception("Please choose flags for run mode: --enable_reconstruct | --enable_contrastive")
 
     set_seed(cfg.training.seed)
     device = get_device(cfg.training.cpu)
