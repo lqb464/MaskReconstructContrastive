@@ -29,14 +29,8 @@ from metrics import MetricsAccumulator
 from model import SwinUNetDualViewSSLPhase1, flip_lr
 from visualization import save_image_grid, run_tsne_visualization
 
-from .training.utils import get_device
-from .common.losses import 
-
-
-
-def ensure_dir(p: Path) -> Path:
-    p.mkdir(parents=True, exist_ok=True)
-    return p
+from .training.utils import get_device, ensure_dir
+from .common.losses import masked_bce_logits_weighted, mixed_bce_logits_weighted
 
 
 def dataclass_from_dict(dc_type, raw: dict):
@@ -102,22 +96,6 @@ def load_checkpoint(ckpt_path: Path, device: torch.device) -> Dict[str, Any]:
     if not isinstance(obj, dict) or "model" not in obj:
         raise ValueError(f"Invalid checkpoint format: {ckpt_path}")
     return obj
-
-
-# -------------------------
-# Losses (copied from trainer.py but kept local here)
-# -------------------------
-def _foreground_weighted_bce_logits(
-    logits: torch.Tensor,
-    target: torch.Tensor,
-    fg_eps: float = 0.02,
-    fg_weight: float = 10.0,
-) -> torch.Tensor:
-    with torch.no_grad():
-        w = torch.ones_like(target)
-        w = torch.where(target > fg_eps, torch.full_like(w, fg_weight), w)
-    return F.binary_cross_entropy_with_logits(logits, target, weight=w, reduction="none")
-
 
 
 # -------------------------

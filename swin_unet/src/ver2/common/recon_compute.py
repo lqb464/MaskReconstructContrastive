@@ -6,7 +6,7 @@ import torch
 
 from swin_unet.src.ver2.common.losses import masked_l1_loss, mixed_l1_loss
 
-from .recon_losses import masked_bce_logits_weighted, mixed_bce_logits_weighted
+from .losses import masked_bce_logits_weighted, mixed_bce_logits_weighted
 
 
 def compute_recon_losses(

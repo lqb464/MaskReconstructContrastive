@@ -108,45 +108,34 @@ def mixed_l1_loss(
     return alpha_mask * masked_l1 + beta_unmask * unmasked_l1
 
 
+def _foreground_weighted_bce_logits(
+    logits: torch.Tensor,
+    target: torch.Tensor,
+    fg_eps: float = 0.02,
+    fg_weight: float = 10.0,
+) -> torch.Tensor:
+    """Weighted BCEWithLogits where pixels with target > fg_eps get larger weight.
+
+    Target is expected in [0, 1]. Returns unreduced loss map.
+    """
+    with torch.no_grad():
+        w = torch.ones_like(target)
+        w = torch.where(target > fg_eps, torch.full_like(w, fg_weight), w)
+    return F.binary_cross_entropy_with_logits(logits, target, weight=w, reduction="none")
+
+
 def masked_bce_logits_weighted(
     logits: torch.Tensor,
     target: torch.Tensor,
     pixel_mask: torch.Tensor,
     fg_eps: float = 0.02,
     fg_weight: float = 10.0,
-    base_weight: float = 1.0,
 ) -> torch.Tensor:
-    """
-    BCEWithLogits loss on masked region, with extra weight on foreground pixels.
-
-    This is designed to avoid the trivial all-zero reconstruction collapse on
-    sparse (mostly-black) medical images.
-
-    Args:
-        logits: Raw logits (B, C, H, W) from the recon head (NO sigmoid).
-        target: Target image scaled to [0, 1] (B, C, H, W).
-        pixel_mask: Binary mask (B, 1, H, W), 1 = masked.
-        fg_eps: Threshold to consider a target pixel foreground.
-        fg_weight: Extra multiplicative weight applied to foreground pixels.
-        base_weight: Base multiplicative weight applied everywhere.
-
-    Returns:
-        Scalar loss.
-    """
-    # Broadcast pixel_mask to channels if needed
-    if pixel_mask.shape[1] != logits.shape[1]:
-        m = pixel_mask.expand(-1, logits.shape[1], -1, -1)
-    else:
-        m = pixel_mask
-
-    # Foreground emphasis computed from the target (no extra preprocessing pipeline)
-    fg = (target > fg_eps).to(dtype=logits.dtype)
-    w = base_weight + fg_weight * fg
-
-    per_pixel = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
-    num = (per_pixel * m * w).sum()
-    denom = (m * w).sum().clamp(min=1.0)
-    return num / denom
+    """BCE logits computed only on masked region (pixel_mask==1)."""
+    loss_map = _foreground_weighted_bce_logits(logits, target, fg_eps=fg_eps, fg_weight=fg_weight)
+    m = pixel_mask
+    denom = m.sum().clamp(min=1.0)
+    return (loss_map * m).sum() / denom
 
 
 def mixed_bce_logits_weighted(
@@ -155,46 +144,15 @@ def mixed_bce_logits_weighted(
     pixel_mask: torch.Tensor,
     fg_eps: float = 0.02,
     fg_weight: float = 10.0,
-    base_weight: float = 1.0,
     alpha_mask: float = 1.0,
     beta_unmask: float = 0.2,
 ) -> torch.Tensor:
-    """
-    Weighted BCEWithLogits on both masked and unmasked regions, with extra
-    weight on foreground pixels.
-
-    Args:
-        logits: Raw logits (B, C, H, W) from the recon head (NO sigmoid).
-        target: Target image scaled to [0, 1] (B, C, H, W).
-        pixel_mask: Binary mask (B, 1, H, W), 1 = masked.
-        fg_eps: Threshold to consider a target pixel foreground.
-        fg_weight: Extra multiplicative weight applied to foreground pixels.
-        base_weight: Base multiplicative weight applied everywhere.
-        alpha_mask: Weight for masked region.
-        beta_unmask: Weight for unmasked region.
-
-    Returns:
-        Scalar loss.
-    """
-    if pixel_mask.shape[1] != logits.shape[1]:
-        m = pixel_mask.expand(-1, logits.shape[1], -1, -1)
-    else:
-        m = pixel_mask
+    """Weighted BCE logits computed on both masked and unmasked, with different weights."""
+    loss_map = _foreground_weighted_bce_logits(logits, target, fg_eps=fg_eps, fg_weight=fg_weight)
+    m = pixel_mask
     um = 1.0 - m
-
-    fg = (target > fg_eps).to(dtype=logits.dtype)
-    w = base_weight + fg_weight * fg
-
-    per_pixel = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
-
-    masked_num = (per_pixel * m * w).sum()
-    masked_den = (m * w).sum().clamp(min=1.0)
-    masked = masked_num / masked_den
-
-    unmasked_num = (per_pixel * um * w).sum()
-    unmasked_den = (um * w).sum().clamp(min=1.0)
-    unmasked = unmasked_num / unmasked_den
-
+    masked = (loss_map * m).sum() / m.sum().clamp(min=1.0)
+    unmasked = (loss_map * um).sum() / um.sum().clamp(min=1.0)
     return alpha_mask * masked + beta_unmask * unmasked
 
 
