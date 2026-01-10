@@ -277,7 +277,7 @@ def build_argparser() -> argparse.ArgumentParser:
     # Plane conditioning
     p.add_argument("--plane-inject-method", type=str, default="film", choices=["film", "add"])
     p.add_argument("--enable_saca", action="store_true")
-    p.add_argument("--saca_position", type=str, default="after_stage1", choices=["after_patch_emb", "after_merge0", "after_stage1"])
+    p.add_argument("--saca_position", type=str, default="after_stage1", choices=["after_patch_embed", "after_merge0", "after_stage1"])
     p.add_argument("--saca_gate_init", type=float, default=0.0)
     p.add_argument("--saca_warmup_epochs", type=int, default=0)
 
