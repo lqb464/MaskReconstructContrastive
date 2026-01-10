@@ -21,13 +21,13 @@ from torch import nn
 from torch.amp import autocast
 from torch.utils.data import DataLoader
 
-from augmentation import sample_masks_anti_mirror
-from config import ExperimentConfig
-from data import FolderSubfolderImageDataset, load_label_map_from_csv
-from losses import masked_l1_loss, mixed_l1_loss, nt_xent_loss, compute_embedding_variance, ssim_index
-from metrics import MetricsAccumulator
-from model import SwinUNetDualViewSSLPhase1, flip_lr
-from visualization import save_image_grid, run_tsne_visualization
+from .data.augmentation import sample_masks_anti_mirror
+from .config.experiment import ExperimentConfig
+from .data.dataset import FolderSubfolderImageDataset, load_label_map_from_csv
+from .common.losses import masked_l1_loss, mixed_l1_loss, nt_xent_loss, compute_embedding_variance, ssim_index
+from .common.metrics import MetricsAccumulator
+from .model.swin_unet_dualview import SwinUNetDualViewSSLPhase1, flip_lr
+from .viz.visualization import save_image_grid, run_tsne_visualization
 
 from .training.utils import get_device, ensure_dir
 from .common.losses import masked_bce_logits_weighted, mixed_bce_logits_weighted

@@ -81,7 +81,7 @@ class PhaseATrainer:
 
         print(self.model)
 
-        # Parameter logging (Phase A DoD)
+        # Parameter logging
         try:
             pc = self.model.param_count_breakdown()
 
