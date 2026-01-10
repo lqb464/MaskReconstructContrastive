@@ -256,9 +256,21 @@ class Trainer:
 
                 if self.cfg.training.enable_contrastive:
                     if self.cfg.contrast_loss.contrastive_loss_type == "infonce":
-                        loss_con = nt_xent_loss(z1, z2, temperature=self.cfg.training.temperature)
+                        loss_con = nt_xent_loss(
+                            z1=z1, 
+                            z2=z2, 
+                            temperature=self.cfg.training.temperature
+                        )
                     elif self.cfg.contrast_loss.contrastive_loss_type == "vicreg":
-                        loss_con = ...
+                        loss_con = vicreg_loss(
+                            z1=z1, 
+                            z2=z2,
+                            invariance_weight=self.cfg.contrast_loss.vicreg_invariance_weight,
+                            variance_weight=self.cfg.contrast_loss.vicreg_variance_weight,
+                            covariance_weight=self.cfg.contrast_loss.vicreg_covariance_weight,
+                            variance_eps=self.cfg.contrast_loss.vicreg_variance_eps,
+                            target_std=self.cfg.contrast_loss.vicreg_target_std,
+                        )
                 else:
                     loss_con = torch.zeros((), device=self.device)
 
@@ -383,9 +395,21 @@ class Trainer:
 
                 if self.cfg.training.enable_contrastive:
                     if self.cfg.contrast_loss.contrastive_loss_type == "infonce":
-                        loss_con = nt_xent_loss(z1, z2, temperature=self.cfg.training.temperature)
+                        loss_con = nt_xent_loss(
+                            z1=z1, 
+                            z2=z2, 
+                            temperature=self.cfg.training.temperature
+                        )
                     elif self.cfg.contrast_loss.contrastive_loss_type == "vicreg":
-                        loss_con = ...
+                        loss_con = vicreg_loss(
+                            z1=z1, 
+                            z2=z2,
+                            invariance_weight=self.cfg.contrast_loss.vicreg_invariance_weight,
+                            variance_weight=self.cfg.contrast_loss.vicreg_variance_weight,
+                            covariance_weight=self.cfg.contrast_loss.vicreg_covariance_weight,
+                            variance_eps=self.cfg.contrast_loss.vicreg_variance_eps,
+                            target_std=self.cfg.contrast_loss.vicreg_target_std,
+                        )
                 else:
                     loss_con = torch.zeros((), device=self.device)
 
