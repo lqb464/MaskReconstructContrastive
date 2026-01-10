@@ -554,6 +554,9 @@ def main():
     print("Configuration:")
     print(cfg)
     print("="*100)
+    
+    if not cfg.training.enable_reconstruct and not cfg.training.enable_contrastive:
+        raise Exception("Please choose flags for run mode: --enable_reconstruct | --enable_constrastive")
 
     set_seed(cfg.training.seed)
     device = get_device(cfg.training.cpu)

@@ -74,18 +74,22 @@ class TrainingConfig:
     batch_size: int = 64
     lr: float = 1e-3
     weight_decay: float = 1e-4
-    lambda_recon: float = 1.0
-    lambda_contrast: float = 1.0
+    lambda_recon: float = 0.0
+    lambda_contrast: float = 0.0
     temperature: float = 0.2
     seed: int = 42
     amp: bool = False
     cpu: bool = False
+    
+    # Run mode
+    enable_reconstruct: bool = False
+    enable_contrastive: bool = False
+
 
     # Loss options
-    enable_contrastive: bool = True
     enable_masked_loss: bool = False
 
-    # Recon loss stabilization (recommended for sparse medical images)
+    # Recon loss stabilization 
     recon_loss: str = "weighted_bce_logits"  # "weighted_bce_logits" or "l1_sigmoid"
     fg_eps: float = 0.02
     fg_weight: float = 10.0
@@ -179,6 +183,7 @@ class ExperimentConfig:
                 seed=args.seed,
                 amp=args.amp,
                 cpu=args.cpu,
+                enable_reconstruct=args.enable_reconstruct,
                 enable_contrastive=args.enable_contrastive,
                 enable_masked_loss=args.enable_masked_loss,
                 aug_p_noise=args.aug_p_noise,
@@ -276,16 +281,23 @@ def build_argparser() -> argparse.ArgumentParser:
 
     # Plane conditioning
     p.add_argument("--plane-inject-method", type=str, default="film", choices=["film", "add"])
+    
+    # SACA 
     p.add_argument("--enable_saca", action="store_true")
     p.add_argument("--saca_position", type=str, default="after_stage1", choices=["after_patch_embed", "after_merge0", "after_stage1"])
     p.add_argument("--saca_gate_init", type=float, default=0.0)
     p.add_argument("--saca_warmup_epochs", type=int, default=0)
 
     # Training
+    p.add_argument("--enable-reconstruct", action="store_true")
+    p.add_argument("--disable-reconstruct", dest="enable_reconstruct", action="store_false")
+    p.set_defaults(enable_reconstruct=True)
+    
     p.add_argument("--enable-contrastive", action="store_true")
-    p.add_argument("--ramp-contrastive", type=int, default=20)
     p.add_argument("--disable-contrastive", dest="enable_contrastive", action="store_false")
     p.set_defaults(enable_contrastive=True)
+    
+    p.add_argument("--ramp-contrastive", type=int, default=20)
 
     p.add_argument("--enable-masked-loss", action="store_true", help="Use masked-only loss instead of mixed loss")
     p.add_argument("--recon-loss", type=str, default="weighted_bce_logits", choices=["weighted_bce_logits", "l1_sigmoid"],
