@@ -238,7 +238,7 @@ class ExperimentConfig:
                 tsne_max_items=args.tsne_max_items,
             ),
             contrast_loss=ContrastiveLossConfig(
-                contrastive_loss_type=args.contrastive_loss,
+                contrastive_loss_type=args.contrastive_loss_type,
                 vicreg_invariance_weight=args.vicreg_invariance_weight,
                 vicreg_variance_weight=args.vicreg_variance_weight,
                 vicreg_covariance_weight=args.vicreg_covariance_weight,
