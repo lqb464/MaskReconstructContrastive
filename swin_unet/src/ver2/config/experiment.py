@@ -164,7 +164,7 @@ class ExperimentConfig:
                 shared_from_stage=args.shared_from_stage,
                 plane_inject_method=args.plane_inject_method,
                 enable_saca=args.enable_saca,
-                saca_position=args.sacaposition,
+                saca_position=args.saca_position,
                 saca_gate_init=args.saca_gate_init,
                 saca_warmup_epochs=args.saca_warmup_epochs,
             ),
