@@ -271,9 +271,6 @@ def vicreg_loss(
     cov = (cov_off_1.pow(2).sum() / D) + (cov_off_2.pow(2).sum() / D)
 
     loss = (invariance_weight * inv) + (variance_weight * var) + (covariance_weight * cov)
-    print()
-    print("inv:", inv, "| var:", var, "| cov:", cov)
-    print()
     
     return loss
 
