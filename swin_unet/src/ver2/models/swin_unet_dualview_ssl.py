@@ -482,8 +482,6 @@ class SwinUNetDualViewSSL(nn.Module):
     ):
         super().__init__()
         
-        print(self.get_saca_debug_info())
-
         self.image_size = image_size
         self.patch_size = patch_size
         self.embed_dim = embed_dim
@@ -598,6 +596,8 @@ class SwinUNetDualViewSSL(nn.Module):
             nn.ReLU(inplace=True),
             nn.Conv2d(16, 1, kernel_size=1),
         )
+        
+        print(self.get_saca_debug_info())
 
     def get_saca_debug_info(self) -> Dict[str, float]:
         """
