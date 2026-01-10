@@ -98,7 +98,7 @@ class TrainingConfig:
 
 @dataclass
 class DataConfig:
-    """Data loading configuration (Phase 1 folder dataset)"""
+    """Data loading configuration"""
     data_root: str = ""
     image_size: int = 192
     plane: str = "axial"  # "axial" | "coronal" | "auto"
@@ -116,6 +116,7 @@ class DataConfig:
     num_workers: int = 4
     pin_memory: bool = True
     drop_last: bool = True
+    split_test: bool = False
 
 
 @dataclass
@@ -196,6 +197,7 @@ class ExperimentConfig:
                 num_workers=args.num_workers,
                 pin_memory=args.pin_memory,
                 drop_last=args.drop_last,
+                split_test=args.split_test,
             ),
             mask=MaskConfig(
                 patch_size=args.patch_size,
@@ -220,7 +222,7 @@ class ExperimentConfig:
 # Argparse
 # -------------------------
 def build_argparser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser("Phase 1: SwinUNet Dual View SSL (MIM + Contrastive)")
+    p = argparse.ArgumentParser("SwinUNet Dual View SSL (MIM + Contrastive)")
 
     # Data (folder dataset)
     p.add_argument("--data-root", type=str, required=True, help="Root folder containing subfolders of images")
@@ -243,6 +245,7 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--no-pin-memory", dest="pin_memory", action="store_false")
     p.set_defaults(pin_memory=True)
     p.add_argument("--drop-last", action="store_true")
+    p.add_argument("--split_test", action="store_true")
     p.add_argument("--no-drop-last", dest="drop_last", action="store_false")
     p.set_defaults(drop_last=True)
 

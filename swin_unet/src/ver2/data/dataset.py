@@ -260,11 +260,12 @@ def create_dataloaders_from_folder(
     pin_memory: bool = True,
     seed: int = 42,
     drop_last: bool = True,
-) -> Tuple[DataLoader, DataLoader, DataLoader, FolderSubfolderImageDataset]:
+    split_test: bool = True,  # NEW
+) -> Tuple[DataLoader, DataLoader, Optional[DataLoader], FolderSubfolderImageDataset]:
     """
-    Build train/val/test dataloaders from a folder with subfolders.
+    Build train/val/(optional)test dataloaders from a folder with subfolders.
 
-    Returns: (train_loader, val_loader, test_loader, full_dataset)
+    Returns: (train_loader, val_loader, test_loader_or_None, full_dataset)
     """
     label_map = None
     if label_csv:
@@ -282,16 +283,18 @@ def create_dataloaders_from_folder(
         label_map=label_map,
     )
 
+    # NEW: nếu không split test thì ép test_ratio = 0 để không tạo test split
+    eff_test_ratio = test_ratio if split_test else 0.0
+
     train_idx, val_idx, test_idx = split_indices(
         n=len(full_ds),
         val_ratio=val_ratio,
-        test_ratio=test_ratio,
+        test_ratio=eff_test_ratio,
         seed=seed,
     )
 
     train_ds = Subset(full_ds, train_idx)
     val_ds = Subset(full_ds, val_idx)
-    test_ds = Subset(full_ds, test_idx) if len(test_idx) > 0 else Subset(full_ds, val_idx)
 
     def _make_loader(ds, shuffle: bool) -> DataLoader:
         return DataLoader(
@@ -305,7 +308,13 @@ def create_dataloaders_from_folder(
 
     train_loader = _make_loader(train_ds, shuffle=True)
     val_loader = _make_loader(val_ds, shuffle=False)
-    test_loader = _make_loader(test_ds, shuffle=False)
+
+    if split_test:
+        test_ds = Subset(full_ds, test_idx) if len(test_idx) > 0 else Subset(full_ds, val_idx)
+        test_loader: Optional[DataLoader] = _make_loader(test_ds, shuffle=False)
+    else:
+        test_loader = None
+
     return train_loader, val_loader, test_loader, full_ds
 
 

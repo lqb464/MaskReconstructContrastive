@@ -563,6 +563,7 @@ def main():
         pin_memory=cfg.data.pin_memory,
         seed=cfg.training.seed,
         drop_last=cfg.data.drop_last,
+        split_test=cfg.data.split_test,
     )
 
     print(f"Dataset size: {len(full_ds)}")
