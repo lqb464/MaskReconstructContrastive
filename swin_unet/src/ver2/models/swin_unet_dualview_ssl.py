@@ -812,8 +812,39 @@ class SwinUNetDualViewSSL(nn.Module):
 
         # SACA: after_stage1
         s1_1, s1_2 = self.maybe_saca("after_stage1", s1_1, s1_2)
+        
+        # ---- early-exit for contrastive at stage1 (skip shared trunk + decoder) ----
+        if self.enable_contrastive and (self.contrastive_position == "stage1") and (not self.enable_reconstruct):
+            h1 = self._pool_hw(s1_1)
+            h2 = self._pool_hw(s1_2)
+            z1 = self.proj_c1(h1)
+            z2 = self.proj_c1(h2)
+            recon_raw_orig = None
+            recon_raw_flip = None
+            return recon_raw_orig, recon_raw_flip, z1, z2
+
 
         # ---- shared trunk ----
+        if self.enable_contrastive and (self.contrastive_position == "stage2") and (not self.enable_reconstruct):
+            # compute only up to stage2, skip merge2 + stage3
+            u2_1 = self.merge1(s1_1)
+            u2_1 = self.plane_cond(u2_1, plane_one_hot)
+            s2_1 = self.stage2(u2_1)
+
+            u2_2 = self.merge1(s1_2)
+            u2_2 = self.plane_cond(u2_2, plane_one_hot)
+            s2_2 = self.stage2(u2_2)
+
+            h1 = self._pool_hw(s2_1)
+            h2 = self._pool_hw(s2_2)
+            z1 = self.proj_c2(h1)
+            z2 = self.proj_c2(h2)
+
+            recon_raw_orig = None
+            recon_raw_flip = None
+            return recon_raw_orig, recon_raw_flip, z1, z2
+
+        # default path (full trunk)
         s2_1, b1 = self._shared_trunk(s1_1, plane_one_hot)
         s2_2, b2 = self._shared_trunk(s1_2, plane_one_hot)
 
