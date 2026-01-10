@@ -81,6 +81,7 @@ class Trainer:
             enable_reconstruct=cfg.training.enable_reconstruct,
             enable_contrastive=cfg.training.enable_contrastive,
             contrastive_loss_type=self.cfg.contrast_loss.contrastive_loss_type,
+            contrastive_position=self.cfg.contrast_loss.contrastive_position,
         ).to(device)
 
         print(self.model)

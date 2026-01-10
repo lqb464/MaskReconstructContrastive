@@ -85,7 +85,6 @@ class TrainingConfig:
     enable_reconstruct: bool = False
     enable_contrastive: bool = False
 
-
     # Loss options
     enable_masked_loss: bool = False
 
@@ -144,6 +143,7 @@ class LoggingConfig:
 class ContrastiveLossConfig:
     "Contrastive Loss options"
     contrastive_loss_type: str = "infonce" # "infonce" or "vicreg"
+    contrast_position: str = "bottleneck" # "bottleneck" or "stage1" or "stage2"
     
     # VICReg options
     vicreg_invariance_weight: float = 25.0
@@ -239,6 +239,7 @@ class ExperimentConfig:
             ),
             contrast_loss=ContrastiveLossConfig(
                 contrastive_loss_type=args.contrastive_loss_type,
+                contrast_position=args.contrast_position,
                 vicreg_invariance_weight=args.vicreg_invariance_weight,
                 vicreg_variance_weight=args.vicreg_variance_weight,
                 vicreg_covariance_weight=args.vicreg_covariance_weight,
@@ -349,6 +350,7 @@ def build_argparser() -> argparse.ArgumentParser:
     
     # Contrast Loss options
     p.add_argument("--contrastive_loss_type", type=str, default="infonce", choices=["infonce", "vicreg"])
+    p.add_argument("--contrast_position", type=str, default="bottleneck", choices=["bottleneck", "stage1", "stage2"])
     p.add_argument("--vicreg_invariance_weight", type=float, default=25.0)
     p.add_argument("--vicreg_variance_weight", type=float, default=25.0)
     p.add_argument("--vicreg_covariance_weight", type=float, default=1.0)

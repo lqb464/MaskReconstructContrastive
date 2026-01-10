@@ -485,7 +485,8 @@ class SwinUNetDualViewSSL(nn.Module):
         saca_warmup_epochs: int = 0,
         enable_reconstruct: bool = True,
         enable_contrastive: bool = True,
-        contrastive_loss_type: str = "infonce"
+        contrastive_loss_type: str = "infonce",
+        contrastive_position: str = "bottleneck",
     ):
         super().__init__()
         
@@ -506,6 +507,9 @@ class SwinUNetDualViewSSL(nn.Module):
         # ---- Training mode ----
         self.enable_reconstruct = enable_reconstruct
         self.enable_contrastive = enable_contrastive
+        
+        # ---- Contrastive Loss ----
+        self.contrastive_position = contrastive_position
 
         C0 = embed_dim
         C1 = 2 * C0
@@ -558,9 +562,20 @@ class SwinUNetDualViewSSL(nn.Module):
         # ---- Contrastive Head ----
         if self.enable_contrastive:
             proj_normalize = (contrastive_loss_type.lower().strip() == "infonce")
-            self.proj = ProjectionHead(in_dim=C3, proj_dim=proj_dim, normalize=proj_normalize)
+
+            # one head per feature stage (NHWC pooled to [B,C])
+            self.proj_c1 = ProjectionHead(in_dim=C1, proj_dim=proj_dim, normalize=proj_normalize)
+            self.proj_c2 = ProjectionHead(in_dim=C2, proj_dim=proj_dim, normalize=proj_normalize)
+            self.proj_c3 = ProjectionHead(in_dim=C3, proj_dim=proj_dim, normalize=proj_normalize)
+
+            # backward compatible alias (keeps old behavior if any code uses self.proj)
+            self.proj = self.proj_c3
         else:
+            self.proj_c1 = None
+            self.proj_c2 = None
+            self.proj_c3 = None
             self.proj = None
+
 
         # ---- Decoder ----
         if self.enable_reconstruct:
@@ -698,6 +713,11 @@ class SwinUNetDualViewSSL(nn.Module):
         # after_merge0 or after_stage1
         return self.saca_c1(f1, f2)
 
+    @staticmethod
+    def _pool_hw(x_nhwc: torch.Tensor) -> torch.Tensor:
+        # x_nhwc: [B,H,W,C] -> [B,C]
+        return x_nhwc.mean(dim=(1, 2))
+    
     def _shared_trunk(self, s1: torch.Tensor, plane_one_hot: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         u2 = self.merge1(s1)
         u2 = self.plane_cond(u2, plane_one_hot)
@@ -799,10 +819,27 @@ class SwinUNetDualViewSSL(nn.Module):
 
         # ---- contrastive head ----
         if self.enable_contrastive:
-            z1 = self.proj(b1.mean(dim=(1, 2)))
-            z2 = self.proj(b2.mean(dim=(1, 2)))
+            if self.contrastive_position == "stage1":
+                h1 = self._pool_hw(s1_1)
+                h2 = self._pool_hw(s1_2)
+                z1 = self.proj_c1(h1)
+                z2 = self.proj_c1(h2)
+
+            elif self.contrastive_position == "stage2":
+                h1 = self._pool_hw(s2_1)
+                h2 = self._pool_hw(s2_2)
+                z1 = self.proj_c2(h1)
+                z2 = self.proj_c2(h2)
+
+            elif self.contrastive_position == "bottleneck":
+                # "bottleneck"
+                h1 = self._pool_hw(b1)
+                h2 = self._pool_hw(b2)
+                z1 = self.proj_c3(h1)
+                z2 = self.proj_c3(h2)
         else:
             z1, z2 = None, None
+
             
         if not self.enable_reconstruct:
             recon_raw_orig = None
