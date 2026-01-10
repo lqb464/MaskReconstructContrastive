@@ -701,37 +701,40 @@ class SwinUNetDualViewSSL(nn.Module):
         pixel_mask: torch.Tensor,
         plane_one_hot: torch.Tensor,
         return_embeddings: bool = True,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Returns:
-          recon_raw_orig: [B,1,H,W] logits
-          recon_raw_flip: [B,1,H,W] logits
-          z1, z2: [B,D] embeddings (if return_embeddings else empty)
-        """
+    ):
         x1_masked = x * (1.0 - pixel_mask)
         x2_masked = flip_lr(x) * (1.0 - pixel_mask)  # mask NOT flipped
 
-        # view1 early encode
+        # ---- patch embed ----
         f0_1 = self.patch_embed_1(x1_masked)
-        s0_1 = self.stage0_1(f0_1)
-        f1_1 = self.merge0_1(s0_1)
-        s1_1 = self.stage1_1(f1_1)
-
-        # view2 early encode
         f0_2 = self.patch_embed_2(x2_masked)
+
+        # SACA: after_patch_embed
+        f0_1, f0_2 = self.maybe_saca("after_patch_embed", f0_1, f0_2)
+
+        # ---- stage0 ----
+        s0_1 = self.stage0_1(f0_1)
         s0_2 = self.stage0_2(f0_2)
+
+        # ---- merge0 ----
+        f1_1 = self.merge0_1(s0_1)
         f1_2 = self.merge0_2(s0_2)
+
+        # SACA: after_merge0
+        f1_1, f1_2 = self.maybe_saca("after_merge0", f1_1, f1_2)
+
+        # ---- stage1 ----
+        s1_1 = self.stage1_1(f1_1)
         s1_2 = self.stage1_2(f1_2)
 
-        # Option A: SACA between s1_1 and s1_2
-        if self.enable_saca:
-            s1_1, s1_2 = self.saca(s1_1, s1_2)
+        # SACA: after_stage1
+        s1_1, s1_2 = self.maybe_saca("after_stage1", s1_1, s1_2)
 
-        # shared trunk
+        # ---- shared trunk ----
         s2_1, b1 = self._shared_trunk(s1_1, plane_one_hot)
         s2_2, b2 = self._shared_trunk(s1_2, plane_one_hot)
 
-        # contrastive embeddings
+        # ---- contrastive head ----
         if return_embeddings:
             z1 = self.proj(b1.mean(dim=(1, 2)))
             z2 = self.proj(b2.mean(dim=(1, 2)))
@@ -739,24 +742,23 @@ class SwinUNetDualViewSSL(nn.Module):
             z1 = torch.empty((x.size(0), 0), device=x.device)
             z2 = torch.empty((x.size(0), 0), device=x.device)
 
-        # Shared Up2
+        # ---- shared up2 ----
         d2_1 = self.up2_shared(b1, s2_1)
         d2_2 = self.up2_shared(b2, s2_2)
 
-        # View1 branch
+        # ---- decoder view1 ----
         d1_1 = self.up1_v1(d2_1, s1_1)
         d0_1 = self.up0_v1(d1_1, s0_1)
-        feat1 = self.final_up_v1(d0_1)                 # NHWC
+        feat1 = self.final_up_v1(d0_1)
         recon_raw_orig = self.recon_head_v1(nhwc_to_nchw(feat1))
 
-        # View2 branch
+        # ---- decoder view2 ----
         d1_2 = self.up1_v2(d2_2, s1_2)
         d0_2 = self.up0_v2(d1_2, s0_2)
-        feat2 = self.final_up_v2(d0_2)                 # NHWC
+        feat2 = self.final_up_v2(d0_2)
         recon_raw_flip = self.recon_head_v2(nhwc_to_nchw(feat2))
 
         return recon_raw_orig, recon_raw_flip, z1, z2
-
 
 __all__ = [
     "SwinUNetDualViewSSL",

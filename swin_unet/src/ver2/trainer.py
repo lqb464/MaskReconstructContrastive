@@ -77,7 +77,7 @@ class Trainer:
             proj_dim=cfg.model.proj_dim,
             plane_inject_method=cfg.model.plane_inject_method,
             enable_saca=cfg.model.enable_saca,
-            saca_position=cfg.model.sace_position,
+            saca_position=cfg.model.saca_position,
             saca_gate_init=cfg.model.saca_gate_init,
             saca_warmup_epochs=cfg.model.saca_warmup_epochs,
         ).to(device)
