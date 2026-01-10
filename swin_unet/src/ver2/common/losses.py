@@ -215,6 +215,65 @@ def compute_embedding_variance(z_list: List[torch.Tensor]) -> Tuple[float, float
     return var.mean().item(), var.min().item()
 
 
+def vicreg_loss(
+    *,
+    z1: torch.Tensor,
+    z2: torch.Tensor,
+    invariance_weight: float = 25.0,
+    variance_weight: float = 25.0,
+    covariance_weight: float = 1.0,
+    variance_eps: float = 1e-4,
+    target_std: float = 1.0,
+) -> torch.Tensor:
+    """
+    VICReg loss (invariance + variance + covariance).
+
+    Args:
+        z1, z2: embeddings (B, D)
+        invariance_weight: weight for MSE(z1, z2)
+        variance_weight: weight for variance regularization
+        covariance_weight: weight for covariance regularization
+        variance_eps: epsilon inside sqrt for numerical stability
+        target_std: desired per-dimension std (typically 1.0)
+
+    Returns:
+        scalar loss
+    """
+    assert z1.dim() == 2 and z2.dim() == 2 and z1.shape == z2.shape, f"z1,z2 must be (B,D) same shape, got {z1.shape} and {z2.shape}"
+    B, D = z1.shape
+
+    # 1) Invariance term
+    inv = F.mse_loss(z1, z2)
+
+    # Center features for var and cov terms
+    z1c = z1 - z1.mean(dim=0, keepdim=True)
+    z2c = z2 - z2.mean(dim=0, keepdim=True)
+
+    # 2) Variance term
+    # Penalize dimensions whose std is below target_std
+    std_z1 = torch.sqrt(z1c.var(dim=0, unbiased=False) + variance_eps)
+    std_z2 = torch.sqrt(z2c.var(dim=0, unbiased=False) + variance_eps)
+    var = (F.relu(target_std - std_z1).mean() + F.relu(target_std - std_z2).mean())
+
+    # 3) Covariance term
+    # Penalize off-diagonal covariance
+    if B > 1:
+        cov_z1 = (z1c.T @ z1c) / (B - 1)
+        cov_z2 = (z2c.T @ z2c) / (B - 1)
+    else:
+        # Degenerate batch, avoid divide by zero
+        cov_z1 = z1c.T @ z1c
+        cov_z2 = z2c.T @ z2c
+
+    diag = torch.eye(D, device=z1.device, dtype=torch.bool)
+    cov_off_1 = cov_z1.masked_fill(diag, 0.0)
+    cov_off_2 = cov_z2.masked_fill(diag, 0.0)
+    cov = (cov_off_1.pow(2).sum() / D) + (cov_off_2.pow(2).sum() / D)
+
+    loss = (invariance_weight * inv) + (variance_weight * var) + (covariance_weight * cov)
+    return loss
+
+
 __all__ = [
     "ssim_index",
     "masked_l1_loss",
@@ -223,4 +282,5 @@ __all__ = [
     "compute_embedding_variance",
     "masked_bce_logits_weighted",
     "mixed_bce_logits_weighted",
+    "vicreg_loss",
 ]

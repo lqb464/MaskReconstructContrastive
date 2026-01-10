@@ -139,7 +139,18 @@ class LoggingConfig:
     tsne_only_if_labeled: bool = True
     tsne_every: int = 20
     tsne_max_items: int = 1000
-
+    
+@dataclass
+class ContrastiveLossConfig:
+    "Contrastive Loss options"
+    contrastive_loss_type: str = "infonce" # "infonce" or "vicreg"
+    
+    # VICReg options
+    vicreg_invariance_weight: float = 25.0
+    vicreg_variance_weight: float = 25.0
+    vicreg_covariance_weight: float = 1.0
+    vicreg_variance_eps: float = 1e-4 
+    vicreg_target_std: float = 1.0
 
 @dataclass
 class ExperimentConfig:
@@ -149,6 +160,7 @@ class ExperimentConfig:
     data: DataConfig = field(default_factory=DataConfig)
     mask: MaskConfig = field(default_factory=MaskConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    contrast_loss: ContrastiveLossConfig = field(default_factory=ContrastiveLossConfig)
 
     @classmethod
     def from_args(cls, args: argparse.Namespace) -> "ExperimentConfig":
@@ -225,6 +237,14 @@ class ExperimentConfig:
                 tsne_every=args.tsne_every,
                 tsne_max_items=args.tsne_max_items,
             ),
+            contrast_loss=ContrastiveLossConfig(
+                contrastive_loss_type=args.contrastive_loss,
+                vicreg_invariance_weight=args.vicreg_invariance_weight,
+                vicreg_variance_weight=args.vicreg_variance_weight,
+                vicreg_covariance_weight=args.vicreg_covariance_weight,
+                vicreg_variance_eps=args.vicreg_variance_eps,
+                vicreg_target_std=args.vicreg_target_std,
+            )
         )
 
 
@@ -327,6 +347,14 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--run-name", type=str, default="")
     p.add_argument("--ckpt-dir", type=str, default="")
     p.add_argument("--vis-every", type=int, default=20)
+    
+    # Contrast Loss options
+    p.add_argument("--contrastive_loss_type", type=str, default="infonce", choices=["infonce", "vicreg"])
+    p.add_argument("--vicreg_invariance_weight", type=float, default=25.0)
+    p.add_argument("--vicreg_variance_weight", type=float, default=25.0)
+    p.add_argument("--vicreg_covariance_weight", type=float, default=1.0)
+    p.add_argument("--vicreg_variance_eps", type=float, default=1e-4)
+    p.add_argument("--vicreg_target_std", type=float, default=1.0)
 
     # t-SNE gating
     p.add_argument("--enable-tsne", action="store_true")
@@ -335,6 +363,7 @@ def build_argparser() -> argparse.ArgumentParser:
     p.set_defaults(tsne_only_if_labeled=True)
     p.add_argument("--tsne-every", type=int, default=20)
     p.add_argument("--tsne-max-items", type=int, default=1000)
+    
 
     return p
 

@@ -14,6 +14,7 @@ def main():
     print("="*100)
     
     print("Loss Function:")
+    print("Contrastive loss type:", cfg.contrast_loss.contrastive_loss_type)
     print("L =", cfg.training.lambda_contrast, "* L_contrast +", cfg.training.lambda_recon, "* L_recon")
     
     if not cfg.training.enable_reconstruct and not cfg.training.enable_contrastive:

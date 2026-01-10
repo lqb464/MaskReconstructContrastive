@@ -20,7 +20,7 @@ from torchinfo import summary
 from tqdm import tqdm
 
 from .config.experiment import ExperimentConfig
-from .common.losses import nt_xent_loss, compute_embedding_variance
+from .common.losses import nt_xent_loss, compute_embedding_variance, vicreg_loss
 from .common.metrics import MetricsAccumulator
 from .viz.visualization import (
     plot_loss_decomposition_curves,
@@ -255,7 +255,10 @@ class Trainer:
 
 
                 if self.cfg.training.enable_contrastive:
-                    loss_con = nt_xent_loss(z1, z2, temperature=self.cfg.training.temperature)
+                    if self.cfg.contrast_loss.contrastive_loss_type == "infonce":
+                        loss_con = nt_xent_loss(z1, z2, temperature=self.cfg.training.temperature)
+                    elif self.cfg.contrast_loss.contrastive_loss_type == "vicreg":
+                        loss_con = ...
                 else:
                     loss_con = torch.zeros((), device=self.device)
 
@@ -379,7 +382,10 @@ class Trainer:
                     loss_recon_total = torch.zeros((), device=self.device)
 
                 if self.cfg.training.enable_contrastive:
-                    loss_con = nt_xent_loss(z1, z2, temperature=self.cfg.training.temperature)
+                    if self.cfg.contrast_loss.contrastive_loss_type == "infonce":
+                        loss_con = nt_xent_loss(z1, z2, temperature=self.cfg.training.temperature)
+                    elif self.cfg.contrast_loss.contrastive_loss_type == "vicreg":
+                        loss_con = ...
                 else:
                     loss_con = torch.zeros((), device=self.device)
 
@@ -559,12 +565,12 @@ class Trainer:
                 self.loss_decomp_csv_path,
                 self.plots_dir,
             )
-
+            
             print(
                 f"[epoch {epoch:03d}] "
-                f"train: recon_o={tr['loss_recon_orig']:.4f} recon_f={tr['loss_recon_flip']:.4f} recon_t={tr['loss_recon_total']:.4f} "
-                f"con={tr['loss_contrastive']:.4f} total={tr['loss_total']:.4f} | "
-                f"val: recon_o={va['loss_recon_orig']:.4f} recon_f={va['loss_recon_flip']:.4f} recon_t={va['loss_recon_total']:.4f} "
+                f"Train: recon_o={tr['loss_recon_orig']:.4f} recon_f={tr['loss_recon_flip']:.4f} recon_t={tr['loss_recon_total']:.4f} "
+                f"con={tr['loss_contrastive']:.4f} total={tr['loss_total']:.4f} \n "
+                f"Val: recon_o={va['loss_recon_orig']:.4f} recon_f={va['loss_recon_flip']:.4f} recon_t={va['loss_recon_total']:.4f} "
                 f"con={va['loss_contrastive']:.4f} total={va['loss_total']:.4f} | time={dt:.1f}s"
             )
 
