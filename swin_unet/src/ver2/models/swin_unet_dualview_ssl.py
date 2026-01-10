@@ -450,7 +450,7 @@ class ProjectionHead(nn.Module):
         self.normalize = normalize
         self.net = nn.Sequential(
             nn.Linear(in_dim, in_dim, bias=False),
-            nn.BatchNorm1d(in_dim),
+            nn.LayerNorm(in_dim), # nn.BatchNorm1d(in_dim),
             nn.ReLU(inplace=True),
             nn.Linear(in_dim, proj_dim, bias=True),
         )
