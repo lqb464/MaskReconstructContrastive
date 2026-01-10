@@ -476,7 +476,9 @@ class SwinUNetDualViewSSL(nn.Module):
         proj_dim: int = 128,
         plane_inject_method: str = "film",
         enable_saca: bool = True,
+        saca_position: str = "after_stage1",
         saca_gate_init: float = 0.0,
+        saca_warmup_epochs: int = 0,
     ):
         super().__init__()
         self.image_size = image_size

@@ -62,7 +62,10 @@ class ModelConfig:
     plane_inject_stage: int = 2
     plane_inject_method: str = "film"  # "film" or "add"
     enable_saca: bool = False
-
+    saca_position: str = "after_stage1" # after_patch_embed or after_merge0 or after_stage1
+    saca_gate_init: float = 0.0 
+    saca_warmup_epochs: int = 0 
+    
 
 @dataclass
 class TrainingConfig:
@@ -160,7 +163,10 @@ class ExperimentConfig:
                 split_to_stage=args.split_to_stage,
                 shared_from_stage=args.shared_from_stage,
                 plane_inject_method=args.plane_inject_method,
-                enable_saca= args.enable_saca,
+                enable_saca=args.enable_saca,
+                saca_position=args.sacaposition,
+                saca_gate_init=args.saca_gate_init,
+                saca_warmup_epochs=args.saca_warmup_epochs,
             ),
             training=TrainingConfig(
                 epochs=args.epochs,
@@ -271,6 +277,9 @@ def build_argparser() -> argparse.ArgumentParser:
     # Plane conditioning
     p.add_argument("--plane-inject-method", type=str, default="film", choices=["film", "add"])
     p.add_argument("--enable_saca", action="store_true")
+    p.add_argument("--saca_position", type=str, default="after_stage1", choices=["after_patch_emb", "after_merge0", "after_stage1"])
+    p.add_argument("--saca_gate_init", type=float, default=0.0)
+    p.add_argument("--saca_warmup_epochs", type=int, default=0)
 
     # Training
     p.add_argument("--enable-contrastive", action="store_true")

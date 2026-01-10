@@ -40,7 +40,7 @@ from .common.recon_compute import compute_recon_losses
 from .training.utils import ensure_dir, get_device, has_labels_in_batch, set_seed
 
 
-class PhaseATrainer:
+class Trainer:
     def __init__(self, cfg: ExperimentConfig, device: torch.device):
         self.cfg = cfg
         self.device = device
@@ -77,6 +77,9 @@ class PhaseATrainer:
             proj_dim=cfg.model.proj_dim,
             plane_inject_method=cfg.model.plane_inject_method,
             enable_saca=cfg.model.enable_saca,
+            saca_position=cfg.model.sace_position,
+            saca_gate_init=cfg.model.saca_gate_init,
+            saca_warmup_epochs=cfg.model.saca_warmup_epochs,
         ).to(device)
 
         print(self.model)
@@ -575,7 +578,7 @@ def main():
     print(f"Dataset size: {len(full_ds)}")
     print(f"Train batches: {len(train_loader)} | Val batches: {len(val_loader)}")
 
-    trainer = PhaseATrainer(cfg, device)
+    trainer = Trainer(cfg, device)
     trainer.fit(train_loader, val_loader)
 
 
