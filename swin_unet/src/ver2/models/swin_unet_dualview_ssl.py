@@ -481,6 +481,7 @@ class SwinUNetDualViewSSL(nn.Module):
         saca_warmup_epochs: int = 0,
     ):
         super().__init__()
+
         self.image_size = image_size
         self.patch_size = patch_size
         self.embed_dim = embed_dim
@@ -488,14 +489,22 @@ class SwinUNetDualViewSSL(nn.Module):
         self.dec_depths = dec_depths
         self.num_heads = num_heads
         self.window_size = window_size
+
+        # ---- SACA config ----
         self.enable_saca = enable_saca
+        self.saca_position = saca_position
+        self.saca_warmup_epochs = saca_warmup_epochs
+        self.current_epoch = 0  # safe default
 
         C0 = embed_dim
         C1 = 2 * C0
         C2 = 2 * C1
         C3 = 2 * C2
 
-        # Early encoders (separate)
+        # ---- Validate SACA config early (fail-fast) ----
+        self._validate_saca_config(C0, C1, num_heads)
+
+        # ---- Early encoders (unchanged) ----
         self.patch_embed_1 = PatchEmbed(in_ch=in_ch, embed_dim=C0, patch_size=patch_size)
         self.stage0_1 = BasicLayer(dim=C0, depth=enc_depths[0], num_heads=num_heads[0], window_size=window_size)
         self.merge0_1 = PatchMerging(dim=C0)
@@ -506,8 +515,16 @@ class SwinUNetDualViewSSL(nn.Module):
         self.merge0_2 = PatchMerging(dim=C0)
         self.stage1_2 = BasicLayer(dim=C1, depth=enc_depths[1], num_heads=num_heads[1], window_size=window_size)
 
-        # SACA 
-        self.saca = SACA(
+        # ---- SACA instances (prepared, not yet used) ----
+        self.saca_c0 = SACA(
+            dim=C0,
+            window_size=window_size,
+            num_heads=num_heads[0],
+            mlp_ratio=4.0,
+            gate_init=saca_gate_init,
+        )
+
+        self.saca_c1 = SACA(
             dim=C1,
             window_size=window_size,
             num_heads=num_heads[1],
@@ -515,17 +532,16 @@ class SwinUNetDualViewSSL(nn.Module):
             gate_init=saca_gate_init,
         )
 
-        # Shared trunk (Stage2+)
+        # ---- Shared trunk (unchanged) ----
         self.merge1 = PatchMerging(dim=C1)
         self.plane_cond = PlaneCondition(in_dim=2, feat_dim=C2, method=plane_inject_method)
         self.stage2 = BasicLayer(dim=C2, depth=enc_depths[2], num_heads=num_heads[2], window_size=window_size)
         self.merge2 = PatchMerging(dim=C2)
         self.stage3 = BasicLayer(dim=C3, depth=enc_depths[3], num_heads=num_heads[3], window_size=window_size)
 
-        # Contrastive head (unchanged)
         self.proj = ProjectionHead(in_dim=C3, proj_dim=proj_dim)
 
-        # Decoder OPTION X1
+        # ---- Decoder (unchanged) ----
         self.up2_shared = SwinUpBlock(
             in_dim=C3,
             skip_dim=C2,
@@ -535,7 +551,6 @@ class SwinUNetDualViewSSL(nn.Module):
             window_size=window_size,
         )
 
-        # View1 branch
         self.up1_v1 = SwinUpBlock(
             in_dim=C2,
             skip_dim=C1,
@@ -559,7 +574,6 @@ class SwinUNetDualViewSSL(nn.Module):
             nn.Conv2d(16, 1, kernel_size=1),
         )
 
-        # View2 branch
         self.up1_v2 = SwinUpBlock(
             in_dim=C2,
             skip_dim=C1,
@@ -582,6 +596,49 @@ class SwinUNetDualViewSSL(nn.Module):
             nn.ReLU(inplace=True),
             nn.Conv2d(16, 1, kernel_size=1),
         )
+
+    # ------------------------------------------------------------------
+    # Phase 1 helpers
+    # ------------------------------------------------------------------
+    def _validate_saca_config(self, C0: int, C1: int, num_heads):
+        if not self.enable_saca:
+            return
+
+        valid_positions = {"after_patch_embed", "after_merge0", "after_stage1"}
+        if self.saca_position not in valid_positions:
+            raise ValueError(
+                f"saca_position must be one of {valid_positions}, got {self.saca_position}"
+            )
+
+        if C0 % num_heads[0] != 0:
+            raise ValueError(f"C0 ({C0}) must be divisible by num_heads[0] ({num_heads[0]})")
+
+        if C1 % num_heads[1] != 0:
+            raise ValueError(f"C1 ({C1}) must be divisible by num_heads[1] ({num_heads[1]})")
+
+    def maybe_saca(
+        self,
+        point: str,
+        f1: torch.Tensor,
+        f2: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Phase 1: helper only, not wired into forward yet.
+        """
+        if not self.enable_saca:
+            return f1, f2
+
+        if point != self.saca_position:
+            return f1, f2
+
+        if self.current_epoch < self.saca_warmup_epochs:
+            return f1, f2
+
+        if point == "after_patch_embed":
+            return self.saca_c0(f1, f2)
+
+        # after_merge0 or after_stage1
+        return self.saca_c1(f1, f2)
 
     def _shared_trunk(self, s1: torch.Tensor, plane_one_hot: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         u2 = self.merge1(s1)
@@ -620,41 +677,24 @@ class SwinUNetDualViewSSL(nn.Module):
         decoder_branch_v1 = [self.up1_v1, self.up0_v1, self.final_up_v1]
         decoder_branch_v2 = [self.up1_v2, self.up0_v2, self.final_up_v2]
         recon_heads = [self.recon_head_v1, self.recon_head_v2]
-        saca = [self.saca]
+        saca = [self.saca_c0, self.saca_c1]
 
         def _count(mods) -> int:
             return sum(count_parameters(m) for m in mods)
 
-        n_early_v1 = _count(early_view1)
-        n_early_v2 = _count(early_view2)
-        n_trunk = _count(shared_trunk)
-        n_contrast = _count(contrastive_head)
-        n_dec_shared = _count(decoder_shared)
-        n_dec_v1 = _count(decoder_branch_v1)
-        n_dec_v2 = _count(decoder_branch_v2)
-        n_recon = _count(recon_heads)
-        n_saca = _count(saca)
-
-        total = count_parameters(self)
-        check_sum = (
-            n_early_v1 + n_early_v2 + n_saca + n_trunk + n_contrast + n_dec_shared + n_dec_v1 + n_dec_v2 + n_recon
-        )
-
         return {
-            "total": total,
-            "enc_early_view1": n_early_v1,
-            "enc_early_view2": n_early_v2,
-            "saca": n_saca,
-            "enc_shared_trunk": n_trunk,
-            "contrastive_head": n_contrast,
-            "decoder_shared_up2": n_dec_shared,
-            "decoder_branch_v1": n_dec_v1,
-            "decoder_branch_v2": n_dec_v2,
-            "recon_heads": n_recon,
-            "check_sum": check_sum,
-            "delta_total_minus_check": total - check_sum,
+            "total": count_parameters(self),
+            "enc_early_view1": _count(early_view1),
+            "enc_early_view2": _count(early_view2),
+            "saca": _count(saca),
+            "enc_shared_trunk": _count(shared_trunk),
+            "contrastive_head": _count(contrastive_head),
+            "decoder_shared_up2": _count(decoder_shared),
+            "decoder_branch_v1": _count(decoder_branch_v1),
+            "decoder_branch_v2": _count(decoder_branch_v2),
+            "recon_heads": _count(recon_heads),
         }
-
+        
     def forward(
         self,
         x: torch.Tensor,
