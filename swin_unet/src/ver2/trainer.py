@@ -588,7 +588,13 @@ def main():
     print("L =", cfg.training.lambda_contrast, "* L_contrast +", cfg.training.lambda_recon, "* L_recon")
     
     if not cfg.training.enable_reconstruct and not cfg.training.enable_contrastive:
-        raise Exception("Please choose flags for run mode: --enable_reconstruct | --enable_contrastive")
+        raise Exception("[Error] Please choose flags for run mode: --enable_reconstruct | --enable_contrastive")
+
+    if cfg.training.enable_contrastive and cfg.training.lambda_contrast == 0:
+        raise Exception("[Error] Contrastive training with lambda contrastive = 0")
+    
+    if cfg.training.enable_reconstruct and cfg.training.lambda_recon == 0:
+        raise Exception("[Error] Recontruct training with lambda recontruct = 0")
 
     set_seed(cfg.training.seed)
     device = get_device(cfg.training.cpu)
