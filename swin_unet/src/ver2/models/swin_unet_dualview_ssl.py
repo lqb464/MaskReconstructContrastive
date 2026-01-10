@@ -522,7 +522,7 @@ class SwinUNetDualViewSSL(nn.Module):
         self.stage1_2 = BasicLayer(dim=C1, depth=enc_depths[1], num_heads=num_heads[1], window_size=window_size)
 
         # ---- SACA instances ----
-        if not self.enable_saca:
+        if self.enable_saca:
             self.saca_c0 = SACA(
                 dim=C0,
                 window_size=window_size,
