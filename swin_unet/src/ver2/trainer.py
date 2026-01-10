@@ -546,6 +546,11 @@ def main():
     parser = build_argparser()
     args = parser.parse_args()
     cfg = ExperimentConfig.from_args(args)
+    
+    print("="*100)
+    print("Configuration:")
+    print(cfg)
+    print("="*100)
 
     set_seed(cfg.training.seed)
     device = get_device(cfg.training.cpu)
