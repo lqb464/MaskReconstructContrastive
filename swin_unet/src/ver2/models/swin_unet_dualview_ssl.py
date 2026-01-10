@@ -832,7 +832,6 @@ class SwinUNetDualViewSSL(nn.Module):
                 z2 = self.proj_c2(h2)
 
             elif self.contrastive_position == "bottleneck":
-                # "bottleneck"
                 h1 = self._pool_hw(b1)
                 h2 = self._pool_hw(b2)
                 z1 = self.proj_c3(h1)
