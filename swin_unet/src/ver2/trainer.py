@@ -112,7 +112,7 @@ class Trainer:
             print("[params] unable to compute breakdown:", repr(e))
 
         try:
-            B = cfg.train.batch_size if hasattr(cfg, "train") else 1
+            B = 1
             H = cfg.data.image_size
             W = cfg.data.image_size
             in_ch = cfg.model.in_ch
@@ -143,7 +143,7 @@ class Trainer:
 
         except Exception as e:
             print("[torchinfo] unable to print model summary:", repr(e))
-
+            
         self.opt = AdamW(self.model.parameters(), lr=cfg.training.lr, weight_decay=cfg.training.weight_decay)
         self.scaler = GradScaler(enabled=(cfg.training.amp and device.type == "cuda"))
 

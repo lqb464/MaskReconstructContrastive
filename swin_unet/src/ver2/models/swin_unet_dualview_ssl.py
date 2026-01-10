@@ -810,30 +810,62 @@ class SwinUNetDualViewSSL(nn.Module):
     def param_count_breakdown(self) -> Dict[str, int]:
         early_view1 = [self.patch_embed_1, self.stage0_1, self.merge0_1, self.stage1_1]
         early_view2 = [self.patch_embed_2, self.stage0_2, self.merge0_2, self.stage1_2]
+
+        # shared trunk can be partially None depending on trimming
         shared_trunk = [self.merge1, self.plane_cond, self.stage2, self.merge2, self.stage3]
-        contrastive_head = [self.proj]
+
+        # contrastive head can be one of proj_c1/proj_c2/proj_c3 (or all when reconstruct on)
+        contrastive_head = [self.proj_c1, self.proj_c2, self.proj_c3]
+
         decoder_shared = [self.up2_shared]
         decoder_branch_v1 = [self.up1_v1, self.up0_v1, self.final_up_v1]
         decoder_branch_v2 = [self.up1_v2, self.up0_v2, self.final_up_v2]
         recon_heads = [self.recon_head_v1, self.recon_head_v2]
+
         saca = [self.saca_c0, self.saca_c1]
 
         def _count(mods) -> int:
             mods = [m for m in mods if m is not None]
             return sum(count_parameters(m) for m in mods)
 
+        total = count_parameters(self)
+        enc_early_view1 = _count(early_view1)
+        enc_early_view2 = _count(early_view2)
+        saca_cnt = _count(saca)
+        enc_shared_trunk = _count(shared_trunk)
+        contrastive_cnt = _count(contrastive_head)
+        decoder_shared_up2 = _count(decoder_shared)
+        decoder_v1 = _count(decoder_branch_v1)
+        decoder_v2 = _count(decoder_branch_v2)
+        recon_cnt = _count(recon_heads)
+
+        check_sum = (
+            enc_early_view1
+            + enc_early_view2
+            + saca_cnt
+            + enc_shared_trunk
+            + contrastive_cnt
+            + decoder_shared_up2
+            + decoder_v1
+            + decoder_v2
+            + recon_cnt
+        )
+
         return {
-            "total": count_parameters(self),
-            "enc_early_view1": _count(early_view1),
-            "enc_early_view2": _count(early_view2),
-            "saca": _count(saca),
-            "enc_shared_trunk": _count(shared_trunk),
-            "contrastive_head": _count(contrastive_head),
-            "decoder_shared_up2": _count(decoder_shared),
-            "decoder_branch_v1": _count(decoder_branch_v1),
-            "decoder_branch_v2": _count(decoder_branch_v2),
-            "recon_heads": _count(recon_heads),
+            "total": total,
+            "enc_early_view1": enc_early_view1,
+            "enc_early_view2": enc_early_view2,
+            "saca": saca_cnt,
+            "enc_shared_trunk": enc_shared_trunk,
+            "contrastive_head": contrastive_cnt,
+            "decoder_shared_up2": decoder_shared_up2,
+            "decoder_branch_v1": decoder_v1,
+            "decoder_branch_v2": decoder_v2,
+            "recon_heads": recon_cnt,
+            "check_sum": check_sum,
+            "delta_total_minus_check": total - check_sum,
         }
+
         
     def forward(
         self,
