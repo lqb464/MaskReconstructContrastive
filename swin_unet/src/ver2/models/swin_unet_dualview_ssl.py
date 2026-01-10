@@ -510,6 +510,28 @@ class SwinUNetDualViewSSL(nn.Module):
         
         # ---- Contrastive Loss ----
         self.contrastive_position = contrastive_position
+        
+         # ---- Init gating for compute depth ----
+        # Rule: only allow "skip init behind position" when enable_reconstruct=False AND enable_contrastive=True
+        # If enable_reconstruct=True, must init full model.
+        can_trim_by_position = (not self.enable_reconstruct) and self.enable_contrastive
+
+        # If we cannot trim safely (ex: reconstruct on, or contrastive off), keep full trunk
+        if not can_trim_by_position:
+            self._need_stage2 = True
+            self._need_stage3 = True
+        else:
+            # reconstruct off + contrastive on: init only what the chosen position needs
+            if self.contrastive_position == "stage1":
+                self._need_stage2 = False
+                self._need_stage3 = False
+            elif self.contrastive_position == "stage2":
+                self._need_stage2 = True
+                self._need_stage3 = False
+            else:
+                # bottleneck
+                self._need_stage2 = True
+                self._need_stage3 = True
 
         C0 = embed_dim
         C1 = 2 * C0
@@ -552,29 +574,58 @@ class SwinUNetDualViewSSL(nn.Module):
             self.saca_c0 = None 
             self.saca_c1 = None 
 
-        # ---- Shared trunk  ----
-        self.merge1 = PatchMerging(dim=C1)
-        self.plane_cond = PlaneCondition(in_dim=2, feat_dim=C2, method=plane_inject_method)
-        self.stage2 = BasicLayer(dim=C2, depth=enc_depths[2], num_heads=num_heads[2], window_size=window_size)
-        self.merge2 = PatchMerging(dim=C2)
-        self.stage3 = BasicLayer(dim=C3, depth=enc_depths[3], num_heads=num_heads[3], window_size=window_size)
+        # ---- Shared trunk ----
+        if self._need_stage2:
+            self.merge1 = PatchMerging(dim=C1)
+            self.plane_cond = PlaneCondition(in_dim=2, feat_dim=C2, method=plane_inject_method)
+            self.stage2 = BasicLayer(dim=C2, depth=enc_depths[2], num_heads=num_heads[2], window_size=window_size)
+        else:
+            self.merge1 = None
+            self.plane_cond = None
+            self.stage2 = None
+
+        if self._need_stage3:
+            self.merge2 = PatchMerging(dim=C2)
+            self.stage3 = BasicLayer(dim=C3, depth=enc_depths[3], num_heads=num_heads[3], window_size=window_size)
+        else:
+            self.merge2 = None
+            self.stage3 = None
 
         # ---- Contrastive Head ----
         if self.enable_contrastive:
             proj_normalize = (contrastive_loss_type.lower().strip() == "infonce")
 
-            # one head per feature stage (NHWC pooled to [B,C])
-            self.proj_c1 = ProjectionHead(in_dim=C1, proj_dim=proj_dim, normalize=proj_normalize)
-            self.proj_c2 = ProjectionHead(in_dim=C2, proj_dim=proj_dim, normalize=proj_normalize)
-            self.proj_c3 = ProjectionHead(in_dim=C3, proj_dim=proj_dim, normalize=proj_normalize)
+            if self.enable_reconstruct:
+                # Full model required when reconstruct is on
+                self.proj_c1 = ProjectionHead(in_dim=C1, proj_dim=proj_dim, normalize=proj_normalize)
+                self.proj_c2 = ProjectionHead(in_dim=C2, proj_dim=proj_dim, normalize=proj_normalize)
+                self.proj_c3 = ProjectionHead(in_dim=C3, proj_dim=proj_dim, normalize=proj_normalize)
 
-            # backward compatible alias (keeps old behavior if any code uses self.proj)
+            else:
+                # reconstruct off: init only the head needed by chosen position
+                if self.contrastive_position == "stage1":
+                    self.proj_c1 = ProjectionHead(in_dim=C1, proj_dim=proj_dim, normalize=proj_normalize)
+                    self.proj_c2 = None
+                    self.proj_c3 = None
+                elif self.contrastive_position == "stage2":
+                    self.proj_c1 = None
+                    self.proj_c2 = ProjectionHead(in_dim=C2, proj_dim=proj_dim, normalize=proj_normalize)
+                    self.proj_c3 = None
+                else:
+                    # bottleneck
+                    self.proj_c1 = None
+                    self.proj_c2 = None
+                    self.proj_c3 = ProjectionHead(in_dim=C3, proj_dim=proj_dim, normalize=proj_normalize)
+
+            # alias for backward compatibility
             self.proj = self.proj_c3
+
         else:
             self.proj_c1 = None
             self.proj_c2 = None
             self.proj_c3 = None
             self.proj = None
+
 
 
         # ---- Decoder ----
@@ -645,8 +696,13 @@ class SwinUNetDualViewSSL(nn.Module):
             self.final_up_v2 = None
             self.recon_head_v2 = None
 
-        if self.enable_contrastive and (self.proj is None):
-            raise RuntimeError("enable_contrastive=True but projection head is not initialized")
+        if self.enable_contrastive:
+            if self.contrastive_position == "stage1" and (self.proj_c1 is None):
+                raise RuntimeError("enable_contrastive=True but proj_c1 is not initialized for stage1")
+            if self.contrastive_position == "stage2" and (self.proj_c2 is None):
+                raise RuntimeError("enable_contrastive=True but proj_c2 is not initialized for stage2")
+            if self.contrastive_position == "bottleneck" and (self.proj_c3 is None):
+                raise RuntimeError("enable_contrastive=True but proj_c3 is not initialized for bottleneck")
 
         if self.enable_reconstruct and (self.up2_shared is None):
             raise RuntimeError("enable_reconstruct=True but decoder is not initialized")
@@ -719,6 +775,11 @@ class SwinUNetDualViewSSL(nn.Module):
         return x_nhwc.mean(dim=(1, 2))
     
     def _shared_trunk(self, s1: torch.Tensor, plane_one_hot: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        if self.merge1 is None or self.plane_cond is None or self.stage2 is None:
+            raise RuntimeError("Shared trunk stage2 is not initialized for this configuration")
+        if self.merge2 is None or self.stage3 is None:
+            raise RuntimeError("Shared trunk stage3 is not initialized for this configuration")
+        
         u2 = self.merge1(s1)
         u2 = self.plane_cond(u2, plane_one_hot)
         s2 = self.stage2(u2)
@@ -867,8 +928,12 @@ class SwinUNetDualViewSSL(nn.Module):
                 h2 = self._pool_hw(b2)
                 z1 = self.proj_c3(h1)
                 z2 = self.proj_c3(h2)
+            else:
+                # should never happen due to __init__ validation
+                z1, z2 = None, None
         else:
             z1, z2 = None, None
+
 
             
         if not self.enable_reconstruct:
