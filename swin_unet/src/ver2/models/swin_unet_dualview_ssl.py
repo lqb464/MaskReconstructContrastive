@@ -633,7 +633,7 @@ class SwinUNetDualViewSSL(nn.Module):
         Safe to call every epoch.
         """
         
-        print("#"*100)
+        print("="*100)
         info = {
             "saca_enable": bool(self.enable_saca),
             "saca_position": self.saca_position if self.enable_saca else "disabled",

@@ -584,6 +584,9 @@ def main():
     print(cfg)
     print("="*100)
     
+    print("Loss Function:")
+    print("L =", cfg.training.lambda_contrast, "* L_contrast +", cfg.training.lambda_recon, "* L_recon")
+    
     if not cfg.training.enable_reconstruct and not cfg.training.enable_contrastive:
         raise Exception("Please choose flags for run mode: --enable_reconstruct | --enable_contrastive")
 
