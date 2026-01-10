@@ -445,8 +445,9 @@ class SwinUpBlock(nn.Module):
 
 
 class ProjectionHead(nn.Module):
-    def __init__(self, in_dim: int, proj_dim: int):
+    def __init__(self, in_dim: int, proj_dim: int, *, normalize: bool = True):
         super().__init__()
+        self.normalize = normalize
         self.net = nn.Sequential(
             nn.Linear(in_dim, in_dim, bias=False),
             nn.BatchNorm1d(in_dim),
@@ -456,7 +457,10 @@ class ProjectionHead(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.net(x)
-        return F.normalize(x, dim=-1)
+        if self.normalize:
+            x = F.normalize(x, dim=-1)
+        return x
+
 
 
 # -------------------------
@@ -481,6 +485,7 @@ class SwinUNetDualViewSSL(nn.Module):
         saca_warmup_epochs: int = 0,
         enable_reconstruct: bool = True,
         enable_contrastive: bool = True,
+        contrastive_loss_type: str = "infonce"
     ):
         super().__init__()
         
@@ -552,7 +557,8 @@ class SwinUNetDualViewSSL(nn.Module):
 
         # ---- Contrastive Head ----
         if self.enable_contrastive:
-            self.proj = ProjectionHead(in_dim=C3, proj_dim=proj_dim)
+            proj_normalize = (contrastive_loss_type.lower().strip() == "infonce")
+            self.proj = ProjectionHead(in_dim=C3, proj_dim=proj_dim, normalize=proj_normalize)
         else:
             self.proj = None
 

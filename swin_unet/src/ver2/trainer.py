@@ -80,6 +80,7 @@ class Trainer:
             saca_warmup_epochs=cfg.model.saca_warmup_epochs,
             enable_reconstruct=cfg.training.enable_reconstruct,
             enable_contrastive=cfg.training.enable_contrastive,
+            contrastive_loss_type=self.cfg.contrast_loss.contrastive_loss_type,
         ).to(device)
 
         print(self.model)
