@@ -605,7 +605,7 @@ class SwinUNetDualViewSSL(nn.Module):
         Safe to call every epoch.
         """
         info = {
-            "saca_enable": float(self.enable_saca),
+            "saca_enable": bool(self.enable_saca),
             "saca_position": self.saca_position if self.enable_saca else "disabled",
             "saca_warmup_epochs": float(self.saca_warmup_epochs),
             "current_epoch": float(self.current_epoch),
