@@ -36,7 +36,7 @@ from .training.batch_ops import prepare_inputs
 from .training.ckpt_io import load_checkpoint_weights, save_checkpoint
 from .training.loggers import EpochCSVLogger, LossDecompCSVLogger
 from .training.metric_compute import update_recon_metrics
-from .training.recon_compute import compute_recon_losses
+from .common.recon_compute import compute_recon_losses
 from .training.utils import ensure_dir, get_device, has_labels_in_batch, set_seed
 
 
