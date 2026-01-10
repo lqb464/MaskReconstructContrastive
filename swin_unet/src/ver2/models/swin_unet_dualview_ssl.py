@@ -348,7 +348,7 @@ class WindowCrossAttention(nn.Module):
         return out
 
 
-class SACAStage1Block(nn.Module):
+class SACA(nn.Module):
     """
     SACA-style symmetric cross attention between view1 and view2 stage1 tokens.
     Input/Output: NHWC tensors [B,H,W,C] for each view.
@@ -527,7 +527,7 @@ class SwinUNetDualViewSSL(nn.Module):
         window_size: int = 7,
         proj_dim: int = 128,
         plane_inject_method: str = "film",
-        enable_saca_stage1: bool = True,
+        enable_saca: bool = True,
         saca_gate_init: float = 0.0,
     ):
         super().__init__()
@@ -538,7 +538,7 @@ class SwinUNetDualViewSSL(nn.Module):
         self.dec_depths = dec_depths
         self.num_heads = num_heads
         self.window_size = window_size
-        self.enable_saca_stage1 = enable_saca_stage1
+        self.enable_saca = enable_saca
 
         C0 = embed_dim
         C1 = 2 * C0
@@ -556,8 +556,8 @@ class SwinUNetDualViewSSL(nn.Module):
         self.merge0_2 = PatchMerging(dim=C0)
         self.stage1_2 = BasicLayer(dim=C1, depth=enc_depths[1], num_heads=num_heads[1], window_size=window_size)
 
-        # SACA at Stage1 (Option A)
-        self.saca_stage1 = SACAStage1Block(
+        # SACA 
+        self.saca = SACA(
             dim=C1,
             window_size=window_size,
             num_heads=num_heads[1],
@@ -654,7 +654,7 @@ class SwinUNetDualViewSSL(nn.Module):
             f1 = self.merge0_2(s0)
             s1 = self.stage1_2(f1)
 
-        if self.enable_saca_stage1:
+        if self.enable_saca:
             # For encode_bottleneck we do not have the other view, so we skip SACA.
             pass
 
@@ -670,7 +670,7 @@ class SwinUNetDualViewSSL(nn.Module):
         decoder_branch_v1 = [self.up1_v1, self.up0_v1, self.final_up_v1]
         decoder_branch_v2 = [self.up1_v2, self.up0_v2, self.final_up_v2]
         recon_heads = [self.recon_head_v1, self.recon_head_v2]
-        saca = [self.saca_stage1]
+        saca = [self.saca]
 
         def _count(mods) -> int:
             return sum(count_parameters(m) for m in mods)
@@ -694,7 +694,7 @@ class SwinUNetDualViewSSL(nn.Module):
             "total": total,
             "enc_early_view1": n_early_v1,
             "enc_early_view2": n_early_v2,
-            "saca_stage1": n_saca,
+            "saca": n_saca,
             "enc_shared_trunk": n_trunk,
             "contrastive_head": n_contrast,
             "decoder_shared_up2": n_dec_shared,
@@ -734,8 +734,8 @@ class SwinUNetDualViewSSL(nn.Module):
         s1_2 = self.stage1_2(f1_2)
 
         # Option A: SACA between s1_1 and s1_2
-        if self.enable_saca_stage1:
-            s1_1, s1_2 = self.saca_stage1(s1_1, s1_2)
+        if self.enable_saca:
+            s1_1, s1_2 = self.saca(s1_1, s1_2)
 
         # shared trunk
         s2_1, b1 = self._shared_trunk(s1_1, plane_one_hot)

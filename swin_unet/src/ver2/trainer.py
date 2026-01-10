@@ -76,7 +76,7 @@ class PhaseATrainer:
             window_size=cfg.model.window_size,
             proj_dim=cfg.model.proj_dim,
             plane_inject_method=cfg.model.plane_inject_method,
-            enable_saca_stage1=cfg.model.enable_saca_stage1,
+            enable_saca=cfg.model.enable_saca,
         ).to(device)
 
         print(self.model)
@@ -89,6 +89,7 @@ class PhaseATrainer:
 
             print("[params] enc_early_view1:", pc.get("enc_early_view1", 0))
             print("[params] enc_early_view2:", pc.get("enc_early_view2", 0))
+            print("[params] saca attention:", pc.get("saca", 0))
             print("[params] enc_shared_trunk:", pc.get("enc_shared_trunk", 0))
 
             print("[params] contrastive_head:", pc.get("contrastive_head", 0))
@@ -549,7 +550,7 @@ def main():
     set_seed(cfg.training.seed)
     device = get_device(cfg.training.cpu)
 
-    train_loader, val_loader, test_loader, full_ds = create_dataloaders_from_folder(
+    train_loader, val_loader, _, full_ds = create_dataloaders_from_folder(
         data_root=cfg.data.data_root,
         image_size=cfg.data.image_size,
         plane=cfg.data.plane,

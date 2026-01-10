@@ -61,7 +61,7 @@ class ModelConfig:
     plane_in_dim: int = 2
     plane_inject_stage: int = 2
     plane_inject_method: str = "film"  # "film" or "add"
-    enable_saca_stage1: bool = False
+    enable_saca: bool = False
 
 
 @dataclass
@@ -160,7 +160,7 @@ class ExperimentConfig:
                 split_to_stage=args.split_to_stage,
                 shared_from_stage=args.shared_from_stage,
                 plane_inject_method=args.plane_inject_method,
-                enable_saca_stage1= args.enable_saca_stage1,
+                enable_saca= args.enable_saca,
             ),
             training=TrainingConfig(
                 epochs=args.epochs,
@@ -270,7 +270,7 @@ def build_argparser() -> argparse.ArgumentParser:
 
     # Plane conditioning
     p.add_argument("--plane-inject-method", type=str, default="film", choices=["film", "add"])
-    p.add_argument("--enable_saca_stage1", action="store_true")
+    p.add_argument("--enable_saca", action="store_true")
 
     # Training
     p.add_argument("--enable-contrastive", action="store_true")
