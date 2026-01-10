@@ -521,22 +521,27 @@ class SwinUNetDualViewSSL(nn.Module):
         self.merge0_2 = PatchMerging(dim=C0)
         self.stage1_2 = BasicLayer(dim=C1, depth=enc_depths[1], num_heads=num_heads[1], window_size=window_size)
 
-        # ---- SACA instances (prepared, not yet used) ----
-        self.saca_c0 = SACA(
-            dim=C0,
-            window_size=window_size,
-            num_heads=num_heads[0],
-            mlp_ratio=4.0,
-            gate_init=saca_gate_init,
-        )
+        # ---- SACA instances ----
+        if not self.enable_saca:
+            self.saca_c0 = SACA(
+                dim=C0,
+                window_size=window_size,
+                num_heads=num_heads[0],
+                mlp_ratio=4.0,
+                gate_init=saca_gate_init,
+            )
 
-        self.saca_c1 = SACA(
-            dim=C1,
-            window_size=window_size,
-            num_heads=num_heads[1],
-            mlp_ratio=4.0,
-            gate_init=saca_gate_init,
-        )
+            self.saca_c1 = SACA(
+                dim=C1,
+                window_size=window_size,
+                num_heads=num_heads[1],
+                mlp_ratio=4.0,
+                gate_init=saca_gate_init,
+            )
+            
+        else:
+            self.saca_c0 = None 
+            self.saca_c1 = None 
 
         # ---- Shared trunk  ----
         self.merge1 = PatchMerging(dim=C1)
