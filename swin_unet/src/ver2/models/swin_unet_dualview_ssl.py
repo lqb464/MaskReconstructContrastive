@@ -481,6 +481,8 @@ class SwinUNetDualViewSSL(nn.Module):
         saca_warmup_epochs: int = 0,
     ):
         super().__init__()
+        
+        print(self.get_saca_debug_info())
 
         self.image_size = image_size
         self.patch_size = patch_size
@@ -597,9 +599,25 @@ class SwinUNetDualViewSSL(nn.Module):
             nn.Conv2d(16, 1, kernel_size=1),
         )
 
-    # ------------------------------------------------------------------
-    # Phase 1 helpers
-    # ------------------------------------------------------------------
+    def get_saca_debug_info(self) -> Dict[str, float]:
+        """
+        Lightweight debug info for logging.
+        Safe to call every epoch.
+        """
+        info = {
+            "saca_enable": float(self.enable_saca),
+            "saca_position": self.saca_position if self.enable_saca else "disabled",
+            "saca_warmup_epochs": float(self.saca_warmup_epochs),
+            "current_epoch": float(self.current_epoch),
+        }
+
+        if self.enable_saca:
+            info["saca_gate_c0"] = float(self.saca_c0.gate.detach().cpu())
+            info["saca_gate_c1"] = float(self.saca_c1.gate.detach().cpu())
+
+        return info
+
+    
     def _validate_saca_config(self, C0: int, C1: int, num_heads):
         if not self.enable_saca:
             return
