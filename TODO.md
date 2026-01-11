@@ -3,13 +3,12 @@
 - Refine lại attention: cross attention trước swin (trực tiếp trên token) (bật/tắt)
 - Thử lại contrastive (vị trí đặt, loại loss)
 - Sau khi cross attention: pretrained encoder: finetune
-    + Segmentation (SynthSrip: skull skipping / tissue segmentation [decode ra trực tiếp masking] - đổi lại output cho decode - reuse pretrain weight encoder only, init from stratch for decoder, use same architecture - bỏ phần mask có chiến lược, dùng full image, output decode ra mask) (thử trước 2D)
+    + Segmentation (SynthStrip: skull skipping / tissue segmentation [decode ra trực tiếp masking] - đổi lại output cho decode - reuse pretrain weight encoder only, init from stratch for decoder, use same architecture - bỏ phần mask có chiến lược, dùng full image, output decode ra mask) (thử trước 2D)
     + Segmentation for Brain Tumor (y hệt như phần Skull Stripping) (? dataset)
     + Classification (s2_1 & s2_2 concat (fusion, ...) + MLP (linear)) + (imbalanced handling): baseline first -  focal loss vs weighted loss, ... : mindset dataset (AD vs non-AD | abnormalities) , hgf dataset (sắp xếp lại nhãn: 0-4 nhẹ đến nặng) phân lớp bth 4 nhãn, lấy nhãn sắp xếp thứ tự 0-4 theo nặng nhẹ, normalize, activation sigmoid, ce loss/rmse/ranking loss, ...  Phân lớp loại Tumor (? dataset)
     
 
 - 600 bn khỏe, independent vào loại bệnh
 
-SynthStrip: https://www.kaggle.com/datasets/hoanggvo/free-surfer/data
-
+https://www.kaggle.com/datasets/hoanggvo/free-surfer
 https://www.kaggle.com/datasets/briscdataset/brisc2025/data
