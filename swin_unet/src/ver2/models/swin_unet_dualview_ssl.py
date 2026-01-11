@@ -709,6 +709,59 @@ class SwinUNetDualViewSSL(nn.Module):
         
         print(self.get_saca_debug_info())
 
+
+    def encoder_state_dict_prefixes(self) -> tuple[str, ...]:
+        """
+        Prefixes that belong to encoder trunk.
+        Used for partial checkpoint loading and encoder freezing.
+        """
+        return (
+            "patch_embed_1",
+            "stage0_1",
+            "merge0_1",
+            "stage1_1",
+            "patch_embed_2",
+            "stage0_2",
+            "merge0_2",
+            "stage1_2",
+            "saca_c0",
+            "saca_c1",
+            "merge1",
+            "plane_cond",
+            "stage2",
+            "merge2",
+            "stage3",
+        )
+
+
+    def set_encoder_trainable(self, trainable: bool) -> None:
+        enc_prefixes = self.encoder_state_dict_prefixes()
+        for name, p in self.named_parameters():
+            if name.startswith(enc_prefixes):
+                p.requires_grad = bool(trainable)
+
+
+    def reset_contrastive_projection_heads(self) -> None:
+        """
+        Re-init projection head weights in-place.
+        Safe even if projection heads are None.
+        """
+        for attr in ("proj_c1", "proj_c2", "proj_c3"):
+            head = getattr(self, attr, None)
+            if head is None:
+                continue
+
+            if hasattr(head, "net"):
+                for m in head.net.modules():
+                    if hasattr(m, "reset_parameters"):
+                        m.reset_parameters()
+
+        # keep alias consistent
+        if hasattr(self, "proj"):
+            if getattr(self, "proj_c3", None) is not None:
+                self.proj = self.proj_c3
+
+
     def get_saca_debug_info(self) -> Dict[str, float]:
         """
         Lightweight debug info for logging.

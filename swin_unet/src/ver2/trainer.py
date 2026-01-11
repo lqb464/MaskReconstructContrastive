@@ -31,7 +31,7 @@ from .viz.visualization import (
 from .models.swin_unet_dualview_ssl import SwinUNetDualViewSSL, flip_lr
 
 from .training.batch_ops import prepare_inputs
-from .training.ckpt_io import load_checkpoint_weights, save_checkpoint
+from .training.ckpt_io import load_checkpoint_weights, load_checkpoint_weights_filtered, save_checkpoint
 from .training.loggers import EpochCSVLogger, LossDecompCSVLogger
 from .training.metric_compute import update_recon_metrics
 from .common.recon_compute import compute_recon_losses
@@ -83,6 +83,41 @@ class Trainer:
             contrastive_loss_type=self.cfg.contrast_loss.contrastive_loss_type,
             contrastive_position=self.cfg.contrast_loss.contrastive_position,
         ).to(device)
+        
+        # ---- Checkpoint loading modes ----
+        resume_ckpt = getattr(cfg.training, "resume_ckpt", "")
+        ckpt_mode = getattr(cfg.training, "ckpt_load_mode", "none")
+
+        if resume_ckpt and ckpt_mode != "none":
+            ckpt_path = Path(resume_ckpt)
+
+            if ckpt_mode == "full":
+                load_checkpoint_weights(
+                    ckpt_path=ckpt_path,
+                    device=self.device,
+                    model=self.model,
+                    strict=True,
+                )
+
+            elif ckpt_mode == "encoder_only":
+                obj = load_checkpoint_weights_filtered(
+                    ckpt_path=ckpt_path,
+                    device=self.device,
+                    model=self.model,
+                    include_prefixes=self.model.encoder_state_dict_prefixes(),
+                    exclude_prefixes=("proj_c1", "proj_c2", "proj_c3", "proj"),
+                )
+
+                msg = obj.get("_load_msg", None)
+                if msg is not None:
+                    print("[ckpt] missing_keys:", len(msg["missing_keys"]))
+                    print("[ckpt] unexpected_keys:", len(msg["unexpected_keys"]))
+
+                # Always reset projection head when enable_contrastive=True
+                if bool(getattr(cfg.training, "reset_contrastive_proj_head", True)) and bool(cfg.training.enable_contrastive):
+                    self.model.reset_contrastive_projection_heads()
+                    print("[ckpt] projection heads reset")
+
 
         print(self.model)
 
@@ -555,6 +590,12 @@ class Trainer:
         latest_path = self.ckpt_dir / "latest.pt"
 
         for epoch in range(1, self.cfg.training.epochs + 1):
+            
+            # ---- Freeze encoder schedule ----
+            freeze_n = int(getattr(self.cfg.training, "freeze_encoder_epochs", 0))
+            self.model.set_encoder_trainable(trainable=not (epoch <= freeze_n))
+
+            
             t0 = time.time()
             tr = self.train_one_epoch(train_loader, epoch)
             va = self.validate(val_loader, epoch)

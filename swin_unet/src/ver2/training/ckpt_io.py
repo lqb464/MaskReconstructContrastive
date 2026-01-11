@@ -40,3 +40,29 @@ def load_checkpoint_weights(
     obj = torch.load(ckpt_path, map_location=device)
     model.load_state_dict(obj["model"], strict=strict)
     return obj
+
+def load_checkpoint_weights_filtered(
+    *,
+    ckpt_path: Path,
+    device: torch.device,
+    model,
+    include_prefixes: tuple[str, ...] | None = None,
+    exclude_prefixes: tuple[str, ...] | None = None,
+) -> Dict[str, Any]:
+    """
+    Load model weights from checkpoint with key filtering.
+    Always loads with strict=False.
+    Adds obj["_load_msg"] containing missing_keys and unexpected_keys.
+    """
+    obj = torch.load(ckpt_path, map_location=device)
+    sd = obj["model"]
+
+    if include_prefixes is not None:
+        sd = {k: v for k, v in sd.items() if k.startswith(include_prefixes)}
+
+    if exclude_prefixes is not None:
+        sd = {k: v for k, v in sd.items() if not k.startswith(exclude_prefixes)}
+
+    msg = model.load_state_dict(sd, strict=False)
+    obj["_load_msg"] = {"missing_keys": msg.missing_keys, "unexpected_keys": msg.unexpected_keys}
+    return obj

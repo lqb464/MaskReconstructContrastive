@@ -198,3 +198,41 @@ Behavior:
 * Executed before entering the shared trunk
 * Disabled entirely if `enable_saca = false`
 
+## 10. Run mode 
+
+Mode S: Run from scratch
+
+```python
+
+
+```
+
+All of below modes need to set freeze encoder
+
+Mode A: Load full model weights (resume weights)
+
+```python
+--ckpt-load-mode full
+--resume-ckpt path/to/best.pt
+```
+
+Mode B: Encoder-only pretrained, no Decoder
+
+```python
+--disable_reconstruct
+--ckpt_load_mode encoder_only
+--resume-ckpt path/to/best.pt
+--enable_contrastive or --disable_contrastive # default = enable_contrastive
+--reset_contrastive_proj_head
+```
+
+Mode C: Encoder-only pretrained
+
+```python
+--disable_reconstruct
+--resume-ckpt path/to/best.pt
+--ckpt_load_mode encoder_only
+--enable_contrastive or --disable_contrastive # default = enable_contrastive
+--reset_contrastive_proj_head
+```
+

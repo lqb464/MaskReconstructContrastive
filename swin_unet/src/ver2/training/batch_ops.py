@@ -24,6 +24,11 @@ def prepare_inputs(
         plane = torch.tensor([0.0, 1.0], device=device).view(1, 2).repeat(x.size(0), 1)
     else:
         plane = plane.to(device, non_blocking=True)
+        
+    if getattr(cfg_mask, "enable_masking", True):
+        pixel_mask = sample_masks_anti_mirror(x.size(0), cfg_mask, device)
+    else:
+        pixel_mask = torch.zeros((x.size(0), 1, x.size(2), x.size(3)), device=device, dtype=torch.float32)
 
-    pixel_mask = sample_masks_anti_mirror(x.size(0), cfg_mask, device)
     return x, plane, pixel_mask
+

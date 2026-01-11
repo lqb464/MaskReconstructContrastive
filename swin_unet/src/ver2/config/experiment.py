@@ -21,6 +21,9 @@ class MaskConfig:
     patch_size: int = 16
     mask_ratio_side: float = 0.35
     image_size: int = 192
+    
+    # This only change when adapt new tabs
+    enable_masking: bool = True
 
     def grid_size(self) -> tuple[int, int]:
         gh = self.image_size // self.patch_size
@@ -84,6 +87,12 @@ class TrainingConfig:
     # Run mode
     enable_reconstruct: bool = False
     enable_contrastive: bool = False
+    
+    # Checkpoint / pretrained loading
+    resume_ckpt: str = ""  # path to .pt
+    ckpt_load_mode: str = "none"  # "none" | "full" | "encoder_only"
+    freeze_encoder_epochs: int = 0  # freeze encoder for first N epochs
+    reset_contrastive_proj_head: bool = True  # always re-init projection head when loading pretrained encoder
 
     # Loss options
     enable_masked_loss: bool = False
@@ -197,6 +206,10 @@ class ExperimentConfig:
                 cpu=args.cpu,
                 enable_reconstruct=args.enable_reconstruct,
                 enable_contrastive=args.enable_contrastive,
+                resume_ckpt=args.resume_ckpt,
+                ckpt_load_mode=args.ckpt_load_mode,
+                freeze_encoder_epochs=args.freeze_encoder_epochs,
+                reset_contrastive_proj_head=args.reset_contrastive_proj_head,
                 enable_masked_loss=args.enable_masked_loss,
                 aug_p_noise=args.aug_p_noise,
                 aug_p_jitter=args.aug_p_jitter,
@@ -226,6 +239,7 @@ class ExperimentConfig:
                 patch_size=args.patch_size,
                 mask_ratio_side=args.mask_ratio,
                 image_size=args.image_size,
+                enable_masking=args.enable_masking,
             ),
             logging=LoggingConfig(
                 out_dir=args.out_dir,
@@ -283,6 +297,10 @@ def build_argparser() -> argparse.ArgumentParser:
     # Masking
     p.add_argument("--patch-size", type=int, default=16)
     p.add_argument("--mask-ratio", type=float, default=0.35)
+    
+    p.add_argument("--enable-masking", action="store_true")
+    p.add_argument("--disable-masking", dest="enable_masking", action="store_false")
+    p.set_defaults(enable_masking=True)
 
     # Model
     p.add_argument("--in-ch", type=int, default=1)
@@ -333,6 +351,21 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--cpu", action="store_true")
     p.add_argument("--amp", action="store_true")
+    
+    # Checkpoint / pretrained
+    p.add_argument("--resume-ckpt", type=str, default="", help="Path to checkpoint .pt")
+    p.add_argument(
+        "--ckpt-load-mode",
+        type=str,
+        default="none",
+        choices=["none", "full", "encoder_only"],
+        help="Checkpoint loading mode",
+    )
+    p.add_argument("--freeze-encoder-epochs", type=int, default=0, help="Freeze encoder for first N epochs")
+    p.add_argument("--reset-proj-head", action="store_true", help="Re-init projection head after loading encoder")
+    p.add_argument("--no-reset-proj-head", dest="reset_contrastive_proj_head", action="store_false")
+    p.set_defaults(reset_contrastive_proj_head=True)
+
 
     # Augmentation
     p.add_argument("--aug-p-noise", type=float, default=0.7)
