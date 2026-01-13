@@ -17,6 +17,7 @@ x1 = x * (1 - mask)
 x2 = flip_lr(x) * (1 - mask)
 ```
 
+
 * Mask is identical for both views
 * Only the image is flipped, not the mask
 
@@ -186,7 +187,7 @@ SACA can be enabled at **exactly one position** per run.
 
 ```
 saca_position ∈ {
-  "after_patch_emb",
+  "after_patch_emb", # STAGE0
   "after_merge0",
   "after_stage1"
 }

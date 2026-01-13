@@ -462,7 +462,6 @@ class ProjectionHead(nn.Module):
         return x
 
 
-
 # -------------------------
 # Main model
 # -------------------------
