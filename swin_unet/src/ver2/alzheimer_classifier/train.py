@@ -407,7 +407,7 @@ def train_one_fold(
             train_y_true = torch.cat(train_true, dim=0).numpy()
             train_y_pred = torch.cat(train_pred, dim=0).numpy()
             train_cm = confusion_matrix(train_y_true, train_y_pred, labels=list(range(num_classes)))
-            print(f"[epoch {epoch:03d}] train_cm:\\n{train_cm}")
+            print(f"[epoch {epoch:03d}] train_cm:\n{train_cm}")
 
         val_metrics = None
         if val_loader is not None and len(val_loader) > 0:
@@ -417,12 +417,12 @@ def train_one_fold(
                 val_metrics["y_pred"],
                 labels=list(range(num_classes)),
             )
-            print(f"[epoch {epoch:03d}] val_cm:\\n{val_cm}")
+            print(f"[epoch {epoch:03d}] val_cm:\n{val_cm}")
 
         test_metrics = evaluate(model, test_loader, device, criterion)
 
         cm = confusion_matrix(test_metrics["y_true"], test_metrics["y_pred"], labels=list(range(num_classes)))
-        print(f"[epoch {epoch:03d}] test_cm:\\n{cm}")
+        print(f"[epoch {epoch:03d}] test_cm:\n{cm}")
 
         if val_metrics is None:
             print(
