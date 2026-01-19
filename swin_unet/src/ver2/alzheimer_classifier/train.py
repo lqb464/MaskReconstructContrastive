@@ -459,7 +459,7 @@ def train_one_fold(
                 },
                 ckpt_dir / "best_cls.pt",
             )
-            print(f"[best_f1] test_cm:\\n{cm}")
+            print(f"[best_f1] test_cm:\n{cm}")
 
         torch.save(
             {
