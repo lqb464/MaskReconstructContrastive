@@ -378,6 +378,8 @@ def train_one_fold(
         total = 0
         correct = 0
         loss_sum = 0.0
+        train_pred = []
+        train_true = []
 
         for batch in train_loader:
             x1, x2, y = prepare_batch(batch, device)
@@ -396,23 +398,31 @@ def train_one_fold(
             correct += int((pred == y).sum().item())
             total += int(y.numel())
             loss_sum += float(loss.item()) * float(y.numel())
+            train_pred.append(pred.detach().cpu())
+            train_true.append(y.detach().cpu())
 
         train_acc = float(correct) / float(max(total, 1))
         train_loss = float(loss_sum) / float(max(total, 1))
+        if train_true:
+            train_y_true = torch.cat(train_true, dim=0).numpy()
+            train_y_pred = torch.cat(train_pred, dim=0).numpy()
+            train_cm = confusion_matrix(train_y_true, train_y_pred, labels=list(range(num_classes)))
+            print(f"[epoch {epoch:03d}] train_cm:\\n{train_cm}")
 
         val_metrics = None
         if val_loader is not None and len(val_loader) > 0:
             val_metrics = evaluate(model, val_loader, device, criterion)
+            val_cm = confusion_matrix(
+                val_metrics["y_true"],
+                val_metrics["y_pred"],
+                labels=list(range(num_classes)),
+            )
+            print(f"[epoch {epoch:03d}] val_cm:\\n{val_cm}")
 
         test_metrics = evaluate(model, test_loader, device, criterion)
 
         cm = confusion_matrix(test_metrics["y_true"], test_metrics["y_pred"], labels=list(range(num_classes)))
-        save_confusion_matrix_png(
-            cm=cm,
-            class_names=class_names,
-            out_path=plots_dir / f"confusion_matrix_epoch_{epoch:03d}.png",
-            title=f"Confusion Matrix (epoch {epoch:03d})",
-        )
+        print(f"[epoch {epoch:03d}] test_cm:\\n{cm}")
 
         if val_metrics is None:
             print(
@@ -449,12 +459,7 @@ def train_one_fold(
                 },
                 ckpt_dir / "best_cls.pt",
             )
-            save_confusion_matrix_png(
-                cm=cm,
-                class_names=class_names,
-                out_path=plots_dir / "confusion_matrix_best_f1.png",
-                title=f"Confusion Matrix (best_f1={best_f1:.4f})",
-            )
+            print(f"[best_f1] test_cm:\\n{cm}")
 
         torch.save(
             {
