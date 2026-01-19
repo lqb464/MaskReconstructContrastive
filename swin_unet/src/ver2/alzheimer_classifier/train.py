@@ -14,6 +14,10 @@ from torch.utils.data import DataLoader, Subset
 from torchvision import transforms
 
 from datasets import load_dataset
+try:
+    from datasets import concatenate_datasets
+except Exception:  # pragma: no cover
+    concatenate_datasets = None
 from sklearn.metrics import confusion_matrix, f1_score
 
 from models.model_utils import flip_lr
@@ -562,7 +566,9 @@ def run_kfold(args: argparse.Namespace) -> None:
     ds = load_dataset("Falah/Alzheimer_MRI")
     full_ds = ds["train"]
     if "test" in ds:
-        full_ds = ds["train"].concatenate(ds["test"])
+        if concatenate_datasets is None:
+            raise RuntimeError("datasets.concatenate_datasets is required for k-fold with train+test")
+        full_ds = concatenate_datasets([ds["train"], ds["test"]])
 
     tfm = transforms.Compose(
         [
