@@ -508,10 +508,7 @@ class SwinUNetDualViewSSL(nn.Module):
         self.enable_contrastive = enable_contrastive
         
         # ---- Contrastive Loss ----
-        self.contrastive_position = contrastive_position
-        
-        print("Contrastive Loss:", contrastive_loss_type)
-        print("Contrastive Position:", contrastive_position)
+        self.contrastive_position = contrastive_position    
         
          # ---- Init gating for compute depth ----
         # Rule: only allow "skip init behind position" when enable_reconstruct=False AND enable_contrastive=True

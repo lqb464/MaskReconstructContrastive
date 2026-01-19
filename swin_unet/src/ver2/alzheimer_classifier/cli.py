@@ -1,0 +1,71 @@
+from __future__ import annotations
+
+import argparse
+
+from .train import run
+
+
+def build_argparser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser()
+    p.add_argument("--out_dir", type=str, default="runs/alzheimer_cls")
+    p.add_argument("--resume-ckpt", type=str, default="")
+    p.add_argument(
+        "--ckpt-load-mode",
+        type=str,
+        default="encoder_only",
+        choices=["none", "full", "encoder_only"],
+    )
+    p.add_argument("--image_size", type=int, default=256)
+    p.add_argument("--patch_size", type=int, default=16)
+    p.add_argument("--in-ch", type=int, default=1)
+    p.add_argument("--embed-dim", type=int, default=96)
+    p.add_argument("--enc-depths", type=int, nargs=4, default=[2, 2, 6, 2])
+    p.add_argument("--dec-depths", type=int, nargs=3, default=[6, 2, 2])
+    p.add_argument("--num-heads", type=int, nargs=4, default=[3, 6, 12, 24])
+    p.add_argument("--window-size", type=int, default=7)
+
+    p.add_argument("--bottleneck-dim", type=int, default=256)
+    p.add_argument("--proj-dim", type=int, default=128)
+
+    p.add_argument("--plane-inject-method", type=str, default="film", choices=["film", "add"])
+
+    p.add_argument("--enable_saca", action="store_true")
+    p.add_argument(
+        "--saca_position",
+        type=str,
+        default="after_stage1",
+        choices=["after_patch_embed", "after_merge0", "after_stage1"],
+    )
+    p.add_argument("--saca_gate_init", type=float, default=0.0)
+    p.add_argument("--saca_warmup_epochs", type=int, default=0)
+
+    p.add_argument("--batch_size", type=int, default=32)
+    p.add_argument("--epochs", type=int, default=20)
+    p.add_argument("--lr", type=float, default=3e-4)
+    p.add_argument("--weight_decay", type=float, default=1e-2)
+    p.add_argument("--num_workers", type=int, default=4)
+    p.add_argument("--amp", action="store_true")
+    p.add_argument("--cpu", action="store_true")
+    p.add_argument("--seed", type=int, default=42)
+
+    p.add_argument("--freeze_encoder_epochs", type=int, default=0)
+    p.add_argument("--dropout", type=float, default=0.0)
+
+    p.add_argument("--focal_gamma", type=float, default=2.0)
+    p.add_argument("--focal_alpha", type=str, default="")
+
+    p.add_argument("--k_folds", type=int, default=1)
+    p.add_argument("--val_ratio", type=float, default=0.1)
+    p.add_argument("--group_field", type=str, default="")
+
+    return p
+
+
+def main() -> None:
+    parser = build_argparser()
+    args = parser.parse_args()
+    run(args)
+
+
+if __name__ == "__main__":
+    main()
