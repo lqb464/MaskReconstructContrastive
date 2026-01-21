@@ -69,19 +69,35 @@ class FocalLoss(nn.Module):
 
 
 class EncoderClassifier(nn.Module):
-    def __init__(self, encoder: SwinUNetDualViewSSL, num_classes: int, dropout: float = 0.0):
+    def __init__(
+        self,
+        encoder: SwinUNetDualViewSSL,
+        num_classes: int,
+        dropout: float = 0.0,
+        view_mode: str = "two",
+    ):
         super().__init__()
         self.encoder = encoder
         c3 = 8 * int(getattr(encoder, "embed_dim", 96))
         self.dropout = nn.Dropout(p=float(dropout)) if dropout > 0 else nn.Identity()
         self.fc = nn.Linear(c3, num_classes)
+        self.view_mode = str(view_mode).lower().strip()
+        if self.view_mode not in {"two", "one_v1", "one_v2"}:
+            raise ValueError(f"invalid view_mode: {self.view_mode}")
 
     def forward(self, x1: torch.Tensor, x2: torch.Tensor, plane_one_hot: torch.Tensor) -> torch.Tensor:
-        b1 = self.encoder.encode_bottleneck(x1, plane_one_hot, view=1)
-        b2 = self.encoder.encode_bottleneck(x2, plane_one_hot, view=2)
-        h1 = b1.mean(dim=(1, 2))
-        h2 = b2.mean(dim=(1, 2))
-        h = 0.5 * (h1 + h2)
+        if self.view_mode == "two":
+            b1 = self.encoder.encode_bottleneck(x1, plane_one_hot, view=1)
+            b2 = self.encoder.encode_bottleneck(x2, plane_one_hot, view=2)
+            h1 = b1.mean(dim=(1, 2))
+            h2 = b2.mean(dim=(1, 2))
+            h = 0.5 * (h1 + h2)
+        elif self.view_mode == "one_v1":
+            b = self.encoder.encode_bottleneck(x1, plane_one_hot, view=1)
+            h = b.mean(dim=(1, 2))
+        else:
+            b = self.encoder.encode_bottleneck(x2, plane_one_hot, view=2)
+            h = b.mean(dim=(1, 2))
         h = self.dropout(h)
         return self.fc(h)
 
@@ -349,7 +365,15 @@ def train_one_fold(
     encoder = build_model(args, device)
     maybe_load_encoder_weights(args, encoder, device)
 
-    model = EncoderClassifier(encoder=encoder, num_classes=num_classes, dropout=args.dropout).to(device)
+    print(f"[view_mode] {args.view_mode}")
+    if args.view_mode in {"one_v1", "one_v2"} and args.enable_saca:
+        raise RuntimeError("saca must be disabled for single-view mode")
+    model = EncoderClassifier(
+        encoder=encoder,
+        num_classes=num_classes,
+        dropout=args.dropout,
+        view_mode=args.view_mode,
+    ).to(device)
     if model.fc.out_features != num_classes:
         raise RuntimeError("classifier head size must match num_classes")
     

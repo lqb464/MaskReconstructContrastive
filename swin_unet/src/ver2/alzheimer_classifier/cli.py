@@ -52,6 +52,13 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--dropout", type=float, default=0.0)
 
     p.add_argument(
+        "--view_mode",
+        type=str,
+        default="two",
+        choices=["two", "one_v1", "one_v2"],
+        help="two=use both views, one_v1=use view1 only, one_v2=use view2 only",
+    )
+    p.add_argument(
         "--label_order",
         type=str,
         default="",
