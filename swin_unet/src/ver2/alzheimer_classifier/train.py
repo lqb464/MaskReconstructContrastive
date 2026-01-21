@@ -497,9 +497,7 @@ def run_single_split(args: argparse.Namespace) -> None:
     ]
     detected = [normalize_label_name(name) for name in label_names]
     if len(detected) != len(expected_order):
-        raise RuntimeError(
-            f"label count mismatch: detected={label_names} expected={expected_order}"
-        )
+        raise RuntimeError(f"label count mismatch: detected={label_names} expected={expected_order}")
     if detected != expected_order:
         raise RuntimeError(
             f"label order mismatch: detected={label_names} expected={expected_order}"
