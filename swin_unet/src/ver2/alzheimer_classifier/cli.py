@@ -51,6 +51,12 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--freeze_encoder_epochs", type=int, default=0)
     p.add_argument("--dropout", type=float, default=0.0)
 
+    p.add_argument(
+        "--label_order",
+        type=str,
+        default="",
+        help="Optional comma-separated label order override (e.g., 'Non_Demented,Very_Mild_Demented,Mild_Demented,Moderate_Demented')",
+    )
     p.add_argument("--loss_type", type=str, default="focal", choices=["focal", "wce"])
     p.add_argument("--ce_class_weights", type=str, default="")
     p.add_argument("--focal_gamma", type=float, default=2.0)

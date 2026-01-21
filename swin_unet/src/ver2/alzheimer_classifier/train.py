@@ -489,22 +489,36 @@ def run_single_split(args: argparse.Namespace) -> None:
     except Exception as exc:
         raise RuntimeError("dataset label names are required for classifier training") from exc
 
-    expected_order = ['Mild_Demented', 'Moderate_Demented', 'Non_Demented', 'Very_Mild_Demented']
-    
+    if getattr(args, "label_order", ""):
+        raw = [part.strip() for part in str(args.label_order).split(",") if part.strip()]
+        if not raw:
+            raise RuntimeError("label_order override is empty after parsing")
+        expected_order = [normalize_label_name(name) for name in raw]
+    else:
+        expected_order = [
+            "mild demented",
+            "moderate demented",
+            "non-demented",
+            "very mild demented",
+        ]
+
     detected = [normalize_label_name(name) for name in label_names]
     if len(detected) != len(expected_order):
-        raise RuntimeError(f"label count mismatch: detected={label_names} expected={expected_order}")
+        raise RuntimeError(f"label count mismatch: detected={detected} expected={expected_order}")
     if detected != expected_order:
         raise RuntimeError(
-            f"label order mismatch: detected={label_names} expected={expected_order}"
+            f"label order mismatch: detected={detected} expected={expected_order}"
         )
 
-    class_names = [
-        "Non-Demented",
-        "Very Mild Demented",
-        "Mild Demented",
-        "Moderate Demented",
-    ]
+    if getattr(args, "label_order", ""):
+        class_names = [name.strip() for name in str(args.label_order).split(",") if name.strip()]
+    else:
+        class_names = [
+            "Mild Demented",
+            "Moderate Demented",
+            "Non-Demented",
+            "Very Mild Demented",
+        ]
     num_classes = 4
     print_label_map(class_names)
 
