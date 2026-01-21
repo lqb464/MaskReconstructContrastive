@@ -27,6 +27,14 @@ def main():
     if cfg.training.enable_reconstruct and cfg.training.lambda_recon == 0:
         raise Exception("[Error] Recontruct training with lambda recontruct = 0")
 
+    if cfg.training.single_view:
+        if cfg.training.enable_contrastive:
+            raise Exception("[Error] single_view requires --disable-contrastive")
+        if cfg.model.enable_saca:
+            raise Exception("[Error] single_view does not support SACA; disable SACA or use dual-view")
+        if not cfg.training.enable_reconstruct:
+            raise Exception("[Error] single_view requires --enable-reconstruct")
+
     set_seed(cfg.training.seed)
     device = get_device(cfg.training.cpu)
 

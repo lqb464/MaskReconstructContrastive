@@ -43,6 +43,14 @@ class Trainer:
         self.cfg = cfg
         self.device = device
 
+        if self.cfg.training.single_view:
+            if self.cfg.training.enable_contrastive:
+                raise Exception("[Error] single_view requires --disable-contrastive")
+            if self.cfg.model.enable_saca:
+                raise Exception("[Error] single_view does not support SACA; disable SACA or use dual-view")
+            if not self.cfg.training.enable_reconstruct:
+                raise Exception("[Error] single_view requires --enable-reconstruct")
+
         out_dir = Path(cfg.logging.out_dir)
         if cfg.logging.run_name:
             out_dir = out_dir / cfg.logging.run_name
@@ -82,6 +90,7 @@ class Trainer:
             enable_contrastive=cfg.training.enable_contrastive,
             contrastive_loss_type=self.cfg.contrast_loss.contrastive_loss_type,
             contrastive_position=self.cfg.contrast_loss.contrastive_position,
+            single_view=cfg.training.single_view,
         ).to(device)
         
         # ---- Checkpoint loading modes ----
@@ -274,7 +283,9 @@ class Trainer:
                     pixel_mask=pixel_mask,
                     plane_one_hot=plane,
                 )                
-                x_flip = flip_lr(x) if self.cfg.training.enable_reconstruct else None
+                x_flip = None
+                if self.cfg.training.enable_reconstruct and (not self.cfg.training.single_view):
+                    x_flip = flip_lr(x)
 
                 if self.cfg.training.enable_reconstruct:
                     loss_recon_orig, loss_recon_flip, loss_recon_total = compute_recon_losses(
@@ -414,7 +425,9 @@ class Trainer:
                     pixel_mask=pixel_mask,
                     plane_one_hot=plane,
                 )
-                x_flip = flip_lr(x) if self.cfg.training.enable_reconstruct else None
+                x_flip = None
+                if self.cfg.training.enable_reconstruct and (not self.cfg.training.single_view):
+                    x_flip = flip_lr(x)
 
                 if self.cfg.training.enable_reconstruct:
                     loss_recon_orig, loss_recon_flip, loss_recon_total = compute_recon_losses(
@@ -524,12 +537,13 @@ class Trainer:
         )
 
         recon_img_orig = torch.sigmoid(recon_raw_orig.clamp(-10, 10))
-        recon_img_flip = torch.sigmoid(recon_raw_flip.clamp(-10, 10))
 
         self._visualize_recon(x, pixel_mask, recon_img_orig, epoch, tag)
 
-        x_flip = flip_lr(x)
-        self._visualize_recon(x_flip, pixel_mask, recon_img_flip, epoch, tag + "_flip")
+        if not self.cfg.training.single_view:
+            recon_img_flip = torch.sigmoid(recon_raw_flip.clamp(-10, 10))
+            x_flip = flip_lr(x)
+            self._visualize_recon(x_flip, pixel_mask, recon_img_flip, epoch, tag + "_flip")
 
     def maybe_tsne(self, loader, epoch: int):
         if not self.cfg.logging.enable_tsne:
@@ -643,5 +657,4 @@ class Trainer:
 
     def load_checkpoint_weights(self, ckpt_path: Path) -> Dict[str, Any]:
         return load_checkpoint_weights(ckpt_path=ckpt_path, device=self.device, model=self.model, strict=True)
-
 

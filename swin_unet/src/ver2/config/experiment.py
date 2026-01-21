@@ -65,7 +65,7 @@ class ModelConfig:
     plane_inject_stage: int = 2
     plane_inject_method: str = "film"  # "film" or "add"
     enable_saca: bool = False
-    saca_position: str = "after_stage1" # after_patch_embed or after_merge0 or after_stage1
+    saca_position: str = "after_stage1" # after_patch_embed | after_stage0 | after_merge0 | after_stage1
     saca_gate_init: float = 0.0 
     saca_warmup_epochs: int = 0 
     
@@ -87,6 +87,7 @@ class TrainingConfig:
     # Run mode
     enable_reconstruct: bool = False
     enable_contrastive: bool = False
+    single_view: bool = False
     
     # Checkpoint / pretrained loading
     resume_ckpt: str = ""  # path to .pt
@@ -207,6 +208,7 @@ class ExperimentConfig:
                 cpu=args.cpu,
                 enable_reconstruct=args.enable_reconstruct,
                 enable_contrastive=args.enable_contrastive,
+                single_view=args.single_view,
                 resume_ckpt=args.resume_ckpt,
                 ckpt_load_mode=args.ckpt_load_mode,
                 freeze_encoder_epochs=args.freeze_encoder_epochs,
@@ -325,7 +327,7 @@ def build_argparser() -> argparse.ArgumentParser:
     
     # SACA 
     p.add_argument("--enable_saca", action="store_true")
-    p.add_argument("--saca_position", type=str, default="after_stage1", choices=["after_patch_embed", "after_merge0", "after_stage1"])
+    p.add_argument("--saca_position", type=str, default="after_stage1", choices=["after_patch_embed", "after_stage0", "after_merge0", "after_stage1"])
     p.add_argument("--saca_gate_init", type=float, default=0.0)
     p.add_argument("--saca_warmup_epochs", type=int, default=0)
 
@@ -337,6 +339,10 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--enable-contrastive", action="store_true")
     p.add_argument("--disable-contrastive", dest="enable_contrastive", action="store_false")
     p.set_defaults(enable_contrastive=True)
+
+    p.add_argument("--single-view", action="store_true")
+    p.add_argument("--dual-view", dest="single_view", action="store_false")
+    p.set_defaults(single_view=False)
     
     p.add_argument("--ramp-contrastive", type=int, default=20)
 

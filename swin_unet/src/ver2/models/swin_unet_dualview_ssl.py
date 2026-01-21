@@ -486,6 +486,7 @@ class SwinUNetDualViewSSL(nn.Module):
         enable_contrastive: bool = True,
         contrastive_loss_type: str = "infonce",
         contrastive_position: str = "bottleneck",
+        single_view: bool = False,
     ):
         super().__init__()
         
@@ -506,6 +507,7 @@ class SwinUNetDualViewSSL(nn.Module):
         # ---- Training mode ----
         self.enable_reconstruct = enable_reconstruct
         self.enable_contrastive = enable_contrastive
+        self.single_view = single_view
         
         # ---- Contrastive Loss ----
         self.contrastive_position = contrastive_position    
@@ -785,7 +787,7 @@ class SwinUNetDualViewSSL(nn.Module):
         if not self.enable_saca:
             return
 
-        valid_positions = {"after_patch_embed", "after_merge0", "after_stage1"}
+        valid_positions = {"after_patch_embed", "after_stage0", "after_merge0", "after_stage1"}
         if self.saca_position not in valid_positions:
             raise ValueError(
                 f"saca_position must be one of {valid_positions}, got {self.saca_position}"
@@ -815,7 +817,7 @@ class SwinUNetDualViewSSL(nn.Module):
         if self.current_epoch < self.saca_warmup_epochs:
             return f1, f2
 
-        if point == "after_patch_embed":
+        if point in {"after_patch_embed", "after_stage0"}:
             return self.saca_c0(f1, f2)
 
         # after_merge0 or after_stage1
@@ -925,6 +927,32 @@ class SwinUNetDualViewSSL(nn.Module):
         pixel_mask: torch.Tensor,
         plane_one_hot: torch.Tensor,
     ):
+        if self.single_view:
+            if self.enable_saca:
+                raise ValueError("SACA requires dual-view. Disable SACA or use dual-view mode.")
+            if self.enable_contrastive:
+                raise ValueError("single_view requires contrastive disabled.")
+
+            x1_masked = x * (1.0 - pixel_mask)
+
+            f0_1 = self.patch_embed_1(x1_masked)
+            s0_1 = self.stage0_1(f0_1)
+            f1_1 = self.merge0_1(s0_1)
+            s1_1 = self.stage1_1(f1_1)
+
+            s2_1, b1 = self._shared_trunk(s1_1, plane_one_hot)
+
+            if not self.enable_reconstruct:
+                return None, None, None, None
+
+            d2_1 = self.up2_shared(b1, s2_1)
+            d1_1 = self.up1_v1(d2_1, s1_1)
+            d0_1 = self.up0_v1(d1_1, s0_1)
+            feat1 = self.final_up_v1(d0_1)
+            recon_raw_orig = self.recon_head_v1(nhwc_to_nchw(feat1))
+
+            return recon_raw_orig, None, None, None
+
         x1_masked = x * (1.0 - pixel_mask)
         # NOTE:
         # View2 uses a flipped image but the SAME pixel mask (mask is NOT flipped).
@@ -943,6 +971,9 @@ class SwinUNetDualViewSSL(nn.Module):
         # ---- stage0 ----
         s0_1 = self.stage0_1(f0_1)
         s0_2 = self.stage0_2(f0_2)
+
+        # SACA: after_stage0
+        s0_1, s0_2 = self.maybe_saca("after_stage0", s0_1, s0_2)
 
         # ---- merge0 ----
         f1_1 = self.merge0_1(s0_1)

@@ -187,9 +187,10 @@ SACA can be enabled at **exactly one position** per run.
 
 ```
 saca_position ∈ {
-  "after_patch_emb", # STAGE0
-  "after_merge0",
-  "after_stage1"
+  "after_patch_embed", # after patch embed tokens (C0), before stage0
+  "after_stage0",      # after stage0 outputs (C0), before merge0
+  "after_merge0",      # after merge0 tokens (C1), before stage1
+  "after_stage1"       # after stage1 outputs (C1), before shared trunk
 }
 ```
 
@@ -200,6 +201,16 @@ Behavior:
 * Disabled entirely if `enable_saca = false`
 
 ## 10. Run mode 
+
+### Single-view mode (no flip, no contrastive, no SACA)
+
+Run only the view1 path (one encoder + one decoder). This disables SACA and contrastive.
+
+```
+--single-view
+--disable-contrastive
+--enable-reconstruct
+```
 
 ### Mode S: Run from scratch
 
