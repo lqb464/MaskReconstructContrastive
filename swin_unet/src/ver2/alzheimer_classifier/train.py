@@ -422,6 +422,17 @@ def train_one_fold(
         train_acc = float(correct) / float(max(total, 1))
         train_loss = float(loss_sum) / float(max(total, 1))
         test_metrics = evaluate(model, test_loader, device, criterion)
+        if train_true:
+            train_y_true = torch.cat(train_true, dim=0).numpy()
+            train_y_pred = torch.cat(train_pred, dim=0).numpy()
+            train_cm = confusion_matrix(train_y_true, train_y_pred, labels=list(range(num_classes)))
+            print(f"[epoch {epoch:03d}] train_cm:\n{train_cm}")
+        test_cm = confusion_matrix(
+            test_metrics["y_true"],
+            test_metrics["y_pred"],
+            labels=list(range(num_classes)),
+        )
+        print(f"[epoch {epoch:03d}] test_cm:\n{test_cm}")
 
         print(
             f"[epoch {epoch:03d}] "
@@ -447,6 +458,7 @@ def train_one_fold(
                 },
                 ckpt_dir / "best_cls.pt",
             )
+            print(f"[best_f1] epoch={epoch:03d} test_f1={best_f1:.4f}")
 
         torch.save(
             {
