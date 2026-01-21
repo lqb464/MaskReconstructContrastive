@@ -115,6 +115,7 @@ class TrainingConfig:
 class DataConfig:
     """Data loading configuration"""
     data_root: str = ""
+    train_mod: int = 1
     image_size: int = 192
     plane: str = "axial"  # "axial" | "coronal" | "auto"
 
@@ -223,6 +224,7 @@ class ExperimentConfig:
             ),
             data=DataConfig(
                 data_root=args.data_root,
+                train_mod=args.train_mod,
                 image_size=args.image_size,
                 plane=args.plane,
                 label_csv=args.label_csv,
@@ -271,6 +273,7 @@ def build_argparser() -> argparse.ArgumentParser:
 
     # Data (folder dataset)
     p.add_argument("--data-root", type=str, required=True, help="Root folder containing subfolders of images")
+    p.add_argument("--train-mod", type=int, default=1, help="Use only items where index%%train_mod==0")
     p.add_argument("--image-size", type=int, default=192)
     p.add_argument("--plane", type=str, default="axial", choices=["axial", "coronal", "auto"])
 

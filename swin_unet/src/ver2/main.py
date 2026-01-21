@@ -32,6 +32,7 @@ def main():
 
     train_loader, val_loader, _, full_ds = create_dataloaders_from_folder(
         data_root=cfg.data.data_root,
+        train_mod=cfg.data.train_mod,
         image_size=cfg.data.image_size,
         plane=cfg.data.plane,
         label_csv=cfg.data.label_csv if cfg.data.label_csv else None,

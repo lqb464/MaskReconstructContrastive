@@ -248,6 +248,7 @@ def split_indices(
 
 def create_dataloaders_from_folder(
     data_root: str | Path,
+    train_mod: int = 1,
     image_size: int = 192,
     plane: str = "axial",               # axial|coronal|auto
     label_csv: Optional[str | Path] = None,
@@ -276,11 +277,26 @@ def create_dataloaders_from_folder(
             label_col=label_col,
         )
 
+    if train_mod < 1:
+        raise ValueError("train_mod must be >= 1")
+
+    root_dir = Path(data_root).expanduser()
+    if not root_dir.exists():
+        raise FileNotFoundError(f"data root not found: {root_dir}")
+    all_paths = sorted([p for p in root_dir.rglob("*") if _is_image_file(p)])
+    if len(all_paths) == 0:
+        raise RuntimeError(f"No images found under {root_dir} with extensions: {sorted(_IMG_EXTS)}")
+
+    selected_paths = [p for i, p in enumerate(all_paths) if (i % train_mod) == 0]
+    if len(selected_paths) == 0:
+        raise RuntimeError(f"No images selected after applying train_mod={train_mod}")
+
     full_ds = FolderSubfolderImageDataset(
         root_dir=data_root,
         image_size=image_size,
         plane=plane,
         label_map=label_map,
+        paths=selected_paths,
     )
 
     # NEW: nếu không split test thì ép test_ratio = 0 để không tạo test split
