@@ -3,21 +3,17 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.amp import GradScaler, autocast
 from torch.optim import AdamW
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader
 from torchvision import transforms
 
 from datasets import load_dataset
-try:
-    from datasets import concatenate_datasets
-except Exception:  # pragma: no cover
-    concatenate_datasets = None
 from sklearn.metrics import confusion_matrix, f1_score
 
 from models.model_utils import flip_lr
@@ -25,7 +21,6 @@ from models.swin_unet_dualview_ssl import SwinUNetDualViewSSL
 from training.ckpt_io import load_checkpoint_weights_filtered
 
 from .io import ensure_dir, save_json
-from .kfold import FoldSplit, make_kfold_splits
 
 
 class FocalLoss(nn.Module):
@@ -195,6 +190,23 @@ def parse_focal_alpha(value: str, num_classes: int) -> Optional[torch.Tensor]:
     raise ValueError("focal_alpha format must be '', 'scalar:0.25', or 'list:a,b,c,d'")
 
 
+def parse_ce_class_weights(value: str, num_classes: int) -> torch.Tensor:
+    if not value:
+        raise ValueError("ce_class_weights is required for loss_type=wce (format: list:w0,w1,...)")
+    s = value.strip()
+    if not s.startswith("list:"):
+        raise ValueError("ce_class_weights format must be 'list:w0,w1,...'")
+    vals = [float(v) for v in s.split("list:")[1].split(",")]
+    if len(vals) != num_classes:
+        raise ValueError("ce_class_weights list size must match num_classes")
+    return torch.tensor(vals, dtype=torch.float32)
+
+
+def print_label_map(label_names: List[str]) -> None:
+    for i, name in enumerate(label_names):
+        print(f"[label_map] {i} -> {name}")
+
+
 def infer_num_classes(ds) -> int:
     try:
         names = list(ds.features["label"].names)
@@ -209,31 +221,6 @@ def infer_num_classes(ds) -> int:
                 raise ValueError("labels missing from dataset")
             labels.append(int(item["label"]))
         return int(max(labels)) + 1 if labels else 0
-
-
-def build_dataloaders(
-    dataset: HFDataset,
-    train_idx: Optional[Iterable[int]],
-    val_idx: Optional[Iterable[int]],
-    test_idx: Optional[Iterable[int]],
-    args: argparse.Namespace,
-    device: torch.device,
-) -> Tuple[DataLoader, Optional[DataLoader], DataLoader]:
-    def _make_loader(subset_idx, shuffle: bool) -> DataLoader:
-        subset = Subset(dataset, list(subset_idx)) if subset_idx is not None else dataset
-        return DataLoader(
-            subset,
-            batch_size=args.batch_size,
-            shuffle=shuffle,
-            num_workers=args.num_workers,
-            pin_memory=(device.type == "cuda"),
-            drop_last=False,
-        )
-
-    train_loader = _make_loader(train_idx, shuffle=True)
-    val_loader = _make_loader(val_idx, shuffle=False) if val_idx is not None else None
-    test_loader = _make_loader(test_idx, shuffle=False)
-    return train_loader, val_loader, test_loader
 
 
 def build_model(args: argparse.Namespace, device: torch.device) -> SwinUNetDualViewSSL:
@@ -333,7 +320,6 @@ def evaluate(
 def train_one_fold(
     args: argparse.Namespace,
     train_loader: DataLoader,
-    val_loader: Optional[DataLoader],
     test_loader: DataLoader,
     device: torch.device,
     num_classes: int,
@@ -353,15 +339,26 @@ def train_one_fold(
     if model.fc.out_features != num_classes:
         raise RuntimeError("classifier head size must match num_classes")
 
-    alpha = parse_focal_alpha(args.focal_alpha, num_classes)
-    criterion = FocalLoss(gamma=args.focal_gamma, alpha=alpha, reduction="mean").to(device)
+    if args.loss_type == "focal":
+        alpha = parse_focal_alpha(args.focal_alpha, num_classes)
+        if alpha is not None:
+            alpha_vec = alpha if alpha.numel() > 1 else alpha.repeat(num_classes)
+            for i, name in enumerate(class_names):
+                print(f"[focal_alpha] idx={i} name={name} w={float(alpha_vec[i].item())}")
+        criterion = FocalLoss(gamma=args.focal_gamma, alpha=alpha, reduction="mean").to(device)
+    elif args.loss_type == "wce":
+        weights = parse_ce_class_weights(args.ce_class_weights, num_classes)
+        for i, name in enumerate(class_names):
+            print(f"[ce_weights] idx={i} name={name} w={float(weights[i].item())}")
+        criterion = nn.CrossEntropyLoss(weight=weights.to(device=device, dtype=torch.float32)).to(device)
+    else:
+        raise ValueError(f"unsupported loss_type: {args.loss_type}")
 
     opt = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scaler = GradScaler(enabled=(args.amp and device.type == "cuda"))
 
     best_f1 = -1.0
     best_epoch = -1
-    best_val = None
     best_test = None
 
     for epoch in range(1, args.epochs + 1):
@@ -403,49 +400,19 @@ def train_one_fold(
 
         train_acc = float(correct) / float(max(total, 1))
         train_loss = float(loss_sum) / float(max(total, 1))
-        if train_true:
-            train_y_true = torch.cat(train_true, dim=0).numpy()
-            train_y_pred = torch.cat(train_pred, dim=0).numpy()
-            train_cm = confusion_matrix(train_y_true, train_y_pred, labels=list(range(num_classes)))
-            print(f"[epoch {epoch:03d}] train_cm:\n{train_cm}")
-
-        val_metrics = None
-        if val_loader is not None and len(val_loader) > 0:
-            val_metrics = evaluate(model, val_loader, device, criterion)
-            val_cm = confusion_matrix(
-                val_metrics["y_true"],
-                val_metrics["y_pred"],
-                labels=list(range(num_classes)),
-            )
-            print(f"[epoch {epoch:03d}] val_cm:\n{val_cm}")
-
         test_metrics = evaluate(model, test_loader, device, criterion)
 
-        cm = confusion_matrix(test_metrics["y_true"], test_metrics["y_pred"], labels=list(range(num_classes)))
-        print(f"[epoch {epoch:03d}] test_cm:\n{cm}")
+        print(
+            f"[epoch {epoch:03d}] "
+            f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} "
+            f"test_loss={test_metrics['ce']:.4f} test_acc={test_metrics['acc']:.4f} "
+            f"test_f1={test_metrics['f1_macro']:.4f}"
+        )
 
-        if val_metrics is None:
-            print(
-                f"[epoch {epoch:03d}] "
-                f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} "
-                f"test_loss={test_metrics['ce']:.4f} test_acc={test_metrics['acc']:.4f} "
-                f"test_f1={test_metrics['f1_macro']:.4f}"
-            )
-        else:
-            print(
-                f"[epoch {epoch:03d}] "
-                f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} "
-                f"val_loss={val_metrics['ce']:.4f} val_acc={val_metrics['acc']:.4f} "
-                f"val_f1={val_metrics['f1_macro']:.4f} "
-                f"test_loss={test_metrics['ce']:.4f} test_acc={test_metrics['acc']:.4f} "
-                f"test_f1={test_metrics['f1_macro']:.4f}"
-            )
-
-        score = val_metrics["f1_macro"] if val_metrics is not None else test_metrics["f1_macro"]
+        score = test_metrics["f1_macro"]
         if score > best_f1:
             best_f1 = float(score)
             best_epoch = epoch
-            best_val = val_metrics
             best_test = test_metrics
             torch.save(
                 {
@@ -459,7 +426,6 @@ def train_one_fold(
                 },
                 ckpt_dir / "best_cls.pt",
             )
-            print(f"[best_f1] test_cm:\n{cm}")
 
         torch.save(
             {
@@ -476,24 +442,7 @@ def train_one_fold(
     return {
         "best_epoch": best_epoch,
         "best_score": best_f1,
-        "val": best_val,
         "test": best_test,
-    }
-
-
-def fold_metrics_record(fold_index: int, metrics: Dict[str, object]) -> Dict[str, object]:
-    val = metrics.get("val") or {}
-    test = metrics.get("test") or {}
-    return {
-        "fold": fold_index,
-        "val_loss": float(val.get("ce", 0.0)),
-        "val_acc": float(val.get("acc", 0.0)),
-        "val_f1_macro": float(val.get("f1_macro", 0.0)),
-        "val_f1_weighted": float(val.get("f1_weighted", 0.0)),
-        "test_loss": float(test.get("ce", 0.0)),
-        "test_acc": float(test.get("acc", 0.0)),
-        "test_f1_macro": float(test.get("f1_macro", 0.0)),
-        "test_f1_weighted": float(test.get("f1_weighted", 0.0)),
     }
 
 
@@ -523,11 +472,11 @@ def run_single_split(args: argparse.Namespace) -> None:
     if num_classes <= 0:
         raise RuntimeError("unable to infer num_classes from dataset")
 
-    class_names = None
     try:
         class_names = list(train_ds.features["label"].names)
     except Exception:
         class_names = [str(i) for i in range(num_classes)]
+    print_label_map(class_names)
 
     train_loader = DataLoader(
         train_pt,
@@ -549,121 +498,24 @@ def run_single_split(args: argparse.Namespace) -> None:
     metrics = train_one_fold(
         args=args,
         train_loader=train_loader,
-        val_loader=None,
         test_loader=test_loader,
         device=device,
         num_classes=num_classes,
         out_dir=out_dir,
         class_names=class_names,
     )
-    record = fold_metrics_record(0, metrics)
+    best_test = metrics.get("test") or {}
+    record = {
+        "best_epoch": int(metrics.get("best_epoch", -1)),
+        "best_score": float(metrics.get("best_score", -1.0)),
+        "test_acc": float(best_test.get("acc", 0.0)),
+        "test_ce": float(best_test.get("ce", 0.0)),
+        "test_f1_macro": float(best_test.get("f1_macro", 0.0)),
+        "test_f1_weighted": float(best_test.get("f1_weighted", 0.0)),
+    }
     save_json(out_dir / "metrics" / "single_split_metrics.json", record)
     print("[done] best_f1:", metrics["best_score"])
 
 
-def run_kfold(args: argparse.Namespace) -> None:
-    torch.manual_seed(args.seed)
-    device = torch.device("cpu" if args.cpu else ("cuda" if torch.cuda.is_available() else "cpu"))
-
-    out_dir = Path(args.out_dir)
-    ensure_dir(out_dir)
-
-    ds = load_dataset("Falah/Alzheimer_MRI")
-    full_ds = ds["train"]
-    if "test" in ds:
-        if concatenate_datasets is None:
-            raise RuntimeError("datasets.concatenate_datasets is required for k-fold with train+test")
-        full_ds = concatenate_datasets([ds["train"], ds["test"]])
-
-    tfm = transforms.Compose(
-        [
-            transforms.Grayscale(num_output_channels=1),
-            transforms.Resize((args.image_size, args.image_size)),
-            transforms.ToTensor(),
-        ]
-    )
-
-    full_pt = HFDataset(full_ds, tfm)
-    labels = [int(full_ds[i]["label"]) for i in range(len(full_ds))]
-    groups = None
-    if getattr(args, "group_field", ""):
-        field = str(args.group_field)
-        if field in full_ds.column_names:
-            groups = [full_ds[i][field] for i in range(len(full_ds))]
-
-    num_classes = infer_num_classes(full_ds)
-    if num_classes <= 0:
-        raise RuntimeError("unable to infer num_classes from dataset")
-
-    try:
-        class_names = list(full_ds.features["label"].names)
-    except Exception:
-        class_names = [str(i) for i in range(num_classes)]
-
-    splits: List[FoldSplit] = make_kfold_splits(
-        labels,
-        args.k_folds,
-        args.seed,
-        val_ratio=args.val_ratio,
-        groups=groups,
-    )
-
-    fold_metrics: List[Dict[str, object]] = []
-    fold_records: List[Dict[str, object]] = []
-    for split in splits:
-        fold_dir = out_dir / f"fold_{split.fold_index:02d}"
-        train_loader, val_loader, test_loader = build_dataloaders(
-            dataset=full_pt,
-            train_idx=split.train_idx,
-            val_idx=split.val_idx,
-            test_idx=split.test_idx,
-            args=args,
-            device=device,
-        )
-        metrics = train_one_fold(
-            args=args,
-            train_loader=train_loader,
-            val_loader=val_loader,
-            test_loader=test_loader,
-            device=device,
-            num_classes=num_classes,
-            out_dir=fold_dir,
-            class_names=class_names,
-        )
-        fold_metrics.append(metrics)
-        fold_records.append(fold_metrics_record(split.fold_index, metrics))
-
-    def _mean_std(values: List[float]) -> Dict[str, float]:
-        if not values:
-            return {"mean": 0.0, "std": 0.0}
-        v = torch.tensor(values, dtype=torch.float32)
-        return {"mean": float(v.mean().item()), "std": float(v.std(unbiased=False).item())}
-
-    def _collect_record(key: str) -> List[float]:
-        return [float(r[key]) for r in fold_records if key in r]
-
-    summary = {"folds": len(fold_records)}
-    for key in (
-        "val_loss",
-        "val_acc",
-        "val_f1_macro",
-        "val_f1_weighted",
-        "test_loss",
-        "test_acc",
-        "test_f1_macro",
-        "test_f1_weighted",
-    ):
-        summary[key] = _mean_std(_collect_record(key))
-
-    save_json(
-        out_dir / "metrics" / "fold_metrics.json",
-        {"folds": fold_records, "summary": summary},
-    )
-    print("[done] kfold summary:", summary)
-
-
 def run(args: argparse.Namespace) -> None:
-    if args.k_folds and args.k_folds > 1:
-        run_kfold(args)
-    else:
-        run_single_split(args)
+    run_single_split(args)
