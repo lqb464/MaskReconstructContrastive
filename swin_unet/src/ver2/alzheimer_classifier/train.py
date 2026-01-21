@@ -489,12 +489,8 @@ def run_single_split(args: argparse.Namespace) -> None:
     except Exception as exc:
         raise RuntimeError("dataset label names are required for classifier training") from exc
 
-    expected_order = [
-        "non-demented",
-        "very mild demented",
-        "mild demented",
-        "moderate demented",
-    ]
+    expected_order = ['Mild_Demented', 'Moderate_Demented', 'Non_Demented', 'Very_Mild_Demented']
+    
     detected = [normalize_label_name(name) for name in label_names]
     if len(detected) != len(expected_order):
         raise RuntimeError(f"label count mismatch: detected={label_names} expected={expected_order}")
