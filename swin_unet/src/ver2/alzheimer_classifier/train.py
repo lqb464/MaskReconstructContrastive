@@ -16,7 +16,7 @@ from torchvision import transforms
 from datasets import load_dataset
 from sklearn.metrics import confusion_matrix, f1_score
 
-from models.model_utils import flip_lr
+from ..models.model_utils import flip_lr
 from models.swin_unet_dualview_ssl import SwinUNetDualViewSSL
 from training.ckpt_io import load_checkpoint_weights_filtered
 
