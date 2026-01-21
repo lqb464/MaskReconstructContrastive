@@ -207,6 +207,20 @@ def print_label_map(label_names: List[str]) -> None:
         print(f"[label_map] {i} -> {name}")
 
 
+def normalize_label_name(name: str) -> str:
+    s = name.lower().strip().replace("_", " ").replace("-", " ")
+    s = " ".join(s.split())
+    if "moderate" in s:
+        return "moderate demented"
+    if "very mild" in s:
+        return "very mild demented"
+    if "mild" in s:
+        return "mild demented"
+    if "non" in s:
+        return "non-demented"
+    return s
+
+
 def infer_num_classes(ds) -> int:
     try:
         names = list(ds.features["label"].names)
@@ -468,14 +482,34 @@ def run_single_split(args: argparse.Namespace) -> None:
     train_pt = HFDataset(train_ds, tfm)
     test_pt = HFDataset(test_ds, tfm)
 
-    num_classes = infer_num_classes(train_ds)
-    if num_classes <= 0:
-        raise RuntimeError("unable to infer num_classes from dataset")
-
     try:
-        class_names = list(train_ds.features["label"].names)
-    except Exception:
-        class_names = [str(i) for i in range(num_classes)]
+        label_names = list(train_ds.features["label"].names)
+    except Exception as exc:
+        raise RuntimeError("dataset label names are required for classifier training") from exc
+
+    expected_order = [
+        "non-demented",
+        "very mild demented",
+        "mild demented",
+        "moderate demented",
+    ]
+    detected = [normalize_label_name(name) for name in label_names]
+    if len(detected) != len(expected_order):
+        raise RuntimeError(
+            f"label count mismatch: detected={label_names} expected={expected_order}"
+        )
+    if detected != expected_order:
+        raise RuntimeError(
+            f"label order mismatch: detected={label_names} expected={expected_order}"
+        )
+
+    class_names = [
+        "Non-Demented",
+        "Very Mild Demented",
+        "Mild Demented",
+        "Moderate Demented",
+    ]
+    num_classes = 4
     print_label_map(class_names)
 
     train_loader = DataLoader(

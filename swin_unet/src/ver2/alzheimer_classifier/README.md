@@ -29,21 +29,31 @@ Usage examples
 
 Focal loss (recommended defaults; provide your own alpha list):
 
+bash
 ```
 python -m alzheimer_classifier.main \
-  --out_dir runs/alzheimer_cls \
+  --out_dir runs/alzheimer_cls_focal \
   --loss_type focal \
   --focal_gamma 1.0 \
-  --focal_alpha list:1,1,1,1
+  --focal_alpha list:0.018,0.025,0.064,0.893 \
+  --batch_size 16 \
+  --epochs 15 \
+  --freeze_encoder_epochs 0
+
 ```
 
 Weighted cross entropy (provide your own weights list):
 
+bash
 ```
 python -m alzheimer_classifier.main \
-  --out_dir runs/alzheimer_cls \
+  --out_dir runs/alzheimer_cls_wce \
   --loss_type wce \
-  --ce_class_weights list:1,1,1,1
+  --ce_class_weights list:1.0,1.4,3.6,50.0 \
+  --batch_size 16 \
+  --epochs 15 \
+  --freeze_encoder_epochs 0
+
 ```
 
 Train
