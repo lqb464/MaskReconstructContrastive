@@ -57,7 +57,7 @@ def build_argparser() -> argparse.ArgumentParser:
         default="",
         help="Optional comma-separated label order override (e.g., 'Non_Demented,Very_Mild_Demented,Mild_Demented,Moderate_Demented')",
     )
-    p.add_argument("--loss_type", type=str, default="focal", choices=["focal", "wce"])
+    p.add_argument("--loss_type", type=str, default="focal", choices=["focal", "wce", "ce"])
     p.add_argument("--ce_class_weights", type=str, default="")
     p.add_argument("--focal_gamma", type=float, default=2.0)
     p.add_argument("--focal_alpha", type=str, default="")

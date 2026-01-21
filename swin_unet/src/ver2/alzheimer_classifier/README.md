@@ -46,6 +46,19 @@ Weighted cross entropy (provide your own weights list):
 
 bash
 ```
+
+Standard cross entropy (baseline, unweighted):
+
+bash
+```
+python -m alzheimer_classifier.main \
+  --out_dir runs/alzheimer_cls_ce \
+  --loss_type ce \
+  --batch_size 16 \
+  --epochs 15 \
+  --freeze_encoder_epochs 0
+
+```
 python -m alzheimer_classifier.main \
   --out_dir runs/alzheimer_cls_wce \
   --loss_type wce \

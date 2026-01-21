@@ -356,6 +356,7 @@ def train_one_fold(
     print(model)
 
     if args.loss_type == "focal":
+        print("[loss] type=focal")
         alpha = parse_focal_alpha(args.focal_alpha, num_classes)
         if alpha is not None:
             alpha_vec = alpha if alpha.numel() > 1 else alpha.repeat(num_classes)
@@ -363,10 +364,14 @@ def train_one_fold(
                 print(f"[focal_alpha] idx={i} name={name} w={float(alpha_vec[i].item())}")
         criterion = FocalLoss(gamma=args.focal_gamma, alpha=alpha, reduction="mean").to(device)
     elif args.loss_type == "wce":
+        print("[loss] type=wce (weighted cross entropy)")
         weights = parse_ce_class_weights(args.ce_class_weights, num_classes)
         for i, name in enumerate(class_names):
             print(f"[ce_weights] idx={i} name={name} w={float(weights[i].item())}")
         criterion = nn.CrossEntropyLoss(weight=weights.to(device=device, dtype=torch.float32)).to(device)
+    elif args.loss_type == "ce":
+        print("[loss] type=ce (unweighted cross entropy)")
+        criterion = nn.CrossEntropyLoss().to(device)
     else:
         raise ValueError(f"unsupported loss_type: {args.loss_type}")
 
