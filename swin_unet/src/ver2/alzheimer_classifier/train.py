@@ -352,6 +352,8 @@ def train_one_fold(
     model = EncoderClassifier(encoder=encoder, num_classes=num_classes, dropout=args.dropout).to(device)
     if model.fc.out_features != num_classes:
         raise RuntimeError("classifier head size must match num_classes")
+    
+    print(model)
 
     if args.loss_type == "focal":
         alpha = parse_focal_alpha(args.focal_alpha, num_classes)
