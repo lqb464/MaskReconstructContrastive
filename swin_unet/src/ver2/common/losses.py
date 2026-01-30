@@ -19,6 +19,27 @@ def _gaussian_window(window_size: int = 11, sigma: float = 1.5, device=None, dty
     return kernel2d
 
 
+_SSIM_WINDOW_CACHE: dict[tuple[int, float, int, str, int | None, torch.dtype], torch.Tensor] = {}
+
+
+def get_ssim_window(
+    window_size: int,
+    sigma: float,
+    channel: int,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    key = (window_size, float(sigma), channel, device.type, device.index, dtype)
+    window = _SSIM_WINDOW_CACHE.get(key, None)
+    if window is None or window.device != device or window.dtype != dtype:
+        window = _gaussian_window(window_size, sigma, device=device, dtype=dtype)
+        if channel != 1:
+            window = window.repeat(channel, 1, 1, 1)
+        window = window.contiguous()
+        _SSIM_WINDOW_CACHE[key] = window
+    return window
+
+
 def ssim_index(x: torch.Tensor, y: torch.Tensor, window_size: int = 11, sigma: float = 1.5) -> torch.Tensor:
     """
     Compute Structural Similarity Index (SSIM) between two images
@@ -35,7 +56,7 @@ def ssim_index(x: torch.Tensor, y: torch.Tensor, window_size: int = 11, sigma: f
     assert x.shape == y.shape and x.dim() == 4 and x.size(1) == 1
     C1 = (0.01) ** 2
     C2 = (0.03) ** 2
-    kernel = _gaussian_window(window_size, sigma, device=x.device, dtype=x.dtype)
+    kernel = get_ssim_window(window_size, sigma, channel=x.size(1), device=x.device, dtype=x.dtype)
     padding = window_size // 2
 
     mu_x = F.conv2d(x, kernel, padding=padding, groups=1)
@@ -119,8 +140,8 @@ def _foreground_weighted_bce_logits(
     Target is expected in [0, 1]. Returns unreduced loss map.
     """
     with torch.no_grad():
-        w = torch.ones_like(target)
-        w = torch.where(target > fg_eps, torch.full_like(w, fg_weight), w)
+        cond = target > fg_eps
+        w = cond.to(dtype=target.dtype) * (fg_weight - 1.0) + 1.0
     return F.binary_cross_entropy_with_logits(logits, target, weight=w, reduction="none")
 
 
