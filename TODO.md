@@ -1,4 +1,21 @@
 
+- Thử lại patch + stage 0
+- Tất cả vị trí
+- T1 axial 
+- So sánh SACA:
+    Không SACA
+    1 vị trí có SACA (4 version)
+    Combine (Patched emb + Stage 0, tất cả 4 vị trí) (2 version)
+==> tổng 7 => tìm ra phiên bản tốt nhất 
+
+- Dùng best model pretrained 
+=> thử recontruct mask / classi (mindset) 
+
+- 512/384 bottleneck classification (huggingface), classifier deeper (3 hidden layer :2 dim mỗi lần)
+
+- SynthStrip cắt ảnh lấy 5 lát 
+
+
 Áp dụng trực tiếp model:
 - Refine lại attention: cross attention trước swin (trực tiếp trên token) (bật/tắt)
 - Thử lại contrastive (vị trí đặt, loại loss)

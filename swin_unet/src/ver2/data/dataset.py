@@ -313,6 +313,10 @@ def create_dataloaders_from_folder(
     val_ds = Subset(full_ds, val_idx)
 
     def _make_loader(ds, shuffle: bool) -> DataLoader:
+        extra_kwargs = {}
+        if num_workers > 0:
+            extra_kwargs["persistent_workers"] = True
+            extra_kwargs["prefetch_factor"] = 2
         return DataLoader(
             ds,
             batch_size=batch_size,
@@ -320,6 +324,7 @@ def create_dataloaders_from_folder(
             num_workers=num_workers,
             pin_memory=pin_memory,
             drop_last=drop_last if shuffle else False,
+            **extra_kwargs,
         )
 
     train_loader = _make_loader(train_ds, shuffle=True)

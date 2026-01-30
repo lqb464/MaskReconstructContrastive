@@ -24,7 +24,7 @@ from .model_utils import (
     count_parameters,
     window_partition,
     window_reverse,
-    compute_attn_mask,
+    get_attn_mask_cached,
 )
 
 # -------------------------
@@ -194,7 +194,7 @@ class SwinTransformerBlock(nn.Module):
             x = F.pad(x, (0, 0, 0, pad_r, 0, pad_b))
         Hp, Wp = x.shape[1], x.shape[2]
 
-        attn_mask = compute_attn_mask(Hp, Wp, ws, ss, x.device)
+        attn_mask = get_attn_mask_cached(Hp, Wp, ws, ss, x.device)
 
         shortcut = x
         x = self.norm1(x)

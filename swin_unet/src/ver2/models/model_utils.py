@@ -62,3 +62,23 @@ def compute_attn_mask(H: int, W: int, window_size: int, shift_size: int, device:
     attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
     attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(attn_mask == 0, float(0.0))
     return attn_mask
+
+
+_ATTN_MASK_CACHE: dict[tuple[int, int, int, int, str, int | None], torch.Tensor] = {}
+
+
+def get_attn_mask_cached(
+    H: int,
+    W: int,
+    window_size: int,
+    shift_size: int,
+    device: torch.device,
+) -> Optional[torch.Tensor]:
+    if shift_size == 0:
+        return None
+    key = (H, W, window_size, shift_size, device.type, device.index)
+    attn_mask = _ATTN_MASK_CACHE.get(key, None)
+    if attn_mask is None or attn_mask.device != device:
+        attn_mask = compute_attn_mask(H, W, window_size, shift_size, device)
+        _ATTN_MASK_CACHE[key] = attn_mask
+    return attn_mask

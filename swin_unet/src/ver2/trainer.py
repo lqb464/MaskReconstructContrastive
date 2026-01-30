@@ -11,7 +11,6 @@ import time
 from pathlib import Path
 from typing import Any, Dict
 
-import numpy as np
 import torch
 from torch import nn
 from torch.amp import GradScaler, autocast
@@ -42,6 +41,8 @@ class Trainer:
     def __init__(self, cfg: ExperimentConfig, device: torch.device):
         self.cfg = cfg
         self.device = device
+        if device.type == "cuda" and getattr(cfg.data, "image_size", None):
+            torch.backends.cudnn.benchmark = True
 
         if self.cfg.training.single_view:
             if self.cfg.training.enable_contrastive:
@@ -187,7 +188,10 @@ class Trainer:
 
         except Exception as e:
             print("[torchinfo] unable to print model summary:", repr(e))
-            
+
+        if getattr(cfg.training, "torch_compile", False) and hasattr(torch, "compile"):
+            self.model = torch.compile(self.model)
+
         self.opt = AdamW(self.model.parameters(), lr=cfg.training.lr, weight_decay=cfg.training.weight_decay)
         self.scaler = GradScaler(enabled=(cfg.training.amp and device.type == "cuda"))
 
@@ -255,16 +259,14 @@ class Trainer:
         self.model.train()
         meter = MetricsAccumulator()
 
-        loss_recon_orig_list = []
-        loss_recon_flip_list = []
-        loss_recon_total_list = []
-        loss_con_list = []
-        loss_total_list = []
-
-        losses_total_scalar = []
-        losses_con_scalar = []
-        vars_mean = []
-        vars_min = []
+        loss_recon_orig_sum = 0.0
+        loss_recon_flip_sum = 0.0
+        loss_recon_total_sum = 0.0
+        loss_con_sum = 0.0
+        loss_total_sum = 0.0
+        loss_count = 0
+        vars_mean_sum = 0.0
+        vars_min_sum = 0.0
 
         pbar = tqdm(loader, desc=f"train {epoch}", leave=False)
         lambda_contrast_eff = self._lambda_contrastive_eff(epoch)
@@ -347,22 +349,25 @@ class Trainer:
                         pixel_mask=pixel_mask,
                     )
 
-                loss_recon_orig_list.append(float(loss_recon_orig.item()))
-                loss_recon_flip_list.append(float(loss_recon_flip.item()))
-                loss_recon_total_list.append(float(loss_recon_total.item()))
-                loss_con_list.append(float(loss_con.item()))
-                loss_total_list.append(float(loss_total.item()))
-
-                losses_total_scalar.append(float(loss_total.item()))
-                losses_con_scalar.append(float(loss_con.item()))
+                l_recon_orig = float(loss_recon_orig.item())
+                l_recon_flip = float(loss_recon_flip.item())
+                l_recon_total = float(loss_recon_total.item())
+                l_con = float(loss_con.item())
+                l_total = float(loss_total.item())
+                loss_recon_orig_sum += l_recon_orig
+                loss_recon_flip_sum += l_recon_flip
+                loss_recon_total_sum += l_recon_total
+                loss_con_sum += l_con
+                loss_total_sum += l_total
+                loss_count += 1
 
                 if self.cfg.training.enable_contrastive:
                     mean_var, min_var = compute_embedding_variance([z1.detach(), z2.detach()])
-                    vars_mean.append(float(mean_var))
-                    vars_min.append(float(min_var))
+                    vars_mean_sum += float(mean_var)
+                    vars_min_sum += float(min_var)
                 else:
-                    vars_mean.append(0.0)
-                    vars_min.append(0.0)
+                    vars_mean_sum += 0.0
+                    vars_min_sum += 0.0
 
                 if getattr(self.cfg.logging, "log_losses_every_iter", False):
                     pbar.set_postfix({
@@ -376,20 +381,20 @@ class Trainer:
         stats = meter.compute()
 
         decomp = {
-            "loss_recon_orig": float(np.mean(loss_recon_orig_list)) if loss_recon_orig_list else 0.0,
-            "loss_recon_flip": float(np.mean(loss_recon_flip_list)) if loss_recon_flip_list else 0.0,
-            "loss_recon_total": float(np.mean(loss_recon_total_list)) if loss_recon_total_list else 0.0,
-            "loss_contrastive": float(np.mean(loss_con_list)) if loss_con_list else 0.0,
-            "loss_total": float(np.mean(loss_total_list)) if loss_total_list else 0.0,
+            "loss_recon_orig": (loss_recon_orig_sum / loss_count) if loss_count else 0.0,
+            "loss_recon_flip": (loss_recon_flip_sum / loss_count) if loss_count else 0.0,
+            "loss_recon_total": (loss_recon_total_sum / loss_count) if loss_count else 0.0,
+            "loss_contrastive": (loss_con_sum / loss_count) if loss_count else 0.0,
+            "loss_total": (loss_total_sum / loss_count) if loss_count else 0.0,
         }
 
         self.loss_logger.append(epoch, "train", decomp)
 
         return {
-            "loss": float(np.mean(losses_total_scalar)) if losses_total_scalar else 0.0,
-            "loss_contrast": float(np.mean(losses_con_scalar)) if losses_con_scalar else 0.0,
-            "var_mean": float(np.mean(vars_mean)) if vars_mean else 0.0,
-            "var_min": float(np.mean(vars_min)) if vars_min else 0.0,
+            "loss": (loss_total_sum / loss_count) if loss_count else 0.0,
+            "loss_contrast": (loss_con_sum / loss_count) if loss_count else 0.0,
+            "var_mean": (vars_mean_sum / loss_count) if loss_count else 0.0,
+            "var_min": (vars_min_sum / loss_count) if loss_count else 0.0,
             "recon_total": float(stats.total_l1),
             "recon_masked": float(stats.masked_l1),
             "recon_unmasked": float(stats.unmasked_l1),
@@ -404,14 +409,14 @@ class Trainer:
 
         lambda_contrast_eff = self._lambda_contrastive_eff(epoch)
 
-        losses_total = []
-        loss_recon_orig_list = []
-        loss_recon_flip_list = []
-        loss_recon_total_list = []
-        loss_con_list = []
-
-        vars_mean = []
-        vars_min = []
+        loss_total_sum = 0.0
+        loss_recon_orig_sum = 0.0
+        loss_recon_flip_sum = 0.0
+        loss_recon_total_sum = 0.0
+        loss_con_sum = 0.0
+        loss_count = 0
+        vars_mean_sum = 0.0
+        vars_min_sum = 0.0
 
         for batch in tqdm(loader, desc=f"val {epoch}", leave=False):
             x, plane, pixel_mask = prepare_inputs(batch, device=self.device, cfg_mask=self.cfg.mask)
@@ -484,37 +489,43 @@ class Trainer:
                 )
 
 
-            losses_total.append(float(loss_total.item()))
-            loss_recon_orig_list.append(float(loss_recon_orig.item()))
-            loss_recon_flip_list.append(float(loss_recon_flip.item()))
-            loss_recon_total_list.append(float(loss_recon_total.item()))
-            loss_con_list.append(float(loss_con.item()))
+            l_total = float(loss_total.item())
+            l_recon_orig = float(loss_recon_orig.item())
+            l_recon_flip = float(loss_recon_flip.item())
+            l_recon_total = float(loss_recon_total.item())
+            l_con = float(loss_con.item())
+            loss_total_sum += l_total
+            loss_recon_orig_sum += l_recon_orig
+            loss_recon_flip_sum += l_recon_flip
+            loss_recon_total_sum += l_recon_total
+            loss_con_sum += l_con
+            loss_count += 1
 
             if self.cfg.training.enable_contrastive:
                 mean_var, min_var = compute_embedding_variance([z1.detach(), z2.detach()])
-                vars_mean.append(float(mean_var))
-                vars_min.append(float(min_var))
+                vars_mean_sum += float(mean_var)
+                vars_min_sum += float(min_var)
             else:
-                vars_mean.append(0.0)
-                vars_min.append(0.0)
+                vars_mean_sum += 0.0
+                vars_min_sum += 0.0
 
         stats = meter.compute()
 
         decomp = {
-            "loss_recon_orig": float(np.mean(loss_recon_orig_list)) if loss_recon_orig_list else 0.0,
-            "loss_recon_flip": float(np.mean(loss_recon_flip_list)) if loss_recon_flip_list else 0.0,
-            "loss_recon_total": float(np.mean(loss_recon_total_list)) if loss_recon_total_list else 0.0,
-            "loss_contrastive": float(np.mean(loss_con_list)) if loss_con_list else 0.0,
-            "loss_total": float(np.mean(losses_total)) if losses_total else 0.0,
+            "loss_recon_orig": (loss_recon_orig_sum / loss_count) if loss_count else 0.0,
+            "loss_recon_flip": (loss_recon_flip_sum / loss_count) if loss_count else 0.0,
+            "loss_recon_total": (loss_recon_total_sum / loss_count) if loss_count else 0.0,
+            "loss_contrastive": (loss_con_sum / loss_count) if loss_count else 0.0,
+            "loss_total": (loss_total_sum / loss_count) if loss_count else 0.0,
         }
 
         self.loss_logger.append(epoch, "val", decomp)
 
         return {
-            "loss": float(np.mean(losses_total)) if losses_total else 0.0,
-            "loss_contrast": float(np.mean(loss_con_list)) if loss_con_list else 0.0,
-            "var_mean": float(np.mean(vars_mean)) if vars_mean else 0.0,
-            "var_min": float(np.mean(vars_min)) if vars_min else 0.0,
+            "loss": (loss_total_sum / loss_count) if loss_count else 0.0,
+            "loss_contrast": (loss_con_sum / loss_count) if loss_count else 0.0,
+            "var_mean": (vars_mean_sum / loss_count) if loss_count else 0.0,
+            "var_min": (vars_min_sum / loss_count) if loss_count else 0.0,
             "recon_total": float(stats.total_l1),
             "recon_masked": float(stats.masked_l1),
             "recon_unmasked": float(stats.unmasked_l1),
@@ -657,4 +668,3 @@ class Trainer:
 
     def load_checkpoint_weights(self, ckpt_path: Path) -> Dict[str, Any]:
         return load_checkpoint_weights(ckpt_path=ckpt_path, device=self.device, model=self.model, strict=True)
-
