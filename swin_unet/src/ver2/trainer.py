@@ -612,7 +612,6 @@ class Trainer:
         best_val = float("inf")
 
         best_path = self.ckpt_dir / "best.pt"
-        latest_path = self.ckpt_dir / "latest.pt"
 
         for epoch in range(1, self.cfg.training.epochs + 1):
             
@@ -646,18 +645,10 @@ class Trainer:
             self.maybe_visualize(val_loader, epoch, tag="val")
             self.maybe_tsne(val_loader, epoch)
 
-            self.save_checkpoint(path=latest_path, epoch=epoch, best_val=best_val)
-
             if va["loss"] < best_val:
                 best_val = va["loss"]
                 self.save_checkpoint(path=best_path, epoch=epoch, best_val=best_val)
 
-            plot_training_curves(self.log_csv_path, self.plots_dir)
-            plot_loss_decomposition_curves(
-                self.loss_decomp_csv_path,
-                self.plots_dir,
-            )
-            
             print(
                 f"[epoch {epoch:03d}] \n"
                 f"Train: recon_o={tr['loss_recon_orig']:.4f} recon_f={tr['loss_recon_flip']:.4f} recon_t={tr['loss_recon_total']:.4f} "
@@ -665,6 +656,12 @@ class Trainer:
                 f"Val: recon_o={va['loss_recon_orig']:.4f} recon_f={va['loss_recon_flip']:.4f} recon_t={va['loss_recon_total']:.4f} "
                 f"con={va['loss_contrastive']:.4f} total={va['loss_total']:.4f} | time={dt:.1f}s"
             )
+
+        plot_training_curves(self.log_csv_path, self.plots_dir)
+        plot_loss_decomposition_curves(
+            self.loss_decomp_csv_path,
+            self.plots_dir,
+        )
 
     def load_checkpoint_weights(self, ckpt_path: Path) -> Dict[str, Any]:
         return load_checkpoint_weights(ckpt_path=ckpt_path, device=self.device, model=self.model, strict=True)
