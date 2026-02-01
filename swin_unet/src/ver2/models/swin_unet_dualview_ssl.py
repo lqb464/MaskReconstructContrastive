@@ -480,6 +480,7 @@ class SwinUNetDualViewSSL(nn.Module):
         plane_inject_method: str = "film",
         enable_saca: bool = True,
         saca_position: str = "after_stage1",
+        saca_positions: Optional[list[str]] = None,
         saca_gate_init: float = 0.0,
         saca_warmup_epochs: int = 0,
         enable_reconstruct: bool = True,
@@ -501,6 +502,10 @@ class SwinUNetDualViewSSL(nn.Module):
         # ---- SACA config ----
         self.enable_saca = enable_saca
         self.saca_position = saca_position
+        if saca_positions is not None:
+            self.saca_positions = list(saca_positions)
+        else:
+            self.saca_positions = [p.strip() for p in saca_position.split(",") if p.strip()]
         self.saca_warmup_epochs = saca_warmup_epochs
         self.current_epoch = 0  # safe default
         
@@ -554,26 +559,32 @@ class SwinUNetDualViewSSL(nn.Module):
         self.stage1_2 = BasicLayer(dim=C1, depth=enc_depths[1], num_heads=num_heads[1], window_size=window_size)
 
         # ---- SACA instances ----
-        if self.enable_saca:
-            self.saca_c0 = SACA(
-                dim=C0,
-                window_size=window_size,
-                num_heads=num_heads[0],
-                mlp_ratio=4.0,
-                gate_init=saca_gate_init,
-            )
+        self.saca_modules = nn.ModuleDict()
+        if self.enable_saca and self.saca_positions:
+            def _get_dim_for_saca_position(pos: str) -> int:
+                if pos in {"after_patch_embed", "after_stage0"}:
+                    return C0
+                if pos in {"after_merge0", "after_stage1"}:
+                    return C1
+                raise ValueError(f"Unknown SACA position: {pos}")
 
-            self.saca_c1 = SACA(
-                dim=C1,
-                window_size=window_size,
-                num_heads=num_heads[1],
-                mlp_ratio=4.0,
-                gate_init=saca_gate_init,
-            )
-            
-        else:
-            self.saca_c0 = None 
-            self.saca_c1 = None 
+            def _get_heads_for_saca_position(pos: str) -> int:
+                if pos in {"after_patch_embed", "after_stage0"}:
+                    return num_heads[0]
+                if pos in {"after_merge0", "after_stage1"}:
+                    return num_heads[1]
+                raise ValueError(f"Unknown SACA position: {pos}")
+
+            for pos in self.saca_positions:
+                dim = _get_dim_for_saca_position(pos)
+                heads = _get_heads_for_saca_position(pos)
+                self.saca_modules[pos] = SACA(
+                    dim=dim,
+                    window_size=window_size,
+                    num_heads=heads,
+                    mlp_ratio=4.0,
+                    gate_init=saca_gate_init,
+                )
 
         # ---- Shared trunk ----
         if self._need_stage2:
@@ -725,6 +736,7 @@ class SwinUNetDualViewSSL(nn.Module):
             "stage0_2",
             "merge0_2",
             "stage1_2",
+            "saca_modules",
             "saca_c0",
             "saca_c1",
             "merge1",
@@ -762,8 +774,28 @@ class SwinUNetDualViewSSL(nn.Module):
             if getattr(self, "proj_c3", None) is not None:
                 self.proj = self.proj_c3
 
+    def load_state_dict(self, state_dict, strict: bool = True):
+        if (
+            not any(k.startswith("saca_modules.") for k in state_dict)
+            and (any(k.startswith("saca_c0.") for k in state_dict) or any(k.startswith("saca_c1.") for k in state_dict))
+            and len(self.saca_modules) == 1
+        ):
+            only_pos = next(iter(self.saca_modules.keys()))
+            legacy_prefix = "saca_c0." if only_pos in {"after_patch_embed", "after_stage0"} else "saca_c1."
+            remapped = {}
+            for k, v in state_dict.items():
+                if k.startswith(legacy_prefix):
+                    new_key = f"saca_modules.{only_pos}." + k[len(legacy_prefix):]
+                    remapped[new_key] = v
+                elif k.startswith("saca_c0.") or k.startswith("saca_c1."):
+                    continue
+                else:
+                    remapped[k] = v
+            state_dict = remapped  # compatibility with legacy saca_c0/saca_c1 checkpoints
+        return super().load_state_dict(state_dict, strict=strict)
 
-    def get_saca_debug_info(self) -> Dict[str, float]:
+
+    def get_saca_debug_info(self) -> Dict[str, object]:
         """
         Lightweight debug info for logging.
         Safe to call every epoch.
@@ -773,13 +805,14 @@ class SwinUNetDualViewSSL(nn.Module):
         info = {
             "saca_enable": bool(self.enable_saca),
             "saca_position": self.saca_position if self.enable_saca else "disabled",
+            "saca_positions": list(self.saca_positions) if self.enable_saca else [],
             "saca_warmup_epochs": float(self.saca_warmup_epochs),
             "current_epoch": float(self.current_epoch),
         }
 
         if self.enable_saca:
-            info["saca_gate_c0"] = float(self.saca_c0.gate.detach().cpu())
-            info["saca_gate_c1"] = float(self.saca_c1.gate.detach().cpu())
+            for pos, mod in self.saca_modules.items():
+                info[f"saca_gate_{pos}"] = float(mod.gate.detach().cpu())
         return info
 
     
@@ -788,10 +821,12 @@ class SwinUNetDualViewSSL(nn.Module):
             return
 
         valid_positions = {"after_patch_embed", "after_stage0", "after_merge0", "after_stage1"}
-        if self.saca_position not in valid_positions:
-            raise ValueError(
-                f"saca_position must be one of {valid_positions}, got {self.saca_position}"
-            )
+        if self.saca_positions:
+            invalid = [p for p in self.saca_positions if p not in valid_positions]
+            if invalid:
+                raise ValueError(
+                    f"saca_positions must be subset of {valid_positions}, got {invalid}"
+                )
 
         if C0 % num_heads[0] != 0:
             raise ValueError(f"C0 ({C0}) must be divisible by num_heads[0] ({num_heads[0]})")
@@ -811,17 +846,14 @@ class SwinUNetDualViewSSL(nn.Module):
         if not self.enable_saca:
             return f1, f2
 
-        if point != self.saca_position:
+        if point not in self.saca_modules:
             return f1, f2
 
         if self.current_epoch < self.saca_warmup_epochs:
             return f1, f2
 
-        if point in {"after_patch_embed", "after_stage0"}:
-            return self.saca_c0(f1, f2)
-
-        # after_merge0 or after_stage1
-        return self.saca_c1(f1, f2)
+        saca = self.saca_modules[point]
+        return saca(f1, f2)
 
     @staticmethod
     def _pool_hw(x_nhwc: torch.Tensor) -> torch.Tensor:
@@ -876,7 +908,7 @@ class SwinUNetDualViewSSL(nn.Module):
         decoder_branch_v2 = [self.up1_v2, self.up0_v2, self.final_up_v2]
         recon_heads = [self.recon_head_v1, self.recon_head_v2]
 
-        saca = [self.saca_c0, self.saca_c1]
+        saca = list(self.saca_modules.values())
 
         def _count(mods) -> int:
             mods = [m for m in mods if m is not None]

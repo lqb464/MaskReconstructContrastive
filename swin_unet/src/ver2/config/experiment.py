@@ -66,6 +66,7 @@ class ModelConfig:
     plane_inject_method: str = "film"  # "film" or "add"
     enable_saca: bool = False
     saca_position: str = "after_stage1" # after_patch_embed | after_stage0 | after_merge0 | after_stage1
+    saca_positions: list[str] = field(default_factory=list)
     saca_gate_init: float = 0.0 
     saca_warmup_epochs: int = 0 
     
@@ -176,7 +177,7 @@ class ExperimentConfig:
     @classmethod
     def from_args(cls, args: argparse.Namespace) -> "ExperimentConfig":
         """Create config from argparse namespace"""
-        return cls(
+        cfg = cls(
             model=ModelConfig(
                 in_ch=args.in_ch,
                 patch_size=args.patch_size,
@@ -192,6 +193,7 @@ class ExperimentConfig:
                 plane_inject_method=args.plane_inject_method,
                 enable_saca=args.enable_saca,
                 saca_position=args.saca_position,
+                saca_positions=[],
                 saca_gate_init=args.saca_gate_init,
                 saca_warmup_epochs=args.saca_warmup_epochs,
             ),
@@ -265,6 +267,23 @@ class ExperimentConfig:
                 vicreg_target_std=args.vicreg_target_std,
             )
         )
+        valid_positions = {"after_patch_embed", "after_stage0", "after_merge0", "after_stage1"}
+        if args.saca_positions:
+            positions = [p.strip() for p in args.saca_positions.split(",") if p.strip()]
+            cfg.model.saca_positions = positions
+            if positions:
+                cfg.model.saca_position = ",".join(positions)
+        elif args.saca_position:
+            cfg.model.saca_positions = [args.saca_position]
+        else:
+            cfg.model.saca_positions = []
+
+        invalid = [p for p in cfg.model.saca_positions if p not in valid_positions]
+        if invalid:
+            raise ValueError(
+                f"saca_positions must be subset of {valid_positions}, got {invalid}"
+            )
+        return cfg
 
 
 # -------------------------
@@ -328,6 +347,7 @@ def build_argparser() -> argparse.ArgumentParser:
     # SACA 
     p.add_argument("--enable_saca", action="store_true")
     p.add_argument("--saca_position", type=str, default="after_stage1", choices=["after_patch_embed", "after_stage0", "after_merge0", "after_stage1"])
+    p.add_argument("--saca_positions", type=str, default="")
     p.add_argument("--saca_gate_init", type=float, default=0.0)
     p.add_argument("--saca_warmup_epochs", type=int, default=0)
 
