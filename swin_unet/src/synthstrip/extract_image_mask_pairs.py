@@ -158,6 +158,7 @@ def visualize_pairs(image_slices, mask_slices, direction, indices):
 
     for i, (img, mask, idx) in enumerate(zip(image_slices, mask_slices, indices)):
         fig, axes = plt.subplots(1, 2, figsize=(8, 4))
+        print(fig)
         axes[0].imshow(img, cmap="gray")
         axes[0].set_title(f"{direction} {int(idx)} image")
         axes[0].axis("off")
