@@ -257,7 +257,7 @@ class Trainer:
 
     def train_one_epoch(self, loader, epoch: int) -> Dict[str, float]:
         self.model.train()
-        meter = MetricsAccumulator()
+        meter = MetricsAccumulator()  # optimized to avoid per-batch .item() and scalar tensor allocations
 
         loss_recon_orig_sum = torch.zeros((), device=self.device)
         loss_recon_flip_sum = torch.zeros((), device=self.device)

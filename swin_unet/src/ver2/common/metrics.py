@@ -49,11 +49,11 @@ class MetricsAccumulator:
         self.unmask_num = None
         self.unmask_den = None
         self.total_num = None
-        self.total_den = None
+        self.total_den = 0
         
         # SSIM
         self.ssim_sum = None
-        self.img_count = None
+        self.img_count = 0
 
     def _init_accumulators(self, device: torch.device, dtype: torch.dtype):
         def _z():
@@ -63,9 +63,7 @@ class MetricsAccumulator:
         self.unmask_num = _z()
         self.unmask_den = _z()
         self.total_num = _z()
-        self.total_den = _z()
         self.ssim_sum = _z()
-        self.img_count = _z()
     
     def update(
         self, 
@@ -91,28 +89,30 @@ class MetricsAccumulator:
         self.unmask_num += (diff * um).sum()
         self.unmask_den += um.sum()
         self.total_num += diff.sum()
-        self.total_den += diff.new_tensor(diff.numel())
+        self.total_den += diff.numel()
         
         if ssim_sum is not None:
             if torch.is_tensor(ssim_sum):
                 ssim_val = ssim_sum.detach()
-                ssim_val = ssim_val.to(device=self.ssim_sum.device, dtype=self.ssim_sum.dtype)
+                if ssim_val.device != self.ssim_sum.device or ssim_val.dtype != self.ssim_sum.dtype:
+                    ssim_val = ssim_val.to(device=self.ssim_sum.device, dtype=self.ssim_sum.dtype)
             else:
                 ssim_val = torch.as_tensor(ssim_sum, device=self.ssim_sum.device, dtype=self.ssim_sum.dtype)
             self.ssim_sum += ssim_val
-            self.img_count += diff.new_tensor(diff.size(0))
+            self.img_count += int(diff.size(0))
     
     def compute(self) -> ReconstructionMetrics:
         """Compute final metrics from accumulated values"""
         if self.mask_num is None:
             return ReconstructionMetrics()
         one = self.mask_den.new_tensor(1.0)
-        one_img = self.img_count.new_tensor(1.0)
+        total_den = max(self.total_den, 1)
+        img_count = max(self.img_count, 1)
         return ReconstructionMetrics(
             masked_l1=(self.mask_num / torch.maximum(self.mask_den, one)).item(),
             unmasked_l1=(self.unmask_num / torch.maximum(self.unmask_den, one)).item(),
-            total_l1=(self.total_num / torch.maximum(self.total_den, one)).item(),
-            ssim=(self.ssim_sum / torch.maximum(self.img_count, one_img)).item(),
+            total_l1=(self.total_num / float(total_den)).item(),
+            ssim=(self.ssim_sum / float(img_count)).item(),
         )
 
 
