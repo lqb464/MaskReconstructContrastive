@@ -153,12 +153,14 @@ def write_png_slices(image_slices, mask_slices, direction, output_dir, write_pai
             imageio.imwrite(pair_path, combined)
 
 
-def visualize_pairs(image_slices, mask_slices, direction, indices):
+def visualize_pairs(image_slices, mask_slices, direction, indices, output_dir):
     import matplotlib.pyplot as plt
+
+    preview_dir = os.path.join(output_dir, "preview")
+    os.makedirs(preview_dir, exist_ok=True)
 
     for i, (img, mask, idx) in enumerate(zip(image_slices, mask_slices, indices)):
         fig, axes = plt.subplots(1, 2, figsize=(8, 4))
-        print(fig)
         axes[0].imshow(img, cmap="gray")
         axes[0].set_title(f"{direction} {int(idx)} image")
         axes[0].axis("off")
@@ -168,6 +170,9 @@ def visualize_pairs(image_slices, mask_slices, direction, indices):
         axes[1].axis("off")
 
         fig.tight_layout()
+        preview_path = os.path.join(preview_dir, f"{direction}_{i:03d}.png")
+        fig.savefig(preview_path, dpi=150)
+        print(f"Saved preview: {preview_path}")
         plt.show(block=True)
         plt.close(fig)
 
@@ -239,7 +244,7 @@ def run_extract(input_dir, direction, output_dir, n_slices, visualize=False):
     write_png_slices(image_slices_uint8, mask_slices_uint8, direction, output_dir, write_pairs=True)
 
     if visualize:
-        visualize_pairs(image_slices_uint8, mask_slices_uint8, direction, indices)
+        visualize_pairs(image_slices_uint8, mask_slices_uint8, direction, indices, output_dir)
 
 
 def build_arg_parser():
