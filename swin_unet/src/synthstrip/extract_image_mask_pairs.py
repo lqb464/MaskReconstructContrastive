@@ -4,177 +4,42 @@ import os
 import SimpleITK as sitk
 import imageio
 import numpy as np
-from scipy.ndimage import gaussian_filter1d
+
+from extract_MRI_2d_image import (
+    extract_brain_slices_axial,
+    extract_brain_slices_coronal,
+    load_nifti,
+    resample_isotropic,
+)
 
 sitk.ProcessObject_SetGlobalWarningDisplay(False)
-
 
 SUPPORTED_DIRECTIONS = {"axial", "coronal"}
 
 
-def orient_to_rai(itk_image):
-    orienter = sitk.DICOMOrientImageFilter()
-    orienter.SetDesiredCoordinateOrientation("RAI")
-    return orienter.Execute(itk_image)
-
-
-def load_nifti(nifti_path):
-    img = sitk.ReadImage(nifti_path)
-
-    if img.GetDimension() == 4:
-        img = img[:, :, :, 0]
-
-    return orient_to_rai(img)
-
-
-def build_reference_image(itk_image, spacing=(1.0, 1.0, 1.0)):
+def resample_isotropic_mask(itk_image, spacing=(1.0, 1.0, 1.0), reference=None):
     original_spacing = itk_image.GetSpacing()
     original_size = itk_image.GetSize()
 
-    new_size = [
-        int(round(original_size[i] * original_spacing[i] / spacing[i]))
-        for i in range(3)
-    ]
+    if reference is None:
+        new_size = [
+            int(round(original_size[i] * original_spacing[i] / spacing[i]))
+            for i in range(3)
+        ]
+        reference = sitk.Image(new_size, itk_image.GetPixelID())
+        reference.SetSpacing(spacing)
+        reference.SetOrigin(itk_image.GetOrigin())
+        reference.SetDirection(itk_image.GetDirection())
 
-    reference = sitk.Image(new_size, itk_image.GetPixelID())
-    reference.SetSpacing(spacing)
-    reference.SetOrigin(itk_image.GetOrigin())
-    reference.SetDirection(itk_image.GetDirection())
-
-    return reference
-
-
-def resample_with_reference(itk_image, reference, interpolator):
-    return sitk.Resample(
+    resampled = sitk.Resample(
         itk_image,
         reference,
         sitk.Transform(),
-        interpolator,
+        sitk.sitkNearestNeighbor,
         0,
         itk_image.GetPixelID(),
     )
-
-
-def extract_axial_indices(volume_np, n_slices=50):
-    z_dim = volume_np.shape[0]
-
-    energy = volume_np.reshape(z_dim, -1).mean(axis=1)
-    energy_smooth = gaussian_filter1d(energy, sigma=5)
-
-    threshold = energy_smooth.min() + 0.3 * (energy_smooth.max() - energy_smooth.min())
-    brain_mask = energy_smooth > threshold
-
-    idx = np.where(brain_mask)[0]
-    if len(idx) == 0:
-        start, end = int(z_dim * 0.25), int(z_dim * 0.65)
-    else:
-        start, end = idx[0], (idx[-1] - idx[0]) // 2 + idx[0]
-
-    return np.linspace(start, end, n_slices, dtype=int)
-
-
-def extract_coronal_indices(volume_np, n_slices=50):
-    h_dim = volume_np.shape[1]
-
-    energy = volume_np.mean(axis=(0, 2))
-    energy_smooth = gaussian_filter1d(energy, sigma=5)
-
-    threshold = energy_smooth.min() + 0.4 * (energy_smooth.max() - energy_smooth.min())
-    brain_mask = energy_smooth > threshold
-
-    idx = np.where(brain_mask)[0]
-    if len(idx) == 0:
-        start, end = int(h_dim * 0.25), int(h_dim * 0.75)
-    else:
-        start, end = idx[0], idx[-1]
-
-    return np.linspace(start, end, n_slices, dtype=int)
-
-
-def select_slice_indices(volume_np, direction, n_slices):
-    if direction == "axial":
-        return extract_axial_indices(volume_np, n_slices)
-    if direction == "coronal":
-        return extract_coronal_indices(volume_np, n_slices)
-    raise ValueError(f"Unsupported direction: {direction}")
-
-
-def normalize_image_slices(image_slices):
-    img_min = min(s.min() for s in image_slices)
-    img_max = max(s.max() for s in image_slices)
-    denom = (img_max - img_min) + 1e-5
-
-    normalized = []
-    for s in image_slices:
-        img = (s.astype(np.float32) - img_min) / denom
-        normalized.append((img * 255).astype(np.uint8))
-
-    return normalized
-
-
-def prepare_mask_slices(mask_slices):
-    prepared = []
-    for s in mask_slices:
-        mask_uint8 = (s > 0).astype(np.uint8) * 255
-        prepared.append(mask_uint8)
-    return prepared
-
-
-def extract_slices(volume_np, indices, direction):
-    if direction == "axial":
-        return [volume_np[int(i), :, :] for i in indices]
-    if direction == "coronal":
-        return [volume_np[:, int(i), :] for i in indices]
-    raise ValueError(f"Unsupported direction: {direction}")
-
-
-def write_png_slices(image_slices, mask_slices, direction, output_dir, write_pairs=True):
-    image_dir = os.path.join(output_dir, "image")
-    mask_dir = os.path.join(output_dir, "mask")
-    pairs_dir = os.path.join(output_dir, "pairs")
-
-    os.makedirs(image_dir, exist_ok=True)
-    os.makedirs(mask_dir, exist_ok=True)
-    if write_pairs:
-        os.makedirs(pairs_dir, exist_ok=True)
-
-    for i, (img, mask) in enumerate(zip(image_slices, mask_slices)):
-        image_path = os.path.join(image_dir, f"{direction}_{i:03d}.png")
-        mask_path = os.path.join(mask_dir, f"{direction}_{i:03d}.png")
-        imageio.imwrite(image_path, img)
-        imageio.imwrite(mask_path, mask)
-
-        if write_pairs:
-            if img.ndim == 2:
-                combined = np.concatenate([img, mask], axis=1)
-            else:
-                combined = np.concatenate([img, mask], axis=1)
-            pair_path = os.path.join(pairs_dir, f"{direction}_{i:03d}.png")
-            imageio.imwrite(pair_path, combined)
-
-
-def visualize_pairs(image_slices, mask_slices, direction, indices, output_dir):
-    import matplotlib.pyplot as plt
-
-    preview_dir = os.path.join(output_dir, "preview")
-    os.makedirs(preview_dir, exist_ok=True)
-
-    for i, (img, mask, idx) in enumerate(zip(image_slices, mask_slices, indices)):
-        fig, axes = plt.subplots(1, 2, figsize=(8, 4))
-        axes[0].imshow(img, cmap="gray")
-        axes[0].set_title(f"{direction} {int(idx)} image")
-        axes[0].axis("off")
-
-        axes[1].imshow(mask, cmap="gray")
-        axes[1].set_title(f"{direction} {int(idx)} mask")
-        axes[1].axis("off")
-
-        fig.tight_layout()
-        preview_path = os.path.join(preview_dir, f"{direction}_{i:03d}.png")
-        fig.savefig(preview_path, dpi=150)
-        print(f"Saved preview: {preview_path}")
-        plt.show(block=True)
-        plt.close(fig)
+    return resampled
 
 
 def find_required_files(input_dir):
@@ -204,6 +69,83 @@ def find_required_files(input_dir):
     return image_path, mask_path
 
 
+def build_image_slices(volume_np, direction, n_slices):
+    if direction == "axial":
+        slices, slice_indices, _, neck_slice_indices, _ = extract_brain_slices_axial(
+            volume_np, n_slices=n_slices
+        )
+        combined_indices = list(slice_indices) + list(neck_slice_indices)
+        return slices, combined_indices
+
+    if direction == "coronal":
+        slices, slice_indices, _ = extract_brain_slices_coronal(volume_np, n_slices=n_slices)
+        return slices, list(slice_indices)
+
+    raise ValueError(f"Unsupported direction: {direction}")
+
+
+def extract_mask_slices(volume_np, indices, direction):
+    if direction == "axial":
+        return [volume_np[int(i), :, :] for i in indices]
+    if direction == "coronal":
+        return [volume_np[:, int(i), :] for i in indices]
+    raise ValueError(f"Unsupported direction: {direction}")
+
+
+def normalize_image_slices(image_slices):
+    img_max = max([s.max() for s in image_slices])
+    img_min = min([s.min() for s in image_slices])
+
+    normalized = []
+    for s in image_slices:
+        img = s.astype(np.float32)
+        img = img - img_min
+        img = img / (img_max + 1e-5)
+        normalized.append((img * 255).astype(np.uint8))
+
+    return normalized
+
+
+def prepare_mask_slices(mask_slices):
+    prepared = []
+    for s in mask_slices:
+        mask_uint8 = (s > 0).astype(np.uint8) * 255
+        prepared.append(mask_uint8)
+    return prepared
+
+
+def save_png_slices(image_slices, mask_slices, direction, output_dir):
+    image_dir = os.path.join(output_dir, "image")
+    mask_dir = os.path.join(output_dir, "mask")
+
+    os.makedirs(image_dir, exist_ok=True)
+    os.makedirs(mask_dir, exist_ok=True)
+
+    for i, (img, mask) in enumerate(zip(image_slices, mask_slices)):
+        image_path = os.path.join(image_dir, f"{direction}_{i:03d}.png")
+        mask_path = os.path.join(mask_dir, f"{direction}_{i:03d}.png")
+        imageio.imwrite(image_path, img)
+        imageio.imwrite(mask_path, mask)
+
+
+def visualize_pairs(image_slices, mask_slices, direction):
+    import matplotlib.pyplot as plt
+
+    for i, (img, mask) in enumerate(zip(image_slices, mask_slices)):
+        fig, axes = plt.subplots(1, 2, figsize=(8, 4))
+        axes[0].imshow(img, cmap="gray")
+        axes[0].set_title(f"{direction} {i:03d} image")
+        axes[0].axis("off")
+
+        axes[1].imshow(mask, cmap="gray")
+        axes[1].set_title(f"{direction} {i:03d} mask")
+        axes[1].axis("off")
+
+        fig.tight_layout()
+        plt.show(block=True)
+        plt.close(fig)
+
+
 def run_extract(input_dir, direction, output_dir, n_slices, visualize=False):
     if direction not in SUPPORTED_DIRECTIONS:
         raise ValueError(f"direction must be one of {sorted(SUPPORTED_DIRECTIONS)}")
@@ -220,10 +162,10 @@ def run_extract(input_dir, direction, output_dir, n_slices, visualize=False):
     image_itk = load_nifti(image_path)
     mask_itk = load_nifti(mask_path)
 
-    reference = build_reference_image(image_itk, spacing=(1.0, 1.0, 1.0))
-
-    image_resampled = resample_with_reference(image_itk, reference, sitk.sitkLinear)
-    mask_resampled = resample_with_reference(mask_itk, reference, sitk.sitkNearestNeighbor)
+    image_resampled = resample_isotropic(image_itk, spacing=(1.0, 1.0, 1.0))
+    mask_resampled = resample_isotropic_mask(
+        mask_itk, spacing=(1.0, 1.0, 1.0), reference=image_resampled
+    )
 
     image_np = sitk.GetArrayFromImage(image_resampled)
     mask_np = sitk.GetArrayFromImage(mask_resampled)
@@ -233,18 +175,16 @@ def run_extract(input_dir, direction, output_dir, n_slices, visualize=False):
             f"Shape mismatch after resample: image {image_np.shape} vs mask {mask_np.shape}"
         )
 
-    indices = select_slice_indices(image_np, direction, n_slices)
-
-    image_slices = extract_slices(image_np, indices, direction)
-    mask_slices = extract_slices(mask_np, indices, direction)
+    image_slices, slice_indices = build_image_slices(image_np, direction, n_slices)
+    mask_slices = extract_mask_slices(mask_np, slice_indices, direction)
 
     image_slices_uint8 = normalize_image_slices(image_slices)
     mask_slices_uint8 = prepare_mask_slices(mask_slices)
 
-    write_png_slices(image_slices_uint8, mask_slices_uint8, direction, output_dir, write_pairs=True)
+    save_png_slices(image_slices_uint8, mask_slices_uint8, direction, output_dir)
 
     if visualize:
-        visualize_pairs(image_slices_uint8, mask_slices_uint8, direction, indices, output_dir)
+        visualize_pairs(image_slices_uint8, mask_slices_uint8, direction)
 
 
 def build_arg_parser():
