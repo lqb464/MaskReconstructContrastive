@@ -271,7 +271,7 @@ class Trainer:
         pbar = tqdm(loader, desc=f"train {epoch}", leave=False)
         lambda_contrast_eff = self._lambda_contrastive_eff(epoch)
 
-        for step, batch in enumerate(pbar):
+        for batch in pbar:
             x, plane, pixel_mask = prepare_inputs(batch, device=self.device, cfg_mask=self.cfg.mask)
 
             self.opt.zero_grad(set_to_none=True)
@@ -646,7 +646,7 @@ class Trainer:
             self.maybe_tsne(val_loader, epoch)
 
             if va["loss"] < best_val:
-                best_val = va["loss"]
+                best_val = va["loss"]  
                 self.save_checkpoint(path=best_path, epoch=epoch, best_val=best_val)
 
             print(

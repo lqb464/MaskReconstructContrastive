@@ -38,7 +38,7 @@ def main():
     set_seed(cfg.training.seed)
     device = get_device(cfg.training.cpu)
 
-    train_loader, val_loader, _, full_ds = create_dataloaders_from_folder(
+    train_loader, val_loader, _, _ = create_dataloaders_from_folder(
         data_root=cfg.data.data_root,
         train_mod=cfg.data.train_mod,
         image_size=cfg.data.image_size,
@@ -56,7 +56,6 @@ def main():
         split_test=cfg.data.split_test,
     )
 
-    print(f"Dataset size: {len(full_ds)}")
     print(f"Train batches: {len(train_loader)} | Val batches: {len(val_loader)}")
 
     trainer = Trainer(cfg, device)
