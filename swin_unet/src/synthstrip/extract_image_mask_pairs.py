@@ -71,14 +71,16 @@ def find_required_files(input_dir):
 
 def build_image_slices(volume_np, direction, n_slices):
     if direction == "axial":
-        slices, slice_indices, _, neck_slice_indices, _ = extract_brain_slices_axial(
+        _, slice_indices, _, neck_slice_indices, _ = extract_brain_slices_axial(
             volume_np, n_slices=n_slices
         )
         combined_indices = list(slice_indices) + list(neck_slice_indices)
+        slices = [volume_np[int(i), :, :] for i in combined_indices]
         return slices, combined_indices
 
     if direction == "coronal":
-        slices, slice_indices, _ = extract_brain_slices_coronal(volume_np, n_slices=n_slices)
+        _, slice_indices, _ = extract_brain_slices_coronal(volume_np, n_slices=n_slices)
+        slices = [volume_np[:, int(i), :] for i in slice_indices]
         return slices, list(slice_indices)
 
     raise ValueError(f"Unsupported direction: {direction}")
