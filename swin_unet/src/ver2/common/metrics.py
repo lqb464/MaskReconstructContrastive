@@ -71,7 +71,7 @@ class MetricsAccumulator:
         self, 
         diff: torch.Tensor, 
         mask: torch.Tensor,
-        ssim_sum: Optional[float] = None
+        ssim_sum: Optional[float | torch.Tensor] = None
     ):
         """
         Update accumulators with batch results
@@ -94,11 +94,12 @@ class MetricsAccumulator:
         self.total_den += diff.new_tensor(diff.numel())
         
         if ssim_sum is not None:
-            if not torch.is_tensor(ssim_sum):
-                ssim_sum = torch.as_tensor(ssim_sum, device=self.ssim_sum.device, dtype=self.ssim_sum.dtype)
+            if torch.is_tensor(ssim_sum):
+                ssim_val = ssim_sum.detach()
+                ssim_val = ssim_val.to(device=self.ssim_sum.device, dtype=self.ssim_sum.dtype)
             else:
-                ssim_sum = ssim_sum.to(device=self.ssim_sum.device, dtype=self.ssim_sum.dtype)
-            self.ssim_sum += ssim_sum
+                ssim_val = torch.as_tensor(ssim_sum, device=self.ssim_sum.device, dtype=self.ssim_sum.dtype)
+            self.ssim_sum += ssim_val
             self.img_count += diff.new_tensor(diff.size(0))
     
     def compute(self) -> ReconstructionMetrics:

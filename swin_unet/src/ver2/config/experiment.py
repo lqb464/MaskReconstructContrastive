@@ -41,7 +41,7 @@ class MaskConfig:
 
 @dataclass
 class ModelConfig:
-    """Model architecture configuration (Phase 1: SwinUNet dual-view SSL)"""
+    """Model architecture configuration (SwinUNet dual-view SSL)"""
     in_ch: int = 1
 
     # Swin/UNet knobs (Phase 1 implementation)
@@ -144,6 +144,9 @@ class LoggingConfig:
     run_name: str = ""
     ckpt_dir: str = ""
     vis_every: int = 20
+    save_latest_every: int = 1
+    save_best_after_epoch: int = 0
+    save_best_every: int = 20
 
     # t-SNE settings
     enable_tsne: bool = False
@@ -252,6 +255,9 @@ class ExperimentConfig:
                 run_name=args.run_name,
                 ckpt_dir=args.ckpt_dir,
                 vis_every=args.vis_every,
+                save_latest_every=args.save_latest_every,
+                save_best_after_epoch=args.save_best_after_epoch,
+                save_best_every=args.save_best_every,
                 enable_tsne=args.enable_tsne,
                 tsne_only_if_labeled=args.tsne_only_if_labeled,
                 tsne_every=args.tsne_every,
@@ -409,6 +415,9 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--run-name", type=str, default="")
     p.add_argument("--ckpt-dir", type=str, default="")
     p.add_argument("--vis-every", type=int, default=20)
+    p.add_argument("--save-latest-every", type=int, default=1, help='Save "latest" checkpoint every N epochs')
+    p.add_argument("--save-best-after-epoch", type=int, default=0, help='Start saving "best" checkpoints from this epoch')
+    p.add_argument("--save-best-every", type=int, default=1, help="Only evaluate best saving every N epochs")
     
     # Contrast Loss options
     p.add_argument("--contrastive_loss_type", type=str, default="infonce", choices=["infonce", "vicreg"])

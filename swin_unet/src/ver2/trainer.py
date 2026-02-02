@@ -259,11 +259,11 @@ class Trainer:
         self.model.train()
         meter = MetricsAccumulator()
 
-        loss_recon_orig_sum = 0.0
-        loss_recon_flip_sum = 0.0
-        loss_recon_total_sum = 0.0
-        loss_con_sum = 0.0
-        loss_total_sum = 0.0
+        loss_recon_orig_sum = torch.zeros((), device=self.device)
+        loss_recon_flip_sum = torch.zeros((), device=self.device)
+        loss_recon_total_sum = torch.zeros((), device=self.device)
+        loss_con_sum = torch.zeros((), device=self.device)
+        loss_total_sum = torch.zeros((), device=self.device)
         loss_count = 0
         vars_mean_sum = 0.0
         vars_min_sum = 0.0
@@ -349,16 +349,11 @@ class Trainer:
                         pixel_mask=pixel_mask,
                     )
 
-                l_recon_orig = float(loss_recon_orig.item())
-                l_recon_flip = float(loss_recon_flip.item())
-                l_recon_total = float(loss_recon_total.item())
-                l_con = float(loss_con.item())
-                l_total = float(loss_total.item())
-                loss_recon_orig_sum += l_recon_orig
-                loss_recon_flip_sum += l_recon_flip
-                loss_recon_total_sum += l_recon_total
-                loss_con_sum += l_con
-                loss_total_sum += l_total
+                loss_recon_orig_sum += loss_recon_orig.detach()
+                loss_recon_flip_sum += loss_recon_flip.detach()
+                loss_recon_total_sum += loss_recon_total.detach()
+                loss_con_sum += loss_con.detach()
+                loss_total_sum += loss_total.detach()
                 loss_count += 1
 
                 if self.cfg.training.enable_contrastive:
@@ -380,19 +375,32 @@ class Trainer:
 
         stats = meter.compute()
 
+        if loss_count:
+            loss_recon_orig_mean = (loss_recon_orig_sum / loss_count).item()
+            loss_recon_flip_mean = (loss_recon_flip_sum / loss_count).item()
+            loss_recon_total_mean = (loss_recon_total_sum / loss_count).item()
+            loss_con_mean = (loss_con_sum / loss_count).item()
+            loss_total_mean = (loss_total_sum / loss_count).item()
+        else:
+            loss_recon_orig_mean = 0.0
+            loss_recon_flip_mean = 0.0
+            loss_recon_total_mean = 0.0
+            loss_con_mean = 0.0
+            loss_total_mean = 0.0
+
         decomp = {
-            "loss_recon_orig": (loss_recon_orig_sum / loss_count) if loss_count else 0.0,
-            "loss_recon_flip": (loss_recon_flip_sum / loss_count) if loss_count else 0.0,
-            "loss_recon_total": (loss_recon_total_sum / loss_count) if loss_count else 0.0,
-            "loss_contrastive": (loss_con_sum / loss_count) if loss_count else 0.0,
-            "loss_total": (loss_total_sum / loss_count) if loss_count else 0.0,
+            "loss_recon_orig": loss_recon_orig_mean,
+            "loss_recon_flip": loss_recon_flip_mean,
+            "loss_recon_total": loss_recon_total_mean,
+            "loss_contrastive": loss_con_mean,
+            "loss_total": loss_total_mean,
         }
 
         self.loss_logger.append(epoch, "train", decomp)
 
         return {
-            "loss": (loss_total_sum / loss_count) if loss_count else 0.0,
-            "loss_contrast": (loss_con_sum / loss_count) if loss_count else 0.0,
+            "loss": loss_total_mean,
+            "loss_contrast": loss_con_mean,
             "var_mean": (vars_mean_sum / loss_count) if loss_count else 0.0,
             "var_min": (vars_min_sum / loss_count) if loss_count else 0.0,
             "recon_total": float(stats.total_l1),
@@ -409,11 +417,11 @@ class Trainer:
 
         lambda_contrast_eff = self._lambda_contrastive_eff(epoch)
 
-        loss_total_sum = 0.0
-        loss_recon_orig_sum = 0.0
-        loss_recon_flip_sum = 0.0
-        loss_recon_total_sum = 0.0
-        loss_con_sum = 0.0
+        loss_total_sum = torch.zeros((), device=self.device)
+        loss_recon_orig_sum = torch.zeros((), device=self.device)
+        loss_recon_flip_sum = torch.zeros((), device=self.device)
+        loss_recon_total_sum = torch.zeros((), device=self.device)
+        loss_con_sum = torch.zeros((), device=self.device)
         loss_count = 0
         vars_mean_sum = 0.0
         vars_min_sum = 0.0
@@ -489,16 +497,11 @@ class Trainer:
                 )
 
 
-            l_total = float(loss_total.item())
-            l_recon_orig = float(loss_recon_orig.item())
-            l_recon_flip = float(loss_recon_flip.item())
-            l_recon_total = float(loss_recon_total.item())
-            l_con = float(loss_con.item())
-            loss_total_sum += l_total
-            loss_recon_orig_sum += l_recon_orig
-            loss_recon_flip_sum += l_recon_flip
-            loss_recon_total_sum += l_recon_total
-            loss_con_sum += l_con
+            loss_total_sum += loss_total.detach()
+            loss_recon_orig_sum += loss_recon_orig.detach()
+            loss_recon_flip_sum += loss_recon_flip.detach()
+            loss_recon_total_sum += loss_recon_total.detach()
+            loss_con_sum += loss_con.detach()
             loss_count += 1
 
             if self.cfg.training.enable_contrastive:
@@ -511,19 +514,32 @@ class Trainer:
 
         stats = meter.compute()
 
+        if loss_count:
+            loss_recon_orig_mean = (loss_recon_orig_sum / loss_count).item()
+            loss_recon_flip_mean = (loss_recon_flip_sum / loss_count).item()
+            loss_recon_total_mean = (loss_recon_total_sum / loss_count).item()
+            loss_con_mean = (loss_con_sum / loss_count).item()
+            loss_total_mean = (loss_total_sum / loss_count).item()
+        else:
+            loss_recon_orig_mean = 0.0
+            loss_recon_flip_mean = 0.0
+            loss_recon_total_mean = 0.0
+            loss_con_mean = 0.0
+            loss_total_mean = 0.0
+
         decomp = {
-            "loss_recon_orig": (loss_recon_orig_sum / loss_count) if loss_count else 0.0,
-            "loss_recon_flip": (loss_recon_flip_sum / loss_count) if loss_count else 0.0,
-            "loss_recon_total": (loss_recon_total_sum / loss_count) if loss_count else 0.0,
-            "loss_contrastive": (loss_con_sum / loss_count) if loss_count else 0.0,
-            "loss_total": (loss_total_sum / loss_count) if loss_count else 0.0,
+            "loss_recon_orig": loss_recon_orig_mean,
+            "loss_recon_flip": loss_recon_flip_mean,
+            "loss_recon_total": loss_recon_total_mean,
+            "loss_contrastive": loss_con_mean,
+            "loss_total": loss_total_mean,
         }
 
         self.loss_logger.append(epoch, "val", decomp)
 
         return {
-            "loss": (loss_total_sum / loss_count) if loss_count else 0.0,
-            "loss_contrast": (loss_con_sum / loss_count) if loss_count else 0.0,
+            "loss": loss_total_mean,
+            "loss_contrast": loss_con_mean,
             "var_mean": (vars_mean_sum / loss_count) if loss_count else 0.0,
             "var_min": (vars_min_sum / loss_count) if loss_count else 0.0,
             "recon_total": float(stats.total_l1),
@@ -612,6 +628,14 @@ class Trainer:
         best_val = float("inf")
 
         best_path = self.ckpt_dir / "best.pt"
+        latest_path = self.ckpt_dir / "latest.pt"
+        save_latest_every = int(getattr(self.cfg.logging, "save_latest_every", 1))
+        save_best_after_epoch = int(getattr(self.cfg.logging, "save_best_after_epoch", 0))
+        save_best_every = int(getattr(self.cfg.logging, "save_best_every", 1))
+        if save_latest_every <= 0:
+            save_latest_every = 1
+        if save_best_every <= 0:
+            save_best_every = 1
 
         for epoch in range(1, self.cfg.training.epochs + 1):
             
@@ -645,9 +669,13 @@ class Trainer:
             self.maybe_visualize(val_loader, epoch, tag="val")
             self.maybe_tsne(val_loader, epoch)
 
-            if va["loss"] < best_val:
-                best_val = va["loss"]  
-                self.save_checkpoint(path=best_path, epoch=epoch, best_val=best_val)
+            if epoch >= save_best_after_epoch and (epoch % save_best_every == 0):
+                if va["loss"] < best_val:
+                    best_val = va["loss"]
+                    self.save_checkpoint(path=best_path, epoch=epoch, best_val=best_val)
+
+            if (epoch % save_latest_every == 0) or (epoch == self.cfg.training.epochs):
+                self.save_checkpoint(path=latest_path, epoch=epoch, best_val=best_val)
 
             print(
                 f"[epoch {epoch:03d}] \n"
