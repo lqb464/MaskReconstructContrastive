@@ -5,12 +5,7 @@ import SimpleITK as sitk
 import imageio
 import numpy as np
 
-from extract_MRI_2d_image import (
-    extract_brain_slices_axial,
-    extract_brain_slices_coronal,
-    load_nifti,
-    resample_isotropic,
-)
+from extract_MRI_2d_image import load_nifti, resample_isotropic
 
 sitk.ProcessObject_SetGlobalWarningDisplay(False)
 
@@ -69,20 +64,30 @@ def find_required_files(input_dir):
     return image_path, mask_path
 
 
-def build_image_slices(volume_np, direction, n_slices):
+def build_uniform_slice_indices(volume_np, direction, n_slices):
+    if n_slices <= 0:
+        raise ValueError("n_slices must be a positive integer")
+
     if direction == "axial":
-        _, slice_indices, _, neck_slice_indices, _ = extract_brain_slices_axial(
-            volume_np, n_slices=n_slices
+        axis_len = volume_np.shape[0]
+    elif direction == "coronal":
+        axis_len = volume_np.shape[1]
+    else:
+        raise ValueError(f"Unsupported direction: {direction}")
+
+    if n_slices > axis_len:
+        raise ValueError(
+            f"n_slices ({n_slices}) exceeds available slices ({axis_len})"
         )
-        combined_indices = list(slice_indices) + list(neck_slice_indices)
-        slices = [volume_np[int(i), :, :] for i in combined_indices]
-        return slices, combined_indices
 
+    return np.linspace(0, axis_len - 1, n_slices, dtype=int).tolist()
+
+
+def build_image_slices(volume_np, indices, direction):
+    if direction == "axial":
+        return [volume_np[int(i), :, :] for i in indices]
     if direction == "coronal":
-        _, slice_indices, _ = extract_brain_slices_coronal(volume_np, n_slices=n_slices)
-        slices = [volume_np[:, int(i), :] for i in slice_indices]
-        return slices, list(slice_indices)
-
+        return [volume_np[:, int(i), :] for i in indices]
     raise ValueError(f"Unsupported direction: {direction}")
 
 
@@ -95,14 +100,13 @@ def extract_mask_slices(volume_np, indices, direction):
 
 
 def normalize_image_slices(image_slices):
-    img_max = max([s.max() for s in image_slices])
-    img_min = min([s.min() for s in image_slices])
-
     normalized = []
     for s in image_slices:
         img = s.astype(np.float32)
-        img = img - img_min
-        img = img / (img_max + 1e-5)
+        img_min = img.min()
+        img_max = img.max()
+        denom = (img_max - img_min) + 1e-5
+        img = (img - img_min) / denom
         normalized.append((img * 255).astype(np.uint8))
 
     return normalized
@@ -116,31 +120,31 @@ def prepare_mask_slices(mask_slices):
     return prepared
 
 
-def save_png_slices(image_slices, mask_slices, direction, output_dir):
+def save_png_slices(image_slices, mask_slices, direction, indices, output_dir):
     image_dir = os.path.join(output_dir, "image")
     mask_dir = os.path.join(output_dir, "mask")
 
     os.makedirs(image_dir, exist_ok=True)
     os.makedirs(mask_dir, exist_ok=True)
 
-    for i, (img, mask) in enumerate(zip(image_slices, mask_slices)):
-        image_path = os.path.join(image_dir, f"{direction}_{i:03d}.png")
-        mask_path = os.path.join(mask_dir, f"{direction}_{i:03d}.png")
+    for img, mask, idx in zip(image_slices, mask_slices, indices):
+        image_path = os.path.join(image_dir, f"{direction}_{int(idx):03d}.png")
+        mask_path = os.path.join(mask_dir, f"{direction}_{int(idx):03d}.png")
         imageio.imwrite(image_path, img)
         imageio.imwrite(mask_path, mask)
 
 
-def visualize_pairs(image_slices, mask_slices, direction):
+def visualize_pairs(image_slices, mask_slices, indices, direction):
     import matplotlib.pyplot as plt
 
-    for i, (img, mask) in enumerate(zip(image_slices, mask_slices)):
+    for img, mask, idx in zip(image_slices, mask_slices, indices):
         fig, axes = plt.subplots(1, 2, figsize=(8, 4))
         axes[0].imshow(img, cmap="gray")
-        axes[0].set_title(f"{direction} {i:03d} image")
+        axes[0].set_title(f"{direction} {int(idx):03d} image")
         axes[0].axis("off")
 
         axes[1].imshow(mask, cmap="gray")
-        axes[1].set_title(f"{direction} {i:03d} mask")
+        axes[1].set_title(f"{direction} {int(idx):03d} mask")
         axes[1].axis("off")
 
         fig.tight_layout()
@@ -177,16 +181,19 @@ def run_extract(input_dir, direction, output_dir, n_slices, visualize=False):
             f"Shape mismatch after resample: image {image_np.shape} vs mask {mask_np.shape}"
         )
 
-    image_slices, slice_indices = build_image_slices(image_np, direction, n_slices)
+    slice_indices = build_uniform_slice_indices(image_np, direction, n_slices)
+    image_slices = build_image_slices(image_np, slice_indices, direction)
     mask_slices = extract_mask_slices(mask_np, slice_indices, direction)
 
     image_slices_uint8 = normalize_image_slices(image_slices)
     mask_slices_uint8 = prepare_mask_slices(mask_slices)
 
-    save_png_slices(image_slices_uint8, mask_slices_uint8, direction, output_dir)
+    save_png_slices(
+        image_slices_uint8, mask_slices_uint8, direction, slice_indices, output_dir
+    )
 
     if visualize:
-        visualize_pairs(image_slices_uint8, mask_slices_uint8, direction)
+        visualize_pairs(image_slices_uint8, mask_slices_uint8, slice_indices, direction)
 
 
 def build_arg_parser():
