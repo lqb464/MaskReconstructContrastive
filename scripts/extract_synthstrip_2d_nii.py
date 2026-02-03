@@ -14,6 +14,17 @@ sitk.ProcessObject_SetGlobalWarningDisplay(False)
 MASK_KEYWORDS = ("mask", "seg", "label")
 MRI_KEYWORDS = ("t1", "img", "image", "mri")
 
+INTEGER_PIXEL_IDS = {
+    sitk.sitkUInt8,
+    sitk.sitkInt8,
+    sitk.sitkUInt16,
+    sitk.sitkInt16,
+    sitk.sitkUInt32,
+    sitk.sitkInt32,
+    sitk.sitkUInt64,
+    sitk.sitkInt64,
+}
+
 
 def load_nifti(nifti_path: str, cast_float: bool = False, desired_orientation: str = "RAI") -> sitk.Image:
     """
@@ -63,7 +74,7 @@ def _few_unique_mask(path: Path, max_unique: int = 16) -> bool:
     - <= max_unique non-zero unique values
     """
     img = sitk.ReadImage(str(path))
-    if sitk.IsIntegerPixelType(img):
+    if img.GetPixelID() in INTEGER_PIXEL_IDS:
         return True
 
     arr = sitk.GetArrayFromImage(img)
@@ -281,7 +292,7 @@ def process_subject(
             )
             mri_img, mask_img = mri_iso, mask_iso
 
-        if not sitk.IsIntegerPixelType(mask_img):
+        if mask_img.GetPixelID() not in INTEGER_PIXEL_IDS:
             mask_img = sitk.Cast(mask_img, sitk.sitkUInt8)
 
         volume_np = sitk.GetArrayFromImage(mri_img)
