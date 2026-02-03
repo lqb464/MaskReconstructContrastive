@@ -341,8 +341,14 @@ def main():
     output_dir = Path(args.output_dir)
 
     subject_dirs = [p for p in data_root.iterdir() if p.is_dir()]
+
+    # Allow the user to pass a single subject directory directly (contains NIfTI files, no subfolders)
     if not subject_dirs:
-        raise SystemExit(f"No subject folders found in {data_root}")
+        nifti_files = list(data_root.glob("*.nii")) + list(data_root.glob("*.nii.gz"))
+        if nifti_files:
+            subject_dirs = [data_root]
+        else:
+            raise SystemExit(f"No subject folders or NIfTI files found in {data_root}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "axial").mkdir(exist_ok=True)
