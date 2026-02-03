@@ -1,3 +1,4 @@
+from cProfile import label
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
@@ -201,46 +202,32 @@ def run_parallel_processing(nii_paths, output_dir, max_workers=10, n_slices=50):
 
     return errors
 
-def run_extract_IXI(data_dir, output_dir):
-    max_workers = 10
-    n_slices = 50
-
-    nii_paths = [
-        os.path.join(data_dir, f)
-        for f in os.listdir(data_dir)
-        if f.endswith('.nii') or f.endswith('.nii.gz')
-    ]
-
-    errors = run_parallel_processing(nii_paths, output_dir, max_workers=max_workers, n_slices=n_slices)
-
-    if errors:
-        print("Errors encountered in the following subjects:")
-        for sid, err in errors:
-            print(f"{sid}: {err}")
-    else:
-        print("All images processed successfully.")
-
-def run_extract_all_IXI():
-    run_extract_IXI("E:/Data/IXI/IXI-T1", "data/IXI-T1")
-    run_extract_IXI("E:/Data/IXI/IXI-T2", "data/IXI-T2")
-    run_extract_IXI("E:/Data/IXI/IXI-PD", "data/IXI-PD")
-
 
 if __name__ == '__main__':
-    run_extract_all_IXI()
+    # run_extract_all_IXI()
 
-    # # test single file extraction
-    # nii_input_dir = "E:/Data/IXI/IXI-PD/IXI002-Guys-0828-PD.nii.gz"
-    #
-    # itk_image = load_nifti(nii_input_dir)
-    # itk_image = resample_isotropic(itk_image, spacing=(1.0, 1.0, 1.0))
-    #
-    # volume_np = sitk.GetArrayFromImage(itk_image)
-    #
+    # test single file extraction
+    nii_input_path = "data/sample/image.nii.gz"
+
+    itk_image = load_nifti(nii_input_path)
+    itk_image = resample_isotropic(itk_image, spacing=(1.0, 1.0, 1.0))
+
+    volume_np = sitk.GetArrayFromImage(itk_image)
+
     # original_slices, slice_indices, brain_region, neck_slice_indices, neck_region = extract_brain_slices_axial(volume_np, n_slices=50)
-    # original_slices, slice_indices, brain_region = extract_brain_slices_coronal(volume_np, n_slices=50)
-    #
-    # print(f"Extracted slices indices: {slice_indices}")
-    # print(f"Brain region slice range: {brain_region}")
-    #
-    # save_slices_png(original_slices, "IXI002-Guys-0828", "data")
+    original_slices, slice_indices, brain_region = extract_brain_slices_coronal(volume_np, n_slices=50)
+
+    print(f"Extracted slices indices: {slice_indices}")
+    print(f"Brain region slice range: {brain_region}")
+
+    label_input_path = "data/sample/mask.nii.gz"
+
+    label_itk_image = load_nifti(label_input_path)
+    label_itk_image = resample_isotropic(label_itk_image, spacing=(1.0, 1.0, 1.0))
+
+    label_volume_np = sitk.GetArrayFromImage(label_itk_image)
+
+    label_slices = [label_volume_np[:, i, :] for i in slice_indices]
+
+    save_slices_png(original_slices, "sample_image_coronal", "data")
+    save_slices_png(label_slices, "sample_label_coronal", "data")

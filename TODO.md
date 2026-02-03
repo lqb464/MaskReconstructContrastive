@@ -8,10 +8,14 @@
     Combine (Patched emb + Stage 0, tất cả 4 vị trí) (2 version)
 ==> tổng 7 => tìm ra phiên bản tốt nhất 
 
+Stage 0 + 1234
+
+
 - Dùng best model pretrained 
 => thử recontruct mask / classi (mindset) 
 
 - 512/384 bottleneck classification (huggingface), classifier deeper (3 hidden layer :2 dim mỗi lần)
+
 
 - SynthStrip cắt ảnh lấy 5 lát 
 
