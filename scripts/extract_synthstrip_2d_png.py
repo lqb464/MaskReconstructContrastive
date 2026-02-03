@@ -144,6 +144,32 @@ def ensure_mask_on_mri_grid(mri_img: sitk.Image, mask_img: sitk.Image, atol: flo
     )
 
 
+def normalize_axes_to_xyz(mri_img: sitk.Image, mask_img: sitk.Image) -> tuple[sitk.Image, sitk.Image]:
+    """
+    If any axis is singleton, permute axes so that the singleton axis becomes Z.
+    This avoids extracting slices with width/height of 1.
+    """
+    size = mri_img.GetSize()  # (x, y, z)
+    order = None
+
+    if size[0] == 1 and size[1] > 1 and size[2] > 1:
+        order = [1, 2, 0]
+    elif size[1] == 1 and size[0] > 1 and size[2] > 1:
+        order = [0, 2, 1]
+    elif size[2] == 1:
+        order = None
+
+    if order is None:
+        return mri_img, mask_img
+
+    permuter = sitk.PermuteAxesImageFilter()
+    permuter.SetOrder(order)
+    mri_perm = permuter.Execute(mri_img)
+    mask_perm = permuter.Execute(mask_img)
+    mask_perm = ensure_mask_on_mri_grid(mri_perm, mask_perm)
+    return mri_perm, mask_perm
+
+
 def extract_brain_slices_axial(volume_np: np.ndarray, n_slices: int = 50):
     """
     Select axial slice indices using an energy curve over the z-axis.
@@ -207,7 +233,13 @@ def _extract_slice(image: sitk.Image, plane: str, idx: int) -> sitk.Image:
 
 def _ensure_2d(arr: np.ndarray) -> np.ndarray:
     if arr.ndim == 3:
-        return np.squeeze(arr, axis=0)
+        if arr.shape[0] == 1:
+            return np.squeeze(arr, axis=0)
+        if arr.shape[-1] == 1:
+            return np.squeeze(arr, axis=-1)
+        raise ValueError("Unexpected 3D array for a 2D slice")
+    if arr.ndim != 2:
+        raise ValueError("Expected a 2D array for a 2D slice")
     return arr
 
 
@@ -254,6 +286,12 @@ def save_slices_png(
 
         mri_arr = _ensure_2d(sitk.GetArrayFromImage(mri_slice))
         mask_arr = _ensure_2d(sitk.GetArrayFromImage(mask_slice))
+
+        if min(mri_arr.shape) <= 2:
+            raise ValueError(
+                f"Slice too small (subject={subject_id}, plane={plane}, idx={int(idx)}, "
+                f"size={mri_img.GetSize()}, slice_shape={mri_arr.shape})"
+            )
 
         mri_u8 = to_uint8_mri(mri_arr)
         mask_u8 = to_uint8_mask(mask_arr)
@@ -315,6 +353,8 @@ def process_subject(
             )
             mri_img, mask_img = mri_iso, mask_iso
 
+        mri_img, mask_img = normalize_axes_to_xyz(mri_img, mask_img)
+
         if mask_img.GetPixelID() not in INTEGER_PIXEL_IDS:
             mask_img = sitk.Cast(mask_img, sitk.sitkUInt8)
 
@@ -354,7 +394,61 @@ def parse_args():
         action="store_true",
         help="Resample MRI (linear) and mask (nearest) to 1x1x1 mm before slicing.",
     )
+    parser.add_argument(
+        "--debug_first_subject",
+        action="store_true",
+        help="Process only the first subject and print size/shape diagnostics.",
+    )
     return parser.parse_args()
+
+
+def debug_subject(subject_dir: Path, output_dir: Path, n_axial: int, n_coronal: int, resample_iso: bool):
+    subject_id = subject_dir.name
+    mri_path, mask_path = find_mri_and_mask(subject_dir)
+
+    mri_img = load_nifti(mri_path, cast_float=True)
+    mask_img = load_nifti(mask_path, cast_float=False)
+    mask_img = ensure_mask_on_mri_grid(mri_img, mask_img)
+
+    print(f"[debug] {subject_id} original size: {mri_img.GetSize()}")
+
+    if resample_iso:
+        mri_iso = resample_isotropic(mri_img, spacing=(1.0, 1.0, 1.0), interpolator=sitk.sitkLinear)
+        mask_iso = sitk.Resample(
+            mask_img,
+            mri_iso,
+            sitk.Transform(),
+            sitk.sitkNearestNeighbor,
+            0,
+            mask_img.GetPixelID(),
+        )
+        mri_img, mask_img = mri_iso, mask_iso
+
+    mri_img, mask_img = normalize_axes_to_xyz(mri_img, mask_img)
+    print(f"[debug] {subject_id} normalized size: {mri_img.GetSize()}")
+
+    volume_np = sitk.GetArrayFromImage(mri_img)
+    axial_indices, _ = extract_brain_slices_axial(volume_np, n_slices=n_axial)
+    coronal_indices, _ = extract_brain_slices_coronal(volume_np, n_slices=n_coronal)
+
+    if len(axial_indices) == 0 or len(coronal_indices) == 0:
+        raise ValueError("Slice selection produced zero indices.")
+
+    axial_slice = _extract_slice(mri_img, "axial", int(axial_indices[0]))
+    coronal_slice = _extract_slice(mri_img, "coronal", int(coronal_indices[0]))
+    axial_arr = _ensure_2d(sitk.GetArrayFromImage(axial_slice))
+    coronal_arr = _ensure_2d(sitk.GetArrayFromImage(coronal_slice))
+    print(f"[debug] axial slice shape: {axial_arr.shape}")
+    print(f"[debug] coronal slice shape: {coronal_arr.shape}")
+
+    save_slices_png(mri_img, mask_img, "axial", axial_indices, subject_id, output_dir)
+    save_slices_png(mri_img, mask_img, "coronal", coronal_indices, subject_id, output_dir)
+
+    sample_dir = output_dir / "sample"
+    axial_sample = int(axial_indices[len(axial_indices) // 2])
+    coronal_sample = int(coronal_indices[len(coronal_indices) // 2])
+    save_sample_png(mri_img, mask_img, "axial", axial_sample, subject_id, sample_dir)
+    save_sample_png(mri_img, mask_img, "coronal", coronal_sample, subject_id, sample_dir)
 
 
 def main():
@@ -383,6 +477,10 @@ def main():
     (output_dir / "axial").mkdir(exist_ok=True)
     (output_dir / "coronal").mkdir(exist_ok=True)
     (output_dir / "sample").mkdir(exist_ok=True)
+
+    if args.debug_first_subject:
+        debug_subject(subject_dirs[0], output_dir, args.n_slices, args.n_coronal, args.resample_iso)
+        return
 
     errors = []
     with ProcessPoolExecutor(max_workers=args.max_workers) as executor:
