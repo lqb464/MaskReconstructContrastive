@@ -223,8 +223,13 @@ def _extract_slice(image: sitk.Image, plane: str, idx: int) -> sitk.Image:
         extractor.SetSize([size[0], size[1], 0])
         extractor.SetIndex([0, 0, int(idx)])
     elif plane == "coronal":
-        extractor.SetSize([size[0], 0, size[2]])
-        extractor.SetIndex([0, int(idx), 0])
+        # If z is singleton, coronal slices would be 1-pixel wide; fall back to axial slice.
+        if size[2] == 1:
+            extractor.SetSize([size[0], size[1], 0])
+            extractor.SetIndex([0, 0, 0])
+        else:
+            extractor.SetSize([size[0], 0, size[2]])
+            extractor.SetIndex([0, int(idx), 0])
     else:
         raise ValueError(f"Unknown plane '{plane}'. Expected 'axial' or 'coronal'.")
 
