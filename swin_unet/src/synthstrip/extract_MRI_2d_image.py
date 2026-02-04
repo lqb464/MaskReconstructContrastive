@@ -482,25 +482,52 @@ def _find_case_file(case_dir, base_name):
     return candidates[0]
 
 
-def _prepare_mask_slice(mask_slice):
-    if np.issubdtype(mask_slice.dtype, np.floating):
-        if np.isnan(mask_slice).any():
-            raise ValueError("Mask slice contains NaN values.")
-        mask_slice = np.rint(mask_slice)
+def extract_pair_slices(image_path, mask_path, direction, n_slices):
+    itk_image = load_nifti(image_path)
+    itk_image = resample_isotropic(itk_image, spacing=(1.0, 1.0, 1.0))
+    volume_np = sitk.GetArrayFromImage(itk_image)
 
-    mask_min = float(mask_slice.min())
-    mask_max = float(mask_slice.max())
+    if direction == "coronal":
+        original_slices, slice_indices, brain_region = extract_brain_slices_coronal(
+            volume_np, n_slices=n_slices
+        )
 
-    if mask_min < 0:
-        raise ValueError("Mask has negative values; cannot save to PNG without normalization.")
-    if mask_max <= 255:
-        return mask_slice.astype(np.uint8)
-    if mask_max <= 65535:
-        return mask_slice.astype(np.uint16)
-    raise ValueError("Mask values exceed 65535; cannot save to PNG without normalization.")
+        label_itk_image = load_nifti(mask_path)
+        label_itk_image = resample_isotropic(label_itk_image, spacing=(1.0, 1.0, 1.0))
+        label_volume_np = sitk.GetArrayFromImage(label_itk_image)
+
+        if volume_np.shape != label_volume_np.shape:
+            raise ValueError(
+                f"Image/mask shape mismatch. Image={volume_np.shape} Mask={label_volume_np.shape}"
+            )
+
+        label_slices = [label_volume_np[:, i, :] for i in slice_indices]
+        meta = {"brain_region": brain_region}
+        return original_slices, label_slices, list(slice_indices), meta
+
+    if direction == "axial":
+        original_slices, slice_indices, brain_region, neck_slice_indices, neck_region = (
+            extract_brain_slices_axial(volume_np, n_slices=n_slices)
+        )
+        combined_indices = list(slice_indices) + list(neck_slice_indices)
+
+        label_itk_image = load_nifti(mask_path)
+        label_itk_image = resample_isotropic(label_itk_image, spacing=(1.0, 1.0, 1.0))
+        label_volume_np = sitk.GetArrayFromImage(label_itk_image)
+
+        if volume_np.shape != label_volume_np.shape:
+            raise ValueError(
+                f"Image/mask shape mismatch. Image={volume_np.shape} Mask={label_volume_np.shape}"
+            )
+
+        label_slices = [label_volume_np[i] for i in combined_indices]
+        meta = {"brain_region": brain_region, "neck_region": neck_region}
+        return original_slices, label_slices, combined_indices, meta
+
+    raise ValueError(f"Unsupported direction: {direction}")
 
 
-def _save_slice_pairs(case_id, plane, image_slices, mask_slices, slice_indices, data_dir, label_dir):
+def save_pair_slices_png(case_id, plane, image_slices, mask_slices, slice_indices, out_data_dir, out_label_dir):
     if len(slice_indices) == 0:
         raise ValueError(f"No slice indices for case '{case_id}' ({plane}).")
 
@@ -530,8 +557,8 @@ def _save_slice_pairs(case_id, plane, image_slices, mask_slices, slice_indices, 
 
     for img_slice, mask_slice, slice_idx in zip(image_slices, mask_slices, slice_indices):
         filename = f"{case_id}_{plane}_{int(slice_idx):0{width}d}.png"
-        image_path = os.path.join(data_dir, filename)
-        label_path = os.path.join(label_dir, filename)
+        image_path = os.path.join(out_data_dir, filename)
+        label_path = os.path.join(out_label_dir, filename)
 
         img = img_slice.astype(np.float32)
         img = img - img_min
@@ -539,7 +566,7 @@ def _save_slice_pairs(case_id, plane, image_slices, mask_slices, slice_indices, 
         img = (img * 255).astype(np.uint8)
         imageio.imwrite(image_path, img)
 
-        mask_out = _prepare_mask_slice(mask_slice)
+        mask_out = (mask_slice > 0).astype(np.uint8) * 255
         imageio.imwrite(label_path, mask_out)
 
 
@@ -549,59 +576,41 @@ def _process_case_extract(case_id, input_root, output_root, split_name, directio
         image_path = _find_case_file(case_dir, "image")
         mask_path = _find_case_file(case_dir, "mask")
 
-        image_itk = load_nifti(image_path)
-        image_itk = resample_isotropic(image_itk, spacing=(1.0, 1.0, 1.0))
-        image_np = sitk.GetArrayFromImage(image_itk)
-
-        mask_itk = load_nifti(mask_path)
-        mask_itk = resample_isotropic(mask_itk, spacing=(1.0, 1.0, 1.0))
-        mask_np = sitk.GetArrayFromImage(mask_itk)
-
-        if image_np.shape != mask_np.shape:
-            raise ValueError(
-                f"Image/mask shape mismatch for case '{case_id}'. "
-                f"Image={image_np.shape} Mask={mask_np.shape}"
-            )
-
         split_root = os.path.join(output_root, split_name)
-        data_dir = os.path.join(split_root, "data")
-        label_dir = os.path.join(split_root, "label")
+        out_data_dir = os.path.join(split_root, "data")
+        out_label_dir = os.path.join(split_root, "label")
 
         slices_written = 0
 
         if direction in ("axial", "both"):
-            image_slices, slice_indices, _, neck_indices, _ = extract_brain_slices_axial(
-                image_np, n_slices=n_slices
+            image_slices, mask_slices, slice_indices, _ = extract_pair_slices(
+                image_path, mask_path, "axial", n_slices
             )
-            axial_indices = list(slice_indices) + list(neck_indices)
-            mask_slices = [mask_np[i] for i in axial_indices]
-            _save_slice_pairs(
+            save_pair_slices_png(
                 case_id,
                 "axial",
                 image_slices,
                 mask_slices,
-                axial_indices,
-                data_dir,
-                label_dir,
+                slice_indices,
+                out_data_dir,
+                out_label_dir,
             )
-            slices_written += len(axial_indices)
+            slices_written += len(slice_indices)
 
         if direction in ("coronal", "both"):
-            image_slices, slice_indices, _ = extract_brain_slices_coronal(
-                image_np, n_slices=n_slices
+            image_slices, mask_slices, slice_indices, _ = extract_pair_slices(
+                image_path, mask_path, "coronal", n_slices
             )
-            coronal_indices = list(slice_indices)
-            mask_slices = [mask_np[:, i, :] for i in coronal_indices]
-            _save_slice_pairs(
+            save_pair_slices_png(
                 case_id,
                 "coronal",
                 image_slices,
                 mask_slices,
-                coronal_indices,
-                data_dir,
-                label_dir,
+                slice_indices,
+                out_data_dir,
+                out_label_dir,
             )
-            slices_written += len(coronal_indices)
+            slices_written += len(slice_indices)
 
         return (case_id, slices_written, None)
     except Exception as e:
@@ -668,11 +677,33 @@ def run_extract_mode(
                 print(f"ERROR: {case_id}: {err}")
 
 
+def run_debug_single():
+    nii_input_path = "data/sample/image.nii.gz"
+    label_input_path = "data/sample/mask.nii.gz"
+    direction = "coronal"
+    n_slices = 50
+
+    image_slices, label_slices, slice_indices, meta = extract_pair_slices(
+        nii_input_path, label_input_path, direction, n_slices
+    )
+
+    print(f"Extracted slices indices: {slice_indices}")
+    if "brain_region" in meta:
+        print(f"Brain region slice range: {meta['brain_region']}")
+
+    save_slices_png(image_slices, f"sample_image_{direction}", "data")
+    save_slices_png(label_slices, f"sample_label_{direction}", "data")
+
+
 if __name__ == '__main__':
 
     argparse = __import__("argparse")
     parser = argparse.ArgumentParser(description="MRI slice extraction and dataset splitting.")
-    parser.add_argument("--mode", default=None, help="Execution mode. Use 'split' for dataset splitting.")
+    parser.add_argument(
+        "--mode",
+        default=None,
+        help="Execution mode. Use 'split', 'extract', or 'debug_single'.",
+    )
     parser.add_argument("--input-root", dest="input_root", default=None, help="Root folder of case subfolders.")
     parser.add_argument("--split-root", dest="split_root", default=None, help="Folder containing split files.")
     parser.add_argument("--output-root", dest="output_root", default=None, help="Output folder for split files.")
@@ -714,28 +745,13 @@ if __name__ == '__main__':
         )
         raise SystemExit(0)
 
+    if args.mode == "debug_single":
+        run_debug_single()
+        raise SystemExit(0)
+
+    if args.mode is None:
+        print("No mode specified. Use --mode split, --mode extract, or --mode debug_single.")
+        raise SystemExit(0)
+
     # test single file extraction
-    nii_input_path = "data/sample/image.nii.gz"
-
-    itk_image = load_nifti(nii_input_path)
-    itk_image = resample_isotropic(itk_image, spacing=(1.0, 1.0, 1.0))
-
-    volume_np = sitk.GetArrayFromImage(itk_image)
-
-    # original_slices, slice_indices, brain_region, neck_slice_indices, neck_region = extract_brain_slices_axial(volume_np, n_slices=50)
-    original_slices, slice_indices, brain_region = extract_brain_slices_coronal(volume_np, n_slices=50)
-
-    print(f"Extracted slices indices: {slice_indices}")
-    print(f"Brain region slice range: {brain_region}")
-
-    label_input_path = "data/sample/mask.nii.gz"
-
-    label_itk_image = load_nifti(label_input_path)
-    label_itk_image = resample_isotropic(label_itk_image, spacing=(1.0, 1.0, 1.0))
-
-    label_volume_np = sitk.GetArrayFromImage(label_itk_image)
-
-    label_slices = [label_volume_np[:, i, :] for i in slice_indices]
-
-    save_slices_png(original_slices, "sample_image_coronal", "data")
-    save_slices_png(label_slices, "sample_label_coronal", "data")
+    # (intentionally guarded by --mode debug_single)
