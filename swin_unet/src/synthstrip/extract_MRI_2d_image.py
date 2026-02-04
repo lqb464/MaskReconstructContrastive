@@ -149,14 +149,13 @@ def extract_brain_slices_coronal(volume_np, n_slices=50):
     return slices, slice_indices, (start, end)
 
 def save_slices_png(slices, sid, output_dir):
-    img_max = max([s.max() for s in slices])
-    img_min = min([s.min() for s in slices])
+    img_min, img_max, denom = _compute_image_norm_stats(slices)
 
     for i, s in enumerate(slices):
         # --- Normalize to 0–255 for PNG ---
         img = s.astype(np.float32)
-        img = img - img_min
-        img = img / (img_max + 1e-5)
+        img = (img - img_min) / denom
+        img = np.clip(img, 0.0, 1.0)
         img = (img * 255).astype(np.uint8)
 
         # --- File names ---
@@ -482,6 +481,15 @@ def _find_case_file(case_dir, base_name):
     return candidates[0]
 
 
+def _compute_image_norm_stats(slices):
+    img_max = max([s.max() for s in slices])
+    img_min = min([s.min() for s in slices])
+    denom = float(img_max - img_min)
+    if not np.isfinite(denom) or denom <= 0:
+        denom = 1.0
+    return float(img_min), float(img_max), float(denom)
+
+
 def extract_pair_slices(image_path, mask_path, direction, n_slices):
     itk_image = load_nifti(image_path)
     itk_image = resample_isotropic(itk_image, spacing=(1.0, 1.0, 1.0))
@@ -552,8 +560,7 @@ def save_pair_slices_png(case_id, plane, image_slices, mask_slices, slice_indice
     max_index = int(max(slice_indices))
     width = max(3, len(str(max_index)))
 
-    img_max = max([s.max() for s in image_slices])
-    img_min = min([s.min() for s in image_slices])
+    img_min, img_max, denom = _compute_image_norm_stats(image_slices)
 
     for img_slice, mask_slice, slice_idx in zip(image_slices, mask_slices, slice_indices):
         filename = f"{case_id}_{plane}_{int(slice_idx):0{width}d}.png"
@@ -561,8 +568,8 @@ def save_pair_slices_png(case_id, plane, image_slices, mask_slices, slice_indice
         label_path = os.path.join(out_label_dir, filename)
 
         img = img_slice.astype(np.float32)
-        img = img - img_min
-        img = img / (img_max + 1e-5)
+        img = (img - img_min) / denom
+        img = np.clip(img, 0.0, 1.0)
         img = (img * 255).astype(np.uint8)
         imageio.imwrite(image_path, img)
 
@@ -570,7 +577,7 @@ def save_pair_slices_png(case_id, plane, image_slices, mask_slices, slice_indice
         imageio.imwrite(label_path, mask_out)
 
 
-def _process_case_extract(case_id, input_root, output_root, split_name, direction, n_slices):
+def _process_case_extract(case_id, input_root, output_root, split_name, direction, n_slices, debug_stats=False):
     try:
         case_dir = os.path.join(input_root, case_id)
         image_path = _find_case_file(case_dir, "image")
@@ -581,11 +588,15 @@ def _process_case_extract(case_id, input_root, output_root, split_name, directio
         out_label_dir = os.path.join(split_root, "label")
 
         slices_written = 0
+        stats = {}
 
         if direction in ("axial", "both"):
             image_slices, mask_slices, slice_indices, _ = extract_pair_slices(
                 image_path, mask_path, "axial", n_slices
             )
+            if debug_stats:
+                img_min, img_max, denom = _compute_image_norm_stats(image_slices)
+                stats["axial"] = {"min": img_min, "max": img_max, "denom": denom}
             save_pair_slices_png(
                 case_id,
                 "axial",
@@ -601,6 +612,9 @@ def _process_case_extract(case_id, input_root, output_root, split_name, directio
             image_slices, mask_slices, slice_indices, _ = extract_pair_slices(
                 image_path, mask_path, "coronal", n_slices
             )
+            if debug_stats:
+                img_min, img_max, denom = _compute_image_norm_stats(image_slices)
+                stats["coronal"] = {"min": img_min, "max": img_max, "denom": denom}
             save_pair_slices_png(
                 case_id,
                 "coronal",
@@ -612,9 +626,9 @@ def _process_case_extract(case_id, input_root, output_root, split_name, directio
             )
             slices_written += len(slice_indices)
 
-        return (case_id, slices_written, None)
+        return (case_id, slices_written, None, stats)
     except Exception as e:
-        return (case_id, 0, str(e))
+        return (case_id, 0, str(e), {})
 
 
 def run_extract_mode(
@@ -624,6 +638,7 @@ def run_extract_mode(
     direction="axial",
     n_slices=50,
     max_workers=8,
+    debug_stats=False,
 ):
     train_path = os.path.join(split_root, "train_cases.txt")
     test_path = os.path.join(split_root, "test_cases.txt")
@@ -643,6 +658,7 @@ def run_extract_mode(
     for split_name, case_ids in split_map.items():
         failures = []
         total_slices = 0
+        printed_stats = set()
 
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = {
@@ -654,6 +670,7 @@ def run_extract_mode(
                     split_name,
                     direction,
                     n_slices,
+                    debug_stats,
                 ): case_id
                 for case_id in case_ids
             }
@@ -663,11 +680,21 @@ def run_extract_mode(
                 total=len(futures),
                 desc=f"Extracting {split_name}",
             ):
-                case_id, slices_written, err = fut.result()
+                case_id, slices_written, err, stats = fut.result()
                 if err:
                     failures.append((case_id, err))
                 else:
                     total_slices += slices_written
+                    if debug_stats and stats:
+                        for plane, values in stats.items():
+                            key = f"{split_name}:{plane}"
+                            if key not in printed_stats:
+                                print(
+                                    f"{split_name} {plane} debug (case {case_id}): "
+                                    f"min={values['min']:.4f}, max={values['max']:.4f}, "
+                                    f"denom={values['denom']:.4f}"
+                                )
+                                printed_stats.add(key)
 
         print(f"{split_name} cases processed: {len(case_ids)}")
         print(f"{split_name} total slices written: {total_slices}")
@@ -713,6 +740,7 @@ if __name__ == '__main__':
     parser.add_argument("--direction", dest="direction", default="axial")
     parser.add_argument("--n-slices", dest="n_slices", type=int, default=50)
     parser.add_argument("--max-workers", dest="max_workers", type=int, default=8)
+    parser.add_argument("--debug-stats", dest="debug_stats", action="store_true")
 
     args, _ = parser.parse_known_args()
 
@@ -742,6 +770,7 @@ if __name__ == '__main__':
             direction=args.direction,
             n_slices=args.n_slices,
             max_workers=args.max_workers,
+            debug_stats=args.debug_stats,
         )
         raise SystemExit(0)
 
