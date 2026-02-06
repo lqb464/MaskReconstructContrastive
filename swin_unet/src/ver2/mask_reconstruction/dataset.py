@@ -49,6 +49,7 @@ class MaskReconstructionDataset(Dataset):
         resize_mode: str = "letterbox",
         debug_shapes: bool = False,
         return_dual_view: bool = False,
+        debug_pair_alignment: bool = False,
     ):
         self.data_dir = Path(data_dir).expanduser()
         if not self.data_dir.exists():
@@ -64,6 +65,7 @@ class MaskReconstructionDataset(Dataset):
         self.resize_mode = resize_mode
         self.debug_shapes = debug_shapes
         self.return_dual_view = return_dual_view
+        self.debug_pair_alignment = debug_pair_alignment
 
         self.plane_one_hot = plane_to_one_hot("axial")  # default plane for all slices
 
@@ -112,6 +114,45 @@ class MaskReconstructionDataset(Dataset):
         x, y = apply_pair_transforms(img_pil, mask_pil, target_sz, do_hflip=False, resize_mode=self.resize_mode)
         y = (y > 0).float()
 
+        # Debug alignment logging (first few samples when enabled)
+        if self.debug_pair_alignment and idx < 3:
+            bbox = (y[0] > 0).nonzero(as_tuple=False)
+            if bbox.numel() > 0:
+                rmin, cmin = bbox[:, 0].min().item(), bbox[:, 1].min().item()
+                rmax, cmax = bbox[:, 0].max().item(), bbox[:, 1].max().item()
+            else:
+                rmin = cmin = rmax = cmax = -1
+            pad_frac = float((x < 1e-3).float().mean().item())
+            print(
+                f"[pair_debug] idx={idx} img={img_path.name} orig_hw={img_pil.size[::-1]} "
+                f"mask_hw={mask_pil.size[::-1]} target_sz={target_sz} resize_mode={self.resize_mode} hflip=False "
+                f"tensor_hw={tuple(x.shape[-2:])} mask_bbox={(rmin, rmax, cmin, cmax)} pad_frac~{pad_frac:.3f}"
+            )
+            # crude edge vs mask boundary overlap (IoU proxy)
+            sobel_x = torch.nn.functional.conv2d(
+                x.unsqueeze(0),
+                weight=torch.tensor([[[[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]]]], device=x.device, dtype=x.dtype),
+                padding=1,
+            )
+            sobel_y = torch.nn.functional.conv2d(
+                x.unsqueeze(0),
+                weight=torch.tensor([[[[-1, -2, -1], [0, 0, 0], [1, 2, 1]]]], device=x.device, dtype=x.dtype),
+                padding=1,
+            )
+            edges = (sobel_x.abs() + sobel_y.abs()).squeeze(0)
+            edge_mask = (edges > edges.mean()).float()
+            mask_bound = torch.nn.functional.conv2d(
+                y.unsqueeze(0),
+                weight=torch.ones((1, 1, 3, 3), device=y.device, dtype=y.dtype),
+                padding=1,
+            ).squeeze(0)
+            mask_edge = ((mask_bound > 0) & (mask_bound < 9)).float()
+            inter = (edge_mask * mask_edge).sum()
+            union = (edge_mask + mask_edge - edge_mask * mask_edge).sum().clamp(min=1.0)
+            iou_proxy = (inter / union).item()
+            if iou_proxy < 0.01:
+                print(f"[pair_debug] warning: low edge/mask overlap (IoU~{iou_proxy:.4f}) for {img_path.name}")
+
         if self.return_dual_view:
             x2, y2 = apply_pair_transforms(img_pil, mask_pil, target_sz, do_hflip=True, resize_mode=self.resize_mode)
             y2 = (y2 > 0).float()
@@ -140,6 +181,5 @@ class MaskReconstructionDataset(Dataset):
             "path": str(img_path),
             "plane_one_hot": self.plane_one_hot.clone(),
         }
-
 
 __all__ = ["MaskReconstructionDataset"]

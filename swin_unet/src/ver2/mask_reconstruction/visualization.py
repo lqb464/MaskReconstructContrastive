@@ -28,6 +28,8 @@ def save_val_visualization_grid(
     show_flip: bool = True,
     compact_mode: bool = True,
     save_per_batch: bool = False,
+    debug_overlay: bool = False,
+    debug_unletterbox: bool = False,
 ) -> None:
     """
     Validation visualization with dual-view support.
@@ -72,6 +74,65 @@ def save_val_visualization_grid(
                 "dice_o": dice_o,
                 "dice_f": dice_f,
             }
+
+    def _save_overlay(x_in: torch.Tensor, y_in: torch.Tensor, path: Path, k: int = 4):
+        """Save overlay of mask on input for first k samples."""
+        os.makedirs(path.parent, exist_ok=True)
+        k = min(k, x_in.size(0))
+        fig, axes = plt.subplots(1, k, figsize=(3 * k, 3))
+        if k == 1:
+            axes = [axes]
+        for i in range(k):
+            ax = axes[i]
+            img = x_in[i, 0].cpu().numpy()
+            mask = y_in[i, 0].cpu().numpy()
+            ax.imshow(img, cmap="gray", vmin=0, vmax=1)
+            ax.imshow(mask, cmap="autumn", alpha=0.35, vmin=0, vmax=max(1.0, mask.max()))
+            # boundary
+            from matplotlib import patches
+
+            ax.contour(mask, levels=[0.5], colors="lime", linewidths=1.0)
+            ax.axis("off")
+        plt.tight_layout()
+        plt.savefig(path, dpi=150)
+        plt.close(fig)
+
+    def _tight_bbox(mask: torch.Tensor):
+        nz = (mask > 0).nonzero(as_tuple=False)
+        if nz.numel() == 0:
+            return None
+        rmin, cmin = nz[:, 1].min().item(), nz[:, 2].min().item()
+        rmax, cmax = nz[:, 1].max().item(), nz[:, 2].max().item()
+        return rmin, rmax, cmin, cmax
+
+    def _save_cropped(x_in, y_in, prob_o, bin_o, prob_f, bin_f, path: Path, out_size: int = 256):
+        """Center crop to mask bbox (with margin) then resize for display only."""
+        os.makedirs(path.parent, exist_ok=True)
+        bbox = _tight_bbox(y_in)
+        if bbox is None:
+            return
+        rmin, rmax, cmin, cmax = bbox
+        margin = 8
+        r0 = max(0, rmin - margin)
+        r1 = min(y_in.shape[-2], rmax + margin + 1)
+        c0 = max(0, cmin - margin)
+        c1 = min(y_in.shape[-1], cmax + margin + 1)
+
+        def crop_and_resize(t):
+            t = t[:, :, r0:r1, c0:c1]
+            return torch.nn.functional.interpolate(t, size=(out_size, out_size), mode="bilinear", align_corners=False) if t.dtype == torch.float32 else torch.nn.functional.interpolate(t.float(), size=(out_size, out_size), mode="nearest")
+
+        tensors = [crop_and_resize(x_in), crop_and_resize(y_in)]
+        titles = ["input_crop", "target_crop"]
+        annotations = {}
+
+        tensors += [crop_and_resize(prob_o), crop_and_resize(bin_o)]
+        titles += ["prob_o_crop", "bin_o_crop"]
+        if prob_f is not None and bin_f is not None:
+            tensors += [crop_and_resize(prob_f), crop_and_resize(bin_f)]
+            titles += ["prob_f_crop", "bin_f_crop"]
+
+        save_image_grid(tensors=tensors, titles=titles, out_path=str(path), annotations=annotations)
 
     def _pack_and_save(samples, path: Path):
         if len(samples) == 0:
@@ -120,6 +181,11 @@ def save_val_visualization_grid(
             annotations[col_bin_f] = [f"{a_o} | {a_f}" for a_o, a_f in zip(ann_o, ann_f)]
 
         save_image_grid(tensors=tensors, titles=titles, out_path=str(path), annotations=annotations)
+
+        if debug_overlay:
+            _save_overlay(x_cat, y_cat, path.with_name(path.stem + "_overlay.png"))
+        if debug_unletterbox:
+            _save_cropped(x_cat, y_cat, prob_o, bin_o, prob_f if show_flip else None, bin_f if show_flip else None, path.with_name(path.stem + "_cropped.png"))
 
     samples = []
     batch_count = 0
