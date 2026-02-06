@@ -806,7 +806,8 @@ def run(args: argparse.Namespace) -> None:
         print(f"[epoch {epoch:03d}] val_cm:\n{val_cm}")
 
         # checkpointing
-        ckpt_dir = ensure_dir(out_dir / "checkpoints")
+        ckpt_dir = out_dir / "checkpoints"
+        ensure_dir(ckpt_dir)
         save_checkpoint(ckpt_dir / "latest_cls.pt", epoch, best_f1, model, head, optimizer, scaler, args)
 
         if val_metrics["f1_macro"] > best_f1:
