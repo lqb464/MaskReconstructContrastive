@@ -3,7 +3,7 @@ from __future__ import annotations
 """
 Alzheimer classifier training (dual-view Swin-UNet encoder).
 - Uses dual-view encode path so SACA is active when enabled.
-- Supports feature extraction at stage1 / stage2 / bottleneck with fusion modes.
+- Classification modes: default, bottleneck_concat, stage2_fusion, multiscale.
 """
 
 import argparse
@@ -167,10 +167,13 @@ def parse_ce_class_weights(value: str, num_classes: int) -> torch.Tensor:
 class ClsConfig:
     num_classes: int
     class_names: List[str]
+    classification_mode: str
     feature_level: str
-    fusion_mode: str
-    clf_hidden_dim: Optional[int]
-    dropout: float
+    fusion: str
+    clf_hidden_dim: int
+    clf_dropout: float
+    clf_activation: str
+    clf_layernorm: bool
     amp: bool
     device: torch.device
     loss_type: str
@@ -180,6 +183,7 @@ class ClsConfig:
     freeze_encoder_epochs: int
     saca_enabled: bool
     view_mode: str
+    head_in_dim: int
 
 
 # ------------------------------------------------------------
@@ -224,33 +228,71 @@ def build_model(args: argparse.Namespace, device: torch.device) -> SwinUNetDualV
 
 
 @torch.no_grad()
-def infer_feature_dim(
+def infer_feature_dims(
     model: SwinUNetDualViewSSL,
     args: argparse.Namespace,
-    feature_level: str,
     device: torch.device,
-) -> int:
+) -> Dict[str, int]:
     model.eval()
     B = 1
     dummy = torch.zeros(B, args.in_ch, args.image_size, args.image_size, device=device)
     plane = torch.zeros(B, 2, device=device)
-    feat1, feat2 = model.encode_dual(dummy, dummy, plane, feature_level=feature_level)
-    c1 = feat1.shape[-1]
-    c2 = feat2.shape[-1]
-    if c1 != c2:
-        raise RuntimeError("feature dims between views do not match")
-    return int(c1)
+    feats = model.encode_dual_features(dummy, dummy, plane, levels=["stage1", "stage2", "bottleneck"])
+    dims = {lvl: feats[lvl][0].shape[-1] for lvl in feats}
+    return dims
 
 
-def build_head(model: SwinUNetDualViewSSL, args: argparse.Namespace, num_classes: int, device: torch.device) -> ClassificationHead:
-    feat_dim = infer_feature_dim(model, args, args.feature_level, device)
-    fused_dim = feat_dim * 2 if args.fusion_mode == "concat" else feat_dim
-    hidden = args.clf_hidden_dim if args.clf_hidden_dim > 0 else None
+def compute_head_in_dim(args: argparse.Namespace, dims: Dict[str, int]) -> int:
+    mode = args.classification_mode
+    fusion = args.fusion
+    view_mode = args.view_mode
+
+    def fused_dim(level: str) -> int:
+        c = dims[level]
+        if view_mode != "two":
+            return c
+        return 2 * c if fusion == "concat" else c
+
+    if mode == "classification_default":
+        if args.feature_level not in dims:
+            raise ValueError(f"feature_level {args.feature_level} not available")
+        if view_mode != "two":
+            return dims[args.feature_level]
+        return 2 * dims[args.feature_level] if fusion == "concat" else dims[args.feature_level]
+
+    if mode == "classification_bottleneck_concat":
+        return 2 * dims["bottleneck"]
+
+    if mode == "classification_stage2_fusion":
+        if view_mode != "two":
+            raise ValueError("stage2_fusion requires dual-view")
+        return 2 * dims["stage2"] if fusion == "concat" else dims["stage2"]
+
+    if mode == "classification_multiscale":
+        if view_mode != "two":
+            raise ValueError("multiscale requires dual-view")
+        d_stage1 = 2 * dims["stage1"] if fusion == "concat" else dims["stage1"]
+        d_bottleneck = 2 * dims["bottleneck"] if fusion == "concat" else dims["bottleneck"]
+        return d_stage1 + d_bottleneck
+
+    raise ValueError(f"unsupported classification_mode: {mode}")
+
+
+def build_head(
+    model: SwinUNetDualViewSSL,
+    args: argparse.Namespace,
+    num_classes: int,
+    head_in_dim: int,
+    device: torch.device,
+) -> ClassificationHead:
+    hidden = args.clf_hidden_dim
     head = ClassificationHead(
-        in_dim=fused_dim,
+        in_dim=head_in_dim,
         num_classes=num_classes,
         hidden_dim=hidden,
-        dropout=args.dropout,
+        dropout=args.clf_dropout,
+        activation=args.clf_activation,
+        use_layernorm=not getattr(args, "no_clf_layernorm", False),
     ).to(device)
     return head
 
@@ -397,6 +439,59 @@ def compute_metrics(logits: torch.Tensor, target: torch.Tensor) -> Dict[str, flo
     return {"acc": acc}
 
 
+def extract_fused_feature(
+    cfg: ClsConfig,
+    model: SwinUNetDualViewSSL,
+    x1: torch.Tensor,
+    x2: torch.Tensor,
+    plane: torch.Tensor,
+) -> torch.Tensor:
+    mode = cfg.classification_mode
+
+    if mode == "classification_default":
+        if cfg.view_mode != "two":
+            view = 1 if cfg.view_mode == "one_v1" else 2
+            h = model._pool_hw(model.encode_bottleneck(x1 if view == 1 else x2, plane, view=view))
+            return h
+        feats = model.encode_dual_features(x1, x2, plane, levels=[cfg.feature_level])
+        f1, f2 = feats[cfg.feature_level]
+        h1 = model._pool_hw(f1)
+        h2 = model._pool_hw(f2)
+        return fuse_features(h1, h2, cfg.fusion)
+
+    if mode == "classification_bottleneck_concat":
+        feats = model.encode_dual_features(x1, x2, plane, levels=["bottleneck"])
+        b1, b2 = feats["bottleneck"]
+        h1 = model._pool_hw(b1)
+        h2 = model._pool_hw(b2)
+        return torch.cat([h1, h2], dim=1)
+
+    if mode == "classification_stage2_fusion":
+        if cfg.view_mode != "two":
+            raise ValueError("classification_stage2_fusion requires dual-view")
+        feats = model.encode_dual_features(x1, x2, plane, levels=["stage2"])
+        s2_1, s2_2 = feats["stage2"]
+        h1 = model._pool_hw(s2_1)
+        h2 = model._pool_hw(s2_2)
+        return fuse_features(h1, h2, cfg.fusion)
+
+    if mode == "classification_multiscale":
+        if cfg.view_mode != "two":
+            raise ValueError("classification_multiscale requires dual-view")
+        feats = model.encode_dual_features(x1, x2, plane, levels=["stage1", "bottleneck"])
+        s1_1, s1_2 = feats["stage1"]
+        b1, b2 = feats["bottleneck"]
+        h1_s = model._pool_hw(s1_1)
+        h2_s = model._pool_hw(s1_2)
+        h1_b = model._pool_hw(b1)
+        h2_b = model._pool_hw(b2)
+        h_stage1 = fuse_features(h1_s, h2_s, cfg.fusion)
+        h_b = fuse_features(h1_b, h2_b, cfg.fusion)
+        return torch.cat([h_stage1, h_b], dim=1)
+
+    raise ValueError(f"unsupported classification_mode: {mode}")
+
+
 def write_epoch_csv(
     path: Path,
     epoch: int,
@@ -451,23 +546,7 @@ def train_one_epoch(
 
         with autocast(device_type=device.type, enabled=(cfg.amp and device.type == "cuda")):
             plane = build_plane_one_hot("axial", x1.size(0), device)
-            if cfg.view_mode == "one_v1":
-                h1 = model._pool_hw(model.encode_bottleneck(x1, plane, view=1))
-                h2 = h1
-            elif cfg.view_mode == "one_v2":
-                h1 = model._pool_hw(model.encode_bottleneck(x2, plane, view=2))
-                h2 = h1
-            else:
-                feat1, feat2 = model.encode_dual(
-                    x1,
-                    x2,
-                    plane,
-                    feature_level=cfg.feature_level,
-                )
-                h1 = model._pool_hw(feat1)
-                h2 = model._pool_hw(feat2)
-
-            fused = fuse_features(h1, h2, cfg.fusion_mode)
+            fused = extract_fused_feature(cfg, model, x1, x2, plane)
             logits = head(fused)
 
             loss = loss_fn(logits, y)
@@ -526,23 +605,7 @@ def validate_one_epoch(
         x1, x2, y = prepare_batch(batch, device)
         plane = build_plane_one_hot("axial", x1.size(0), device)
 
-        if cfg.view_mode == "one_v1":
-            h1 = model._pool_hw(model.encode_bottleneck(x1, plane, view=1))
-            h2 = h1
-        elif cfg.view_mode == "one_v2":
-            h1 = model._pool_hw(model.encode_bottleneck(x2, plane, view=2))
-            h2 = h1
-        else:
-            feat1, feat2 = model.encode_dual(
-                x1,
-                x2,
-                plane,
-                feature_level=cfg.feature_level,
-            )
-            h1 = model._pool_hw(feat1)
-            h2 = model._pool_hw(feat2)
-
-        fused = fuse_features(h1, h2, cfg.fusion_mode)
+        fused = extract_fused_feature(cfg, model, x1, x2, plane)
         logits = head(fused)
         loss = loss_fn(logits, y)
 
@@ -624,10 +687,13 @@ def build_loss_and_cfg(
     return ClsConfig(
         num_classes=num_classes,
         class_names=class_names,
+        classification_mode=args.classification_mode,
         feature_level=args.feature_level,
-        fusion_mode=args.fusion_mode,
-        clf_hidden_dim=args.clf_hidden_dim if args.clf_hidden_dim > 0 else None,
-        dropout=args.dropout,
+        fusion=args.fusion,
+        clf_hidden_dim=args.clf_hidden_dim,
+        clf_dropout=args.clf_dropout,
+        clf_activation=args.clf_activation,
+        clf_layernorm=not getattr(args, "no_clf_layernorm", False),
         amp=args.amp,
         device=device,
         loss_type=args.loss_type,
@@ -637,6 +703,7 @@ def build_loss_and_cfg(
         freeze_encoder_epochs=args.freeze_encoder_epochs,
         saca_enabled=bool(args.enable_saca),
         view_mode=args.view_mode,
+        head_in_dim=args.head_in_dim,
     )
 
 
@@ -669,15 +736,30 @@ def run(args: argparse.Namespace) -> None:
     set_seed(args.seed)
     device = torch.device("cpu" if args.cpu else ("cuda" if torch.cuda.is_available() else "cpu"))
 
+    # Backward compatibility with older arg names
+    if not hasattr(args, "fusion") and hasattr(args, "fusion_mode"):
+        args.fusion = args.fusion_mode
+    args.fusion = getattr(args, "fusion", "avg")
+    if not hasattr(args, "clf_dropout"):
+        args.clf_dropout = getattr(args, "dropout", 0.1)
+    if not hasattr(args, "clf_hidden_dim"):
+        args.clf_hidden_dim = 256
+    if not hasattr(args, "clf_activation"):
+        args.clf_activation = "gelu"
+    if not hasattr(args, "classification_mode"):
+        args.classification_mode = "classification_default"
+
     out_dir = Path(args.out_dir)
     ensure_dir(out_dir)
 
     train_loader, test_loader, class_names = build_dataloaders(args, device)
     num_classes = len(class_names)
-    cfg = build_loss_and_cfg(args, device, num_classes, class_names)
 
     model = build_model(args, device)
-    head = build_head(model, args, num_classes, device)
+    dims = infer_feature_dims(model, args, device)
+    args.head_in_dim = compute_head_in_dim(args, dims)
+    cfg = build_loss_and_cfg(args, device, num_classes, class_names)
+    head = build_head(model, args, num_classes, args.head_in_dim, device)
 
     ckpt_info = load_checkpoint(args, model, head, device)
     maybe_freeze_after_load(args, model)

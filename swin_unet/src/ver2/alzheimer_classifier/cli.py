@@ -59,6 +59,18 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--seed", type=int, default=42)
 
     p.add_argument(
+        "--classification_mode",
+        type=str,
+        default="classification_default",
+        choices=[
+            "classification_default",
+            "classification_bottleneck_concat",
+            "classification_stage2_fusion",
+            "classification_multiscale",
+        ],
+        help="Select classification pipeline variant",
+    )
+    p.add_argument(
         "--feature_level",
         type=str,
         default="bottleneck",
@@ -66,16 +78,19 @@ def build_argparser() -> argparse.ArgumentParser:
         help="Feature level for classification pooling",
     )
     p.add_argument(
-        "--fusion_mode",
+        "--fusion",
         type=str,
         default="avg",
         choices=["avg", "concat", "max"],
         help="Fusion strategy for dual-view features",
     )
-    p.add_argument("--clf_hidden_dim", type=int, default=0, help="Optional hidden dim for classification head (0=linear)")
+    p.add_argument("--clf_hidden_dim", type=int, default=256, help="Hidden dim for 2-layer classification head")
+    p.add_argument("--clf_dropout", type=float, default=0.1, help="Dropout after first layer in classification head")
+    p.add_argument("--clf_activation", type=str, default="gelu", choices=["gelu", "relu"], help="Activation in classification head")
+    p.add_argument("--no-clf-layernorm", action="store_true", help="Disable LayerNorm in classification head hidden")
 
     p.add_argument("--freeze_encoder_epochs", type=int, default=0)
-    p.add_argument("--dropout", type=float, default=0.0)
+    p.add_argument("--dropout", type=float, default=0.0)  # legacy head dropout (fallback for clf_dropout)
 
     p.add_argument(
         "--view_mode",
@@ -96,4 +111,3 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--focal_alpha", type=str, default="")
 
     return p
-
