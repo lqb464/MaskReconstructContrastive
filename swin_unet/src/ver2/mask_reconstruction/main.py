@@ -177,7 +177,9 @@ def main() -> None:
         vis_threshold=float(args.vis_threshold),
     )
     trainer.fit(train_loader, val_loader, epochs=int(cfg.training.epochs))
+    generate_plots(out_dir / "epoch_log.csv", out_dir / "plot")
 
 
 if __name__ == "__main__":
     main()
+from .plotting import generate_plots

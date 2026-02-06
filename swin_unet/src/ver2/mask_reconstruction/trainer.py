@@ -13,25 +13,37 @@ from ..models.swin_unet_dualview_ssl import SwinUNetDualViewSSL, flip_lr
 from ..training.ckpt_io import save_checkpoint
 from ..training.utils import ensure_dir
 
-from .dice import dice_coefficient, soft_dice_loss
+from .dice import dice_coefficient, soft_dice_loss, soft_dice_loss_by_region
 from .visualization import save_val_visualization_grid
 from ..common.losses import nt_xent_loss, vicreg_loss
 
 
 class EpochLogger:
-    """Minimal CSV logger for epoch-level metrics."""
+    """CSV logger with reconstruction + dice metrics."""
+
+    HEADERS = [
+        "epoch",
+        "train_loss_total",
+        "train_loss_masked",
+        "train_loss_unmasked",
+        "train_dice",
+        "val_loss_total",
+        "val_loss_masked",
+        "val_loss_unmasked",
+        "val_dice",
+    ]
 
     def __init__(self, path: Path):
         self.path = path
         if not self.path.exists():
             with self.path.open("w", newline="", encoding="utf-8") as f:
                 w = csv.writer(f)
-                w.writerow(["epoch", "train_loss", "train_dice", "val_loss", "val_dice"])
+                w.writerow(self.HEADERS)
 
     def append(self, row: Dict) -> None:
         with self.path.open("a", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            w.writerow([row["epoch"], row["train_loss"], row["train_dice"], row["val_loss"], row["val_dice"]])
+            w.writerow([row[h] for h in self.HEADERS])
 
 
 class MaskReconstructionTrainer:
@@ -71,7 +83,7 @@ class MaskReconstructionTrainer:
 
         self.best_val = float("-inf")
 
-    def _forward_losses(self, x: torch.Tensor, y: torch.Tensor, plane_one_hot: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _forward_losses(self, x: torch.Tensor, y: torch.Tensor, plane_one_hot: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         pixel_mask = torch.zeros_like(y)  # No masking for this supervised task
 
         recon1, recon2, z1, z2 = self.model(x, pixel_mask, plane_one_hot)
@@ -79,15 +91,23 @@ class MaskReconstructionTrainer:
 
         # Reconstruction / Dice
         dice = torch.tensor(0.0, device=x.device)
-        loss_recon = torch.tensor(0.0, device=x.device)
+        loss_total = torch.tensor(0.0, device=x.device)
+        loss_masked = torch.tensor(0.0, device=x.device)
+        loss_unmasked = torch.tensor(0.0, device=x.device)
         if self.cfg.training.enable_reconstruct:
-            loss1 = soft_dice_loss(recon1, y)
+            ltot1, lmask1, lunmask1 = soft_dice_loss_by_region(recon1, y)
+            loss1 = ltot1
+            loss_masked = lmask1
+            loss_unmasked = lunmask1
             if recon2 is not None:
-                loss2 = soft_dice_loss(recon2, target_view2)
-                loss_recon = loss1 + loss2
+                ltot2, lmask2, lunmask2 = soft_dice_loss_by_region(recon2, target_view2)
+                loss2 = ltot2
+                loss_total = loss1 + loss2
+                loss_masked = loss_masked + lmask2
+                loss_unmasked = loss_unmasked + lunmask2
                 dice2 = dice_coefficient(torch.sigmoid(recon2), target_view2, threshold=self.threshold)
             else:
-                loss_recon = loss1
+                loss_total = loss1
                 dice2 = torch.tensor(0.0, device=x.device)
 
             dice1 = dice_coefficient(torch.sigmoid(recon1), y, threshold=self.threshold)
@@ -116,19 +136,21 @@ class MaskReconstructionTrainer:
         lambda_con = self.cfg.training.lambda_contrast
         total = torch.tensor(0.0, device=x.device)
         if self.cfg.training.enable_reconstruct:
-            total = total + lambda_recon * loss_recon
+            total = total + lambda_recon * loss_total
         if self.cfg.training.enable_contrastive and lambda_con != 0:
             total = total + lambda_con * loss_con
         if total.numel() == 0:
-            total = loss_recon + loss_con
+            total = loss_total + loss_con
 
-        return total, dice, loss_con
+        return total, dice, loss_con, loss_masked, loss_unmasked
 
-    def train_one_epoch(self, loader: DataLoader) -> Tuple[float, float, float]:
+    def train_one_epoch(self, loader: DataLoader) -> Tuple[float, float, float, float, float]:
         self.model.train()
         total_loss = 0.0
         total_dice = 0.0
         total_con = 0.0
+        total_masked = 0.0
+        total_unmasked = 0.0
         steps = 0
 
         for batch in loader:
@@ -138,7 +160,7 @@ class MaskReconstructionTrainer:
 
             self.optimizer.zero_grad(set_to_none=True)
             with autocast(device_type=self.device.type, enabled=self.use_amp):
-                loss, dice, loss_con = self._forward_losses(x, y, plane)
+                loss, dice, loss_con, loss_masked, loss_unmasked = self._forward_losses(x, y, plane)
 
             if self.use_amp:
                 self.scaler.scale(loss).backward()
@@ -151,18 +173,28 @@ class MaskReconstructionTrainer:
             total_loss += loss.detach().item()
             total_dice += dice.detach().item()
             total_con += loss_con.detach().item()
+            total_masked += loss_masked.detach().item()
+            total_unmasked += loss_unmasked.detach().item()
             steps += 1
 
         if steps == 0:
-            return 0.0, 0.0, 0.0
-        return total_loss / steps, total_dice / steps, total_con / steps
+            return 0.0, 0.0, 0.0, 0.0, 0.0
+        return (
+            total_loss / steps,
+            total_dice / steps,
+            total_con / steps,
+            total_masked / steps,
+            total_unmasked / steps,
+        )
 
     @torch.no_grad()
-    def validate(self, loader: DataLoader) -> Tuple[float, float, float]:
+    def validate(self, loader: DataLoader) -> Tuple[float, float, float, float, float]:
         self.model.eval()
         total_loss = 0.0
         total_dice = 0.0
         total_con = 0.0
+        total_masked = 0.0
+        total_unmasked = 0.0
         steps = 0
 
         for batch in loader:
@@ -171,16 +203,24 @@ class MaskReconstructionTrainer:
             plane = batch["plane_one_hot"].to(self.device, non_blocking=True)
 
             with autocast(device_type=self.device.type, enabled=self.use_amp):
-                loss, dice, loss_con = self._forward_losses(x, y, plane)
+                loss, dice, loss_con, loss_masked, loss_unmasked = self._forward_losses(x, y, plane)
 
             total_loss += loss.detach().item()
             total_dice += dice.detach().item()
             total_con += loss_con.detach().item()
+            total_masked += loss_masked.detach().item()
+            total_unmasked += loss_unmasked.detach().item()
             steps += 1
 
         if steps == 0:
-            return 0.0, 0.0, 0.0
-        return total_loss / steps, total_dice / steps, total_con / steps
+            return 0.0, 0.0, 0.0, 0.0, 0.0
+        return (
+            total_loss / steps,
+            total_dice / steps,
+            total_con / steps,
+            total_masked / steps,
+            total_unmasked / steps,
+        )
 
     def _save_ckpt(self, epoch: int) -> None:
         latest_path = self.ckpt_dir / "latest.pt"
@@ -212,15 +252,19 @@ class MaskReconstructionTrainer:
             if hasattr(self.model, "current_epoch"):
                 self.model.current_epoch = epoch
 
-            train_loss, train_dice, train_con = self.train_one_epoch(train_loader)
-            val_loss, val_dice, val_con = self.validate(val_loader)
+            train_loss, train_dice, train_con, train_masked, train_unmasked = self.train_one_epoch(train_loader)
+            val_loss, val_dice, val_con, val_masked, val_unmasked = self.validate(val_loader)
 
             self.logger.append(
                 {
                     "epoch": epoch,
-                    "train_loss": train_loss,
+                    "train_loss_total": train_loss,
+                    "train_loss_masked": train_masked,
+                    "train_loss_unmasked": train_unmasked,
                     "train_dice": train_dice,
-                    "val_loss": val_loss,
+                    "val_loss_total": val_loss,
+                    "val_loss_masked": val_masked,
+                    "val_loss_unmasked": val_unmasked,
                     "val_dice": val_dice,
                 }
             )
@@ -236,8 +280,8 @@ class MaskReconstructionTrainer:
 
             print(
                 f"[epoch {epoch:03d}] "
-                f"train_loss={train_loss:.4f} train_dice={train_dice:.4f} "
-                f"val_loss={val_loss:.4f} val_dice={val_dice:.4f} "
+                f"train_loss={train_loss:.4f} train_masked={train_masked:.4f} train_unmasked={train_unmasked:.4f} train_dice={train_dice:.4f} "
+                f"val_loss={val_loss:.4f} val_masked={val_masked:.4f} val_unmasked={val_unmasked:.4f} val_dice={val_dice:.4f} "
                 f"train_con={train_con:.4f} val_con={val_con:.4f} "
                 f"best_metric={self.best_val:.4f}"
             )

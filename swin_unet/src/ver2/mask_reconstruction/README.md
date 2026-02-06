@@ -32,7 +32,8 @@ Visualization (optional):
 Outputs are saved to `out_dir/vis/val_vis_epoch_XXXX.png` showing input, target, predicted probability, thresholded mask with per-sample Dice.
 
 **Outputs**
-- `epoch_log.csv` in `out_dir` with columns: `epoch,train_loss,train_dice,val_loss,val_dice`.
+- `epoch_log.csv` in `out_dir` with columns: epoch, train/val loss_total, loss_masked, loss_unmasked, dice.
+- Plots in `out_dir/plot/`: `loss_total.png`, `loss_masked.png`, `loss_unmasked.png`, `dice.png`.
 - `checkpoints/latest.pt` (unless `--save_best_only 1`).
 - `checkpoints/best_val_dice.pt` saved when validation Dice improves.
 
