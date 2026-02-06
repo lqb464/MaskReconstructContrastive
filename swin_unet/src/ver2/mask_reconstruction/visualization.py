@@ -10,7 +10,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-from viz.visualization import save_image_grid
+from ..viz.visualization import save_image_grid
 
 
 @torch.no_grad()

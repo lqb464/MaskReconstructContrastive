@@ -8,10 +8,10 @@ import torch
 from torch.utils.data import DataLoader
 from torch.amp import GradScaler, autocast
 
-from config.experiment import ExperimentConfig
-from models.swin_unet_dualview_ssl import SwinUNetDualViewSSL, flip_lr
-from training.ckpt_io import save_checkpoint
-from training.utils import ensure_dir
+from ..config.experiment import ExperimentConfig
+from ..models.swin_unet_dualview_ssl import SwinUNetDualViewSSL, flip_lr
+from ..training.ckpt_io import save_checkpoint
+from ..training.utils import ensure_dir
 
 from .dice import dice_coefficient, soft_dice_loss
 from .visualization import save_val_visualization_grid

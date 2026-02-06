@@ -6,10 +6,10 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader, Subset
 
-from config.experiment import build_argparser, ExperimentConfig
-from models.swin_unet_dualview_ssl import SwinUNetDualViewSSL
-from training.utils import get_device, set_seed, ensure_dir
-from data.dataset import split_indices
+from ..config.experiment import build_argparser, ExperimentConfig
+from ..models.swin_unet_dualview_ssl import SwinUNetDualViewSSL
+from ..training.utils import get_device, set_seed, ensure_dir
+from ..data.dataset import split_indices
 
 from .dataset import MaskReconstructionDataset
 from .trainer import MaskReconstructionTrainer

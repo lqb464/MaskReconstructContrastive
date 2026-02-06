@@ -7,7 +7,7 @@ from typing import Callable, List, Optional, Tuple, Dict
 import torch
 from torch.utils.data import Dataset
 
-from data.dataset import plane_to_one_hot
+from ..data.dataset import plane_to_one_hot
 from .io import load_png_grayscale, load_mask_npz
 
 log = logging.getLogger(__name__)
