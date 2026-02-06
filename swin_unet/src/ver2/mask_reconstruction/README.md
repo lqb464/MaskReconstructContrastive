@@ -5,7 +5,7 @@ Train the existing Swin-UNet dual-view model to predict a binary mask from a sin
 **Dataset Layout**
 - Folder contains pairs: `name.png` and `name_mask.npz`.
 - If `--mask_key` is omitted, the first array in the NPZ is used. Nonzero values are treated as `1`.
-- Image and mask are loaded at native resolution; no masking is applied to inputs.
+- Images and masks are resized to `image_size` from the shared config (default 192, override with `--image-size`). No input pixel masking is applied.
 
 **Dual View Behavior**
 - View1 uses the raw image.

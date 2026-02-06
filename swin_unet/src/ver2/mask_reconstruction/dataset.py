@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Callable, List, Optional, Tuple, Dict
 
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset
 
 from ..data.dataset import plane_to_one_hot
@@ -37,6 +38,7 @@ class MaskReconstructionDataset(Dataset):
         strict_pairs: bool = True,
         mask_key: Optional[str] = None,
         augment: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
+        image_size: Optional[int] = None,
     ):
         self.data_dir = Path(data_dir).expanduser()
         if not self.data_dir.exists():
@@ -47,6 +49,7 @@ class MaskReconstructionDataset(Dataset):
         self.strict_pairs = bool(strict_pairs)
         self.mask_key = mask_key
         self.augment = augment
+        self.image_size = image_size
 
         self.plane_one_hot = plane_to_one_hot("axial")  # default plane for all slices
 
@@ -86,6 +89,11 @@ class MaskReconstructionDataset(Dataset):
         img_path, mask_path = self.pairs[idx]
         x = load_png_grayscale(img_path)  # [1,H,W]
         y = load_mask_npz(mask_path, key=self.mask_key)  # [1,H,W]
+
+        if self.image_size is not None:
+            # resize to [1, image_size, image_size]
+            x = F.interpolate(x.unsqueeze(0), size=(self.image_size, self.image_size), mode="bilinear", align_corners=False).squeeze(0)
+            y = F.interpolate(y.unsqueeze(0), size=(self.image_size, self.image_size), mode="nearest").squeeze(0)
 
         if self.augment is not None:
             x = self.augment(x)

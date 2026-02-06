@@ -128,6 +128,7 @@ def main() -> None:
         mask_suffix=args.mask_suffix,
         strict_pairs=bool(args.strict_pairs),
         mask_key=(args.mask_key or None),
+        image_size=int(cfg.data.image_size) if cfg.data.image_size else None,
     )
     val_ds = None
     if val_dir:
@@ -137,6 +138,7 @@ def main() -> None:
             mask_suffix=args.mask_suffix,
             strict_pairs=bool(args.strict_pairs),
             mask_key=(args.mask_key or None),
+            image_size=int(cfg.data.image_size) if cfg.data.image_size else None,
         )
     train_loader, val_loader = make_dataloaders(train_ds, cfg, device, val_ds=val_ds)
 
