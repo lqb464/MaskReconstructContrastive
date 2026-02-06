@@ -112,6 +112,11 @@ class TrainingConfig:
     aug_jitter_strength: float = 0.1
     aug_blur_kernel: int = 3
 
+    # Optional dice auxiliary for supervised segmentation
+    dice_loss_weight: float = 0.0
+    dice_mode: str = "total"  # "total" | "fg"
+    dice_smooth: float = 1e-6
+
 
 @dataclass
 class DataConfig:
@@ -228,6 +233,9 @@ class ExperimentConfig:
                 recon_loss=args.recon_loss,
                 fg_eps=args.fg_eps,
                 fg_weight=args.fg_weight,
+                dice_loss_weight=getattr(args, "dice_loss_weight", 0.0),
+                dice_mode=getattr(args, "dice_mode", "total"),
+                dice_smooth=getattr(args, "dice_smooth", 1e-6),
             ),
             data=DataConfig(
                 data_root=args.data_root,
@@ -377,6 +385,11 @@ def build_argparser() -> argparse.ArgumentParser:
                    help="Reconstruction loss type. weighted_bce_logits is recommended to avoid all-zero collapse.")
     p.add_argument("--fg-eps", type=float, default=0.02, help="Foreground threshold for weighted_bce_logits")
     p.add_argument("--fg-weight", type=float, default=10.0, help="Extra foreground weight for weighted_bce_logits")
+    
+    # Dice auxiliary (segmentation)
+    p.add_argument("--dice-loss-weight", type=float, default=0.0, help="Weight for auxiliary soft dice loss")
+    p.add_argument("--dice-mode", type=str, default="total", choices=["total", "fg"], help="Dice over total image or fg only")
+    p.add_argument("--dice-smooth", type=float, default=1e-6, help="Smoothing epsilon for dice")
     p.add_argument("--epochs", type=int, default=200)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--weight-decay", type=float, default=1e-4)

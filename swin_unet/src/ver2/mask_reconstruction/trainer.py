@@ -16,7 +16,7 @@ from tqdm import tqdm
 
 from .dice import dice_coefficient, soft_dice_loss, soft_dice_loss_by_region
 from .visualization import save_val_visualization_grid
-from ..common.losses import nt_xent_loss, vicreg_loss
+from ..common.losses import nt_xent_loss, vicreg_loss, mixed_bce_logits_weighted_seg
 
 
 class EpochLogger:
@@ -75,6 +75,9 @@ class MaskReconstructionTrainer:
         self.vis_num = int(vis_num)
         self.vis_threshold = float(vis_threshold)
         self.disable_tqdm = bool(disable_tqdm)
+        self.dice_loss_weight = float(cfg.training.dice_loss_weight)
+        self.dice_mode = getattr(cfg.training, "dice_mode", "total")
+        self.dice_smooth = getattr(cfg.training, "dice_smooth", 1e-6)
 
         self.use_amp = bool(cfg.training.amp) and device.type == "cuda"
         self.scaler = GradScaler(enabled=self.use_amp)
@@ -92,25 +95,60 @@ class MaskReconstructionTrainer:
         recon1, recon2, z1, z2 = self.model(x, pixel_mask, plane_one_hot)
         target_view2 = flip_lr(y) if (recon2 is not None and self.align_flip_target) else y
 
-        # Reconstruction / Dice
+        # Reconstruction losses (mixed) and Dice metric/aux
         dice = torch.tensor(0.0, device=x.device)
         loss_total = torch.tensor(0.0, device=x.device)
         loss_masked = torch.tensor(0.0, device=x.device)
         loss_unmasked = torch.tensor(0.0, device=x.device)
+        loss_dice_aux = torch.tensor(0.0, device=x.device)
         if self.cfg.training.enable_reconstruct:
-            ltot1, lmask1, lunmask1 = soft_dice_loss_by_region(recon1, y)
-            loss1 = ltot1
-            loss_masked = lmask1
-            loss_unmasked = lunmask1
+            fg1 = (y > 0.5).float()
+            lt1, lm1, lu1 = mixed_bce_logits_weighted_seg(
+                recon1,
+                y,
+                fg1,
+                fg_eps=self.cfg.training.fg_eps,
+                fg_weight=self.cfg.training.fg_weight,
+                alpha_mask=1.0,
+                beta_unmask=0.2,
+            )
+            loss_total = loss_total + lt1
+            loss_masked = loss_masked + lm1
+            loss_unmasked = loss_unmasked + lu1
+
+            if self.dice_loss_weight > 0:
+                if self.dice_mode == "fg":
+                    _, lmask1_dice, _ = soft_dice_loss_by_region(recon1, y, eps=self.dice_smooth)
+                    loss_dice_aux = loss_dice_aux + lmask1_dice
+                else:
+                    ltot1_dice = soft_dice_loss(recon1, y, eps=self.dice_smooth)
+                    loss_dice_aux = loss_dice_aux + ltot1_dice
+
             if recon2 is not None:
-                ltot2, lmask2, lunmask2 = soft_dice_loss_by_region(recon2, target_view2)
-                loss2 = ltot2
-                loss_total = loss1 + loss2
-                loss_masked = loss_masked + lmask2
-                loss_unmasked = loss_unmasked + lunmask2
+                fg2 = (target_view2 > 0.5).float()
+                lt2, lm2, lu2 = mixed_bce_logits_weighted_seg(
+                    recon2,
+                    target_view2,
+                    fg2,
+                    fg_eps=self.cfg.training.fg_eps,
+                    fg_weight=self.cfg.training.fg_weight,
+                    alpha_mask=1.0,
+                    beta_unmask=0.2,
+                )
+                loss_total = loss_total + lt2
+                loss_masked = loss_masked + lm2
+                loss_unmasked = loss_unmasked + lu2
+
+                if self.dice_loss_weight > 0:
+                    if self.dice_mode == "fg":
+                        _, lmask2_dice, _ = soft_dice_loss_by_region(recon2, target_view2, eps=self.dice_smooth)
+                        loss_dice_aux = loss_dice_aux + lmask2_dice
+                    else:
+                        ltot2_dice = soft_dice_loss(recon2, target_view2, eps=self.dice_smooth)
+                        loss_dice_aux = loss_dice_aux + ltot2_dice
+
                 dice2 = dice_coefficient(torch.sigmoid(recon2), target_view2, threshold=self.threshold)
             else:
-                loss_total = loss1
                 dice2 = torch.tensor(0.0, device=x.device)
 
             dice1 = dice_coefficient(torch.sigmoid(recon1), y, threshold=self.threshold)
@@ -140,10 +178,12 @@ class MaskReconstructionTrainer:
         total = torch.tensor(0.0, device=x.device)
         if self.cfg.training.enable_reconstruct:
             total = total + lambda_recon * loss_total
+            if self.dice_loss_weight > 0:
+                total = total + self.dice_loss_weight * loss_dice_aux
         if self.cfg.training.enable_contrastive and lambda_con != 0:
             total = total + lambda_con * loss_con
         if total.numel() == 0:
-            total = loss_total + loss_con
+            total = loss_total + lambda_con * loss_con
 
         return total, dice, loss_con, loss_masked, loss_unmasked
 
@@ -300,7 +340,7 @@ class MaskReconstructionTrainer:
                 self._save_ckpt(epoch)
 
             # Selection rule: reconstruct -> maximize val_dice; else minimize val_loss
-            metric = val_dice if self.cfg.training.enable_reconstruct else -val_loss
+            metric = val_dice  # always select by val_dice
             if metric > self.best_val:
                 self.best_val = metric
                 self._save_best(epoch)

@@ -177,6 +177,30 @@ def mixed_bce_logits_weighted(
     return alpha_mask * masked + beta_unmask * unmasked
 
 
+def mixed_bce_logits_weighted_seg(
+    logits: torch.Tensor,
+    target: torch.Tensor,
+    region_mask: torch.Tensor,
+    fg_eps: float = 0.02,
+    fg_weight: float = 10.0,
+    alpha_mask: float = 1.0,
+    beta_unmask: float = 0.2,
+):
+    """
+    Segmentation adapter of mixed_bce_logits_weighted using foreground mask from GT.
+
+    region_mask: [B,1,H,W] where 1 denotes foreground.
+    Returns tuple: (loss_total, loss_fg, loss_bg)
+    """
+    loss_map = _foreground_weighted_bce_logits(logits, target, fg_eps=fg_eps, fg_weight=fg_weight)
+    m = region_mask.float()
+    um = 1.0 - m
+    masked = (loss_map * m).sum() / m.sum().clamp(min=1.0)
+    unmasked = (loss_map * um).sum() / um.sum().clamp(min=1.0)
+    total = alpha_mask * masked + beta_unmask * unmasked
+    return total, masked, unmasked
+
+
 def nt_xent_loss(z1: torch.Tensor, z2: torch.Tensor, temperature: float = 0.2) -> torch.Tensor:
     """
     NT-Xent (Normalized Temperature-scaled Cross Entropy) loss for contrastive learning
@@ -307,5 +331,6 @@ __all__ = [
     "compute_embedding_variance",
     "masked_bce_logits_weighted",
     "mixed_bce_logits_weighted",
+    "mixed_bce_logits_weighted_seg",
     "vicreg_loss",
 ]
