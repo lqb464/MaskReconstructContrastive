@@ -32,9 +32,6 @@ def parse_args() -> argparse.Namespace:
     grp.add_argument("--vis-num", type=int, default=4, help="Number of validation samples to visualize")
     grp.add_argument("--vis-threshold", type=float, default=0.5, help="Threshold for visualization binarization")
     grp.add_argument("--no-tqdm", type=int, default=0, help="Disable progress bars (default off)")
-    grp.add_argument("--dice-loss-weight", type=float, default=0.0, help="Weight for auxiliary soft dice loss")
-    grp.add_argument("--dice-mode", type=str, default="total", choices=["total", "fg"], help="Dice over total image or fg only")
-    grp.add_argument("--dice-smooth", type=float, default=1e-6, help="Smoothing epsilon for dice")
 
     # Make base data-root optional by clearing required flag to allow train_dir-only workflows
     for action in parser._actions:

@@ -12,16 +12,19 @@ Train the existing Swin-UNet dual-view model to predict a binary mask from a sin
 - View2 uses `flip_lr(image)`. The target for view2 is also flipped to keep spatial alignment.
 - The model outputs logits `[B,1,H,W]` for both views; Dice is computed on sigmoid outputs.
 
-**Run Command (reconstruct-only)**
+**Run Command (reconstruct-only, mixed loss + dice aux)**
 From `swin_unet/src/ver2`:
 ```
 python -m mask_reconstruction.main \
-  --train_dir /path/to/train_pairs \
-  --val_dir /path/to/val_pairs \
-  --out-dir runs/mask_recon_run \
+  --train_dir /kaggle/input/synthstrip-data-v1-5-slices/synthstrip_data_v1.5_slices/test/axial \
+  --val_dir   /kaggle/input/synthstrip-data-v1-5-slices/synthstrip_data_v1.5_slices/valid/axial \
+  --out-dir after_stage0 \
+  --run-name after_stage0 \
   --enable-reconstruct --disable-contrastive --dual-view \
-  --epochs 50 --batch-size 8 --lr 1e-4 --amp \
-  --mask_suffix _mask.npz --image_ext .png --strict_pairs 1
+  --epochs 10 --batch-size 32 --lr 1e-3 --image-size 256 \
+  --enable_saca --saca_position after_stage0 \
+  --dice-loss-weight 0.1 --dice-mode total --dice-smooth 1e-6 \
+  --vis-every 2 --vis-num 4 --vis-threshold 0.5 --no-tqdm 0
 ```
 Optional flags: `--mask_key`, `--threshold` (for dice metric binarization), `--vis-num`, `--vis-threshold`, plus all base ver2 flags (SACA, contrastive, single/dual view, checkpoints, etc.).
 
