@@ -33,6 +33,7 @@ class MaskReconstructionDataset(Dataset):
         self,
         data_dir: str | Path,
         image_ext: str = ".png",
+        mask_suffix: str = "_mask.npz",
         strict_pairs: bool = True,
         mask_key: Optional[str] = None,
         augment: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
@@ -42,6 +43,7 @@ class MaskReconstructionDataset(Dataset):
             raise FileNotFoundError(f"data_dir not found: {self.data_dir}")
 
         self.image_ext = image_ext.lower()
+        self.mask_suffix = mask_suffix
         self.strict_pairs = bool(strict_pairs)
         self.mask_key = mask_key
         self.augment = augment
@@ -53,7 +55,7 @@ class MaskReconstructionDataset(Dataset):
 
         all_imgs = sorted(p for p in self.data_dir.iterdir() if p.is_file() and p.suffix.lower() == self.image_ext)
         for img_path in all_imgs:
-            mask_path = img_path.with_name(f"{img_path.stem}_mask.npz")
+            mask_path = img_path.with_name(f"{img_path.stem}{self.mask_suffix}")
             if mask_path.exists():
                 self.pairs.append((img_path, mask_path))
             else:
