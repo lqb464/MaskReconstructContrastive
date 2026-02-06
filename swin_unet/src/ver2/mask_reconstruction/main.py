@@ -65,7 +65,16 @@ def make_dataloaders(
         )
 
     if val_ds is not None:
+        # Apply train_mod only to train set
+        if int(cfg.data.train_mod) > 1:
+            idx_train = [i for i in range(len(train_ds)) if (i % int(cfg.data.train_mod)) == 0]
+            train_ds = Subset(train_ds, idx_train)
         return _loader(train_ds, shuffle=True), _loader(val_ds, shuffle=False)
+
+    # Apply train_mod before split
+    if int(cfg.data.train_mod) > 1:
+        idx_train = [i for i in range(len(train_ds)) if (i % int(cfg.data.train_mod)) == 0]
+        train_ds = Subset(train_ds, idx_train)
 
     train_idx, val_idx, _ = split_indices(
         n=len(train_ds),
