@@ -13,6 +13,7 @@ from ..data.dataset import split_indices
 
 from .dataset import MaskReconstructionDataset
 from .trainer import MaskReconstructionTrainer
+from .plotting import generate_plots
 
 
 def parse_args() -> argparse.Namespace:
