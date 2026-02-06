@@ -195,7 +195,7 @@ def main() -> None:
         save_best_only=False,
         align_flip_target=True,
         vis_every=int(cfg.logging.vis_every),
-        vis_num=int(args.vis_num),
+        vis_num=int(getattr(args, "vis_n_results", args.vis_num)),
         vis_threshold=float(args.vis_threshold),
         disable_tqdm=bool(args.no_tqdm),
     )

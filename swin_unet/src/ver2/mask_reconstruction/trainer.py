@@ -33,6 +33,11 @@ class EpochLogger:
         "val_loss_masked",
         "val_loss_unmasked",
         "val_dice",
+        "train_loss_dice_aux",
+        "val_loss_dice_aux",
+        "train_loss_contrastive",
+        "val_loss_contrastive",
+        "lr",
     ]
 
     def __init__(self, path: Path):
@@ -106,7 +111,7 @@ class MaskReconstructionTrainer:
 
         self.best_val = float("-inf")
 
-    def _forward_losses(self, x: torch.Tensor, y: torch.Tensor, plane_one_hot: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _forward_losses(self, x: torch.Tensor, y: torch.Tensor, plane_one_hot: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         pixel_mask = torch.zeros_like(y)  # No masking for this supervised task
 
         recon1, recon2, z1, z2 = self.model(x, pixel_mask, plane_one_hot)
@@ -202,15 +207,16 @@ class MaskReconstructionTrainer:
         if total.numel() == 0:
             total = loss_total + lambda_con * loss_con
 
-        return total, dice, loss_con, loss_masked, loss_unmasked
+        return total, dice, loss_con, loss_masked, loss_unmasked, loss_dice_aux
 
-    def train_one_epoch(self, loader: DataLoader) -> Tuple[float, float, float, float, float]:
+    def train_one_epoch(self, loader: DataLoader) -> Tuple[float, float, float, float, float, float]:
         self.model.train()
         total_loss = 0.0
         total_dice = 0.0
         total_con = 0.0
         total_masked = 0.0
         total_unmasked = 0.0
+        total_dice_aux = 0.0
         steps = 0
         progress = loader if self.disable_tqdm else tqdm(loader, desc="Train", leave=False, dynamic_ncols=True)
 
@@ -221,7 +227,7 @@ class MaskReconstructionTrainer:
 
             self.optimizer.zero_grad(set_to_none=True)
             with autocast(device_type=self.device.type, enabled=self.use_amp):
-                loss, dice, loss_con, loss_masked, loss_unmasked = self._forward_losses(x, y, plane)
+                loss, dice, loss_con, loss_masked, loss_unmasked, loss_dice_aux = self._forward_losses(x, y, plane)
 
             if self.use_amp:
                 self.scaler.scale(loss).backward()
@@ -238,6 +244,7 @@ class MaskReconstructionTrainer:
             total_con += loss_con.detach().item()
             total_masked += loss_masked.detach().item()
             total_unmasked += loss_unmasked.detach().item()
+            total_dice_aux += loss_dice_aux.detach().item()
             steps += 1
 
             if not self.disable_tqdm:
@@ -253,23 +260,25 @@ class MaskReconstructionTrainer:
                 )
 
         if steps == 0:
-            return 0.0, 0.0, 0.0, 0.0, 0.0
+            return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
         return (
             total_loss / steps,
             total_dice / steps,
             total_con / steps,
             total_masked / steps,
             total_unmasked / steps,
+            total_dice_aux / steps,
         )
 
     @torch.no_grad()
-    def validate(self, loader: DataLoader) -> Tuple[float, float, float, float, float]:
+    def validate(self, loader: DataLoader) -> Tuple[float, float, float, float, float, float]:
         self.model.eval()
         total_loss = 0.0
         total_dice = 0.0
         total_con = 0.0
         total_masked = 0.0
         total_unmasked = 0.0
+        total_dice_aux = 0.0
         steps = 0
         progress = loader if self.disable_tqdm else tqdm(loader, desc="Val", leave=False, dynamic_ncols=True)
 
@@ -279,13 +288,14 @@ class MaskReconstructionTrainer:
             plane = batch["plane_one_hot"].to(self.device, non_blocking=True)
 
             with autocast(device_type=self.device.type, enabled=self.use_amp):
-                loss, dice, loss_con, loss_masked, loss_unmasked = self._forward_losses(x, y, plane)
+                loss, dice, loss_con, loss_masked, loss_unmasked, loss_dice_aux = self._forward_losses(x, y, plane)
 
             total_loss += loss.detach().item()
             total_dice += dice.detach().item()
             total_con += loss_con.detach().item()
             total_masked += loss_masked.detach().item()
             total_unmasked += loss_unmasked.detach().item()
+            total_dice_aux += loss_dice_aux.detach().item()
             steps += 1
 
             if not self.disable_tqdm:
@@ -299,13 +309,14 @@ class MaskReconstructionTrainer:
                 )
 
         if steps == 0:
-            return 0.0, 0.0, 0.0, 0.0, 0.0
+            return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
         return (
             total_loss / steps,
             total_dice / steps,
             total_con / steps,
             total_masked / steps,
             total_unmasked / steps,
+            total_dice_aux / steps,
         )
 
     def _save_ckpt(self, epoch: int) -> None:
@@ -338,8 +349,8 @@ class MaskReconstructionTrainer:
             if hasattr(self.model, "current_epoch"):
                 self.model.current_epoch = epoch
 
-            train_loss, train_dice, train_con, train_masked, train_unmasked = self.train_one_epoch(train_loader)
-            val_loss, val_dice, val_con, val_masked, val_unmasked = self.validate(val_loader)
+            train_loss, train_dice, train_con, train_masked, train_unmasked, train_dice_aux = self.train_one_epoch(train_loader)
+            val_loss, val_dice, val_con, val_masked, val_unmasked, val_dice_aux = self.validate(val_loader)
 
             if hasattr(self, "lr_scheduler") and self.lr_scheduler is not None:
                 self.lr_scheduler.step()
@@ -356,6 +367,10 @@ class MaskReconstructionTrainer:
                     "val_loss_unmasked": val_unmasked,
                     "val_dice": val_dice,
                     "lr": self.optimizer.param_groups[0]["lr"],
+                    "train_loss_dice_aux": train_dice_aux,
+                    "val_loss_dice_aux": val_dice_aux,
+                    "train_loss_contrastive": train_con,
+                    "val_loss_contrastive": val_con,
                 }
             )
 
@@ -371,8 +386,10 @@ class MaskReconstructionTrainer:
             print(
                 f"Epoch {epoch:03d}/{epochs:03d} | "
                 f"lr={self.optimizer.param_groups[0]['lr']:.2e} | "
-                f"train lt={train_loss:.4f} lm={train_masked:.4f} lu={train_unmasked:.4f} d={train_dice:.4f} | "
-                f"val lt={val_loss:.4f} lm={val_masked:.4f} lu={val_unmasked:.4f} d={val_dice:.4f}"
+                f"train lt={train_loss:.4f} lm={train_masked:.4f} lu={train_unmasked:.4f} d={train_dice:.4f} "
+                f"dice_aux={train_dice_aux:.4f} con={train_con:.4f} | "
+                f"val lt={val_loss:.4f} lm={val_masked:.4f} lu={val_unmasked:.4f} d={val_dice:.4f} "
+                f"dice_aux={val_dice_aux:.4f} con={val_con:.4f}"
             )
 
             if self.vis_every > 0 and val_loader is not None and (epoch == 0 or (epoch % self.vis_every) == 0):

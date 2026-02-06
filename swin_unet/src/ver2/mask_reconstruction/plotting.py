@@ -35,6 +35,10 @@ def generate_plots(csv_path: Path, plot_dir: Path) -> None:
     _plot_two_lines(df, "epoch", "train_loss_masked", "val_loss_masked", plot_dir / "loss_masked.png", "loss_masked")
     _plot_two_lines(df, "epoch", "train_loss_unmasked", "val_loss_unmasked", plot_dir / "loss_unmasked.png", "loss_unmasked")
     _plot_two_lines(df, "epoch", "train_dice", "val_dice", plot_dir / "dice.png", "dice")
+    if "train_loss_dice_aux" in df.columns and "val_loss_dice_aux" in df.columns:
+        _plot_two_lines(df, "epoch", "train_loss_dice_aux", "val_loss_dice_aux", plot_dir / "dice_aux.png", "dice_aux")
+    if "train_loss_contrastive" in df.columns and "val_loss_contrastive" in df.columns:
+        _plot_two_lines(df, "epoch", "train_loss_contrastive", "val_loss_contrastive", plot_dir / "contrastive.png", "contrastive")
 
 
 __all__ = ["generate_plots"]

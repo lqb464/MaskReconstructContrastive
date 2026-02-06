@@ -155,6 +155,7 @@ class LoggingConfig:
     run_name: str = ""
     ckpt_dir: str = ""
     vis_every: int = 20
+    vis_n_results: int = 8
     save_latest_every: int = 1
     save_best_after_epoch: int = 0
     save_best_every: int = 20
@@ -442,6 +443,7 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--run-name", type=str, default="")
     p.add_argument("--ckpt-dir", type=str, default="")
     p.add_argument("--vis-every", type=int, default=20)
+    p.add_argument("--vis-n-results", type=int, default=8)
     p.add_argument("--save-latest-every", type=int, default=1, help='Save "latest" checkpoint every N epochs')
     p.add_argument("--save-best-after-epoch", type=int, default=0, help='Start saving "best" checkpoints from this epoch')
     p.add_argument("--save-best-every", type=int, default=1, help="Only evaluate best saving every N epochs")
