@@ -258,7 +258,7 @@ class MaskReconstructionTrainer:
             model=self.model,
             optimizer=self.optimizer,
             scaler=self.scaler,
-            cfg=self.run_cfg,
+            cfg=self.cfg,
         )
 
     def _save_best(self, epoch: int) -> None:
@@ -270,7 +270,7 @@ class MaskReconstructionTrainer:
             model=self.model,
             optimizer=self.optimizer,
             scaler=self.scaler,
-            cfg=self.run_cfg,
+            cfg=self.cfg,
         )
 
     def fit(self, train_loader: DataLoader, val_loader: DataLoader, epochs: int) -> None:
