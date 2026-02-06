@@ -503,7 +503,7 @@ def train_one_fold(
     }
 
 
-def run_single_split(args: argparse.Namespace) -> None:
+def run(args: argparse.Namespace) -> None:
     torch.manual_seed(args.seed)
     device = torch.device("cpu" if args.cpu else ("cuda" if torch.cuda.is_available() else "cpu"))
 
@@ -602,5 +602,3 @@ def run_single_split(args: argparse.Namespace) -> None:
     print("[done] best_f1:", metrics["best_score"])
 
 
-def run(args: argparse.Namespace) -> None:
-    run_single_split(args)

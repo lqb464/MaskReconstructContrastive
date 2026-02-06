@@ -72,11 +72,4 @@ def build_argparser() -> argparse.ArgumentParser:
     return p
 
 
-def main() -> None:
-    parser = build_argparser()
-    args = parser.parse_args()
-    run(args)
 
-
-if __name__ == "__main__":
-    main()
