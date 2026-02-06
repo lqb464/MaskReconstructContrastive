@@ -7,9 +7,15 @@ from typing import Callable, List, Optional, Tuple, Dict
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
+import numpy as np
 
 from ..data.dataset import plane_to_one_hot
-from .io import load_png_grayscale, load_mask_npz
+from ..data.pair_transforms import (
+    load_image_pil,
+    load_mask_pil_from_array,
+    apply_pair_transforms,
+)
+from .io import load_mask_npz
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +48,7 @@ class MaskReconstructionDataset(Dataset):
         target_size: int = 0,
         resize_mode: str = "letterbox",
         debug_shapes: bool = False,
+        return_dual_view: bool = False,
     ):
         self.data_dir = Path(data_dir).expanduser()
         if not self.data_dir.exists():
@@ -56,6 +63,7 @@ class MaskReconstructionDataset(Dataset):
         self.target_size = int(target_size)
         self.resize_mode = resize_mode
         self.debug_shapes = debug_shapes
+        self.return_dual_view = return_dual_view
 
         self.plane_one_hot = plane_to_one_hot("axial")  # default plane for all slices
 
@@ -93,27 +101,38 @@ class MaskReconstructionDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor | str]:
         img_path, mask_path = self.pairs[idx]
-        x = load_png_grayscale(img_path)  # [1,H,W]
-        y = load_mask_npz(mask_path, key=self.mask_key)  # [1,H,W]
+        img_pil = load_image_pil(img_path)
+        mask_np = load_mask_npz(mask_path, key=self.mask_key).numpy()
+        mask_pil = load_mask_pil_from_array(mask_np)
 
-        # initial shape check
-        if x.shape[-2:] != y.shape[-2:]:
-            if self.debug_shapes:
-                print(f"[warn] shape mismatch before resize: {x.shape} vs {y.shape} for {img_path.name}")
-            # fallback: resize mask to image size
-            y = F.interpolate(y.unsqueeze(0), size=x.shape[-2:], mode="nearest").squeeze(0)
-
-        # paired resize logic
         target_sz = self.target_size if self.target_size > 0 else self.image_size
-        if target_sz is not None and target_sz > 0:
-            x, y = resize_pair(x, y, target_sz, mode=self.resize_mode)
+        if target_sz is None or target_sz <= 0:
+            target_sz = img_pil.size[0]
 
-        if self.augment is not None:
-            x = self.augment(x)
+        x, y = apply_pair_transforms(img_pil, mask_pil, target_sz, do_hflip=False, resize_mode=self.resize_mode)
+        y = (y > 0).float()
 
-        assert x.shape[-2:] == y.shape[-2:], f"Shape mismatch after resize: {x.shape} vs {y.shape}"
+        if self.return_dual_view:
+            x2, y2 = apply_pair_transforms(img_pil, mask_pil, target_sz, do_hflip=True, resize_mode=self.resize_mode)
+            y2 = (y2 > 0).float()
+            assert x2.shape[-2:] == y2.shape[-2:], f"Shape mismatch after transforms view2: {x2.shape} vs {y2.shape}"
+        else:
+            x2, y2 = None, None
+
         if self.debug_shapes and idx < 3:
-            print(f"[debug] sample {idx}: shape {x.shape[-2:]} mode={self.resize_mode} target_sz={target_sz}")
+            print(f"[debug] sample {idx}: shape {x.shape[-2:]} target_sz={target_sz} mode={self.resize_mode}")
+
+        assert x.shape[-2:] == y.shape[-2:], f"Shape mismatch after transforms: {x.shape} vs {y.shape}"
+
+        if self.return_dual_view:
+            return {
+                "input1": x,
+                "target1": y,
+                "input2": x2,
+                "target2": y2,
+                "path": str(img_path),
+                "plane_one_hot": self.plane_one_hot.clone(),
+            }
 
         return {
             "input": x,
@@ -123,37 +142,4 @@ class MaskReconstructionDataset(Dataset):
         }
 
 
-def resize_pair(x: torch.Tensor, y: torch.Tensor, target_size: int, mode: str = "letterbox") -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Resize image/mask pair consistently.
-    x, y: [1,H,W]; y binary.
-    """
-    H, W = x.shape[-2:]
-    if mode == "direct":
-        x_r = F.interpolate(x.unsqueeze(0), size=(target_size, target_size), mode="bilinear", align_corners=False).squeeze(0)
-        y_r = F.interpolate(y.unsqueeze(0), size=(target_size, target_size), mode="nearest").squeeze(0)
-        y_r = (y_r > 0.5).float()
-        return x_r, y_r
-
-    # letterbox
-    scale = min(target_size / H, target_size / W)
-    new_h = int(round(H * scale))
-    new_w = int(round(W * scale))
-
-    x_scaled = F.interpolate(x.unsqueeze(0), size=(new_h, new_w), mode="bilinear", align_corners=False).squeeze(0)
-    y_scaled = F.interpolate(y.unsqueeze(0), size=(new_h, new_w), mode="nearest").squeeze(0)
-    y_scaled = (y_scaled > 0.5).float()
-
-    pad_h = target_size - new_h
-    pad_w = target_size - new_w
-    pad_top = pad_h // 2
-    pad_bottom = pad_h - pad_top
-    pad_left = pad_w // 2
-    pad_right = pad_w - pad_left
-
-    x_padded = F.pad(x_scaled, (pad_left, pad_right, pad_top, pad_bottom), value=0.0)
-    y_padded = F.pad(y_scaled, (pad_left, pad_right, pad_top, pad_bottom), value=0.0)
-    return x_padded, y_padded
-
-
-__all__ = ["MaskReconstructionDataset", "resize_pair"]
+__all__ = ["MaskReconstructionDataset"]
