@@ -30,6 +30,7 @@ def parse_args() -> argparse.Namespace:
     grp.add_argument("--strict_pairs", type=int, default=1, help="1: error on missing mask, 0: skip missing")
     grp.add_argument("--vis-num", type=int, default=4, help="Number of validation samples to visualize")
     grp.add_argument("--vis-threshold", type=float, default=0.5, help="Threshold for visualization binarization")
+    grp.add_argument("--no-tqdm", type=int, default=0, help="Disable progress bars (default off)")
 
     # Make base data-root optional by clearing required flag to allow train_dir-only workflows
     for action in parser._actions:
@@ -175,6 +176,7 @@ def main() -> None:
         vis_every=int(cfg.logging.vis_every),
         vis_num=int(args.vis_num),
         vis_threshold=float(args.vis_threshold),
+        disable_tqdm=bool(args.no_tqdm),
     )
     trainer.fit(train_loader, val_loader, epochs=int(cfg.training.epochs))
     generate_plots(out_dir / "epoch_log.csv", out_dir / "plot")

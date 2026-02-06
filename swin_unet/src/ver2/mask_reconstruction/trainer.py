@@ -12,6 +12,7 @@ from ..config.experiment import ExperimentConfig
 from ..models.swin_unet_dualview_ssl import SwinUNetDualViewSSL, flip_lr
 from ..training.ckpt_io import save_checkpoint
 from ..training.utils import ensure_dir
+from tqdm import tqdm
 
 from .dice import dice_coefficient, soft_dice_loss, soft_dice_loss_by_region
 from .visualization import save_val_visualization_grid
@@ -61,6 +62,7 @@ class MaskReconstructionTrainer:
         vis_every: int = 0,
         vis_num: int = 4,
         vis_threshold: float = 0.5,
+        disable_tqdm: bool = False,
     ):
         self.model = model
         self.optimizer = optimizer
@@ -72,6 +74,7 @@ class MaskReconstructionTrainer:
         self.vis_every = int(vis_every)
         self.vis_num = int(vis_num)
         self.vis_threshold = float(vis_threshold)
+        self.disable_tqdm = bool(disable_tqdm)
 
         self.use_amp = bool(cfg.training.amp) and device.type == "cuda"
         self.scaler = GradScaler(enabled=self.use_amp)
@@ -152,8 +155,9 @@ class MaskReconstructionTrainer:
         total_masked = 0.0
         total_unmasked = 0.0
         steps = 0
+        progress = loader if self.disable_tqdm else tqdm(loader, desc="Train", leave=False, dynamic_ncols=True)
 
-        for batch in loader:
+        for batch in progress:
             x = batch["input"].to(self.device, non_blocking=True)
             y = batch["target"].to(self.device, non_blocking=True)
             plane = batch["plane_one_hot"].to(self.device, non_blocking=True)
@@ -177,6 +181,18 @@ class MaskReconstructionTrainer:
             total_unmasked += loss_unmasked.detach().item()
             steps += 1
 
+            if not self.disable_tqdm:
+                lr = self.optimizer.param_groups[0]["lr"]
+                progress.set_postfix(
+                    {
+                        "lt": f"{total_loss/steps:.4f}",
+                        "lm": f"{total_masked/steps:.4f}",
+                        "lu": f"{total_unmasked/steps:.4f}",
+                        "d": f"{total_dice/steps:.4f}",
+                        "lr": f"{lr:.2e}",
+                    }
+                )
+
         if steps == 0:
             return 0.0, 0.0, 0.0, 0.0, 0.0
         return (
@@ -196,8 +212,9 @@ class MaskReconstructionTrainer:
         total_masked = 0.0
         total_unmasked = 0.0
         steps = 0
+        progress = loader if self.disable_tqdm else tqdm(loader, desc="Val", leave=False, dynamic_ncols=True)
 
-        for batch in loader:
+        for batch in progress:
             x = batch["input"].to(self.device, non_blocking=True)
             y = batch["target"].to(self.device, non_blocking=True)
             plane = batch["plane_one_hot"].to(self.device, non_blocking=True)
@@ -211,6 +228,16 @@ class MaskReconstructionTrainer:
             total_masked += loss_masked.detach().item()
             total_unmasked += loss_unmasked.detach().item()
             steps += 1
+
+            if not self.disable_tqdm:
+                progress.set_postfix(
+                    {
+                        "lt": f"{total_loss/steps:.4f}",
+                        "lm": f"{total_masked/steps:.4f}",
+                        "lu": f"{total_unmasked/steps:.4f}",
+                        "d": f"{total_dice/steps:.4f}",
+                    }
+                )
 
         if steps == 0:
             return 0.0, 0.0, 0.0, 0.0, 0.0
@@ -279,11 +306,10 @@ class MaskReconstructionTrainer:
                 self._save_best(epoch)
 
             print(
-                f"[epoch {epoch:03d}] "
-                f"train_loss={train_loss:.4f} train_masked={train_masked:.4f} train_unmasked={train_unmasked:.4f} train_dice={train_dice:.4f} "
-                f"val_loss={val_loss:.4f} val_masked={val_masked:.4f} val_unmasked={val_unmasked:.4f} val_dice={val_dice:.4f} "
-                f"train_con={train_con:.4f} val_con={val_con:.4f} "
-                f"best_metric={self.best_val:.4f}"
+                f"Epoch {epoch:03d}/{epochs:03d} | "
+                f"lr={self.optimizer.param_groups[0]['lr']:.2e} | "
+                f"train lt={train_loss:.4f} lm={train_masked:.4f} lu={train_unmasked:.4f} d={train_dice:.4f} | "
+                f"val lt={val_loss:.4f} lm={val_masked:.4f} lu={val_unmasked:.4f} d={val_dice:.4f}"
             )
 
             if self.vis_every > 0 and val_loader is not None and (epoch == 0 or (epoch % self.vis_every) == 0):
