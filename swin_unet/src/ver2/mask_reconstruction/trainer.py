@@ -7,6 +7,7 @@ from typing import Dict, Tuple, Callable
 import torch
 from torch.utils.data import DataLoader
 from torch.amp import GradScaler, autocast
+import math
 
 from ..config.experiment import ExperimentConfig
 from ..models.swin_unet_dualview_ssl import SwinUNetDualViewSSL, flip_lr
@@ -81,6 +82,22 @@ class MaskReconstructionTrainer:
 
         self.use_amp = bool(cfg.training.amp) and device.type == "cuda"
         self.scaler = GradScaler(enabled=self.use_amp)
+
+        # cosine schedule with warmup
+        total_epochs = int(cfg.training.epochs)
+        warmup = int(getattr(cfg.training, "warmup_epochs", 0))
+        min_lr = float(getattr(cfg.training, "min_lr", 0.0))
+        base_lr = float(cfg.training.lr)
+
+        def lr_lambda(epoch: int):
+            if warmup > 0 and epoch < warmup:
+                return float(epoch + 1) / float(warmup)
+            t = epoch - warmup
+            T = max(1, total_epochs - warmup)
+            cosine = 0.5 * (1 + math.cos(math.pi * t / T))
+            return (min_lr / base_lr) + (1 - min_lr / base_lr) * cosine
+
+        self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lr_lambda)
 
         self.out_dir = ensure_dir(Path(out_dir))
         self.ckpt_dir = ensure_dir(self.out_dir / "checkpoints")
@@ -208,10 +225,12 @@ class MaskReconstructionTrainer:
 
             if self.use_amp:
                 self.scaler.scale(loss).backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.cfg.training.grad_clip)
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.cfg.training.grad_clip)
                 self.optimizer.step()
 
             total_loss += loss.detach().item()
@@ -322,6 +341,9 @@ class MaskReconstructionTrainer:
             train_loss, train_dice, train_con, train_masked, train_unmasked = self.train_one_epoch(train_loader)
             val_loss, val_dice, val_con, val_masked, val_unmasked = self.validate(val_loader)
 
+            if hasattr(self, "lr_scheduler") and self.lr_scheduler is not None:
+                self.lr_scheduler.step()
+
             self.logger.append(
                 {
                     "epoch": epoch,
@@ -333,6 +355,7 @@ class MaskReconstructionTrainer:
                     "val_loss_masked": val_masked,
                     "val_loss_unmasked": val_unmasked,
                     "val_dice": val_dice,
+                    "lr": self.optimizer.param_groups[0]["lr"],
                 }
             )
 
@@ -364,6 +387,8 @@ class MaskReconstructionTrainer:
                     dice_fn=lambda p, t: dice_coefficient(p, t, threshold=self.vis_threshold),
                 )
                 print(f"[vis] Saved val visualization: {vis_path}")
+
+            # scheduler already stepped; nothing else to do here
 
 
 __all__ = ["MaskReconstructionTrainer"]

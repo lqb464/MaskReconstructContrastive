@@ -67,7 +67,9 @@ class MaskReconstructionDataset(Dataset):
         self.return_dual_view = return_dual_view
         self.debug_pair_alignment = debug_pair_alignment
 
-        self.plane_one_hot = plane_to_one_hot("axial")  # default plane for all slices
+        self.plane_one_hot = plane_to_one_hot(plane)
+        if self.debug_shapes:
+            print(f"[dataset] plane={plane} one_hot={self.plane_one_hot.tolist()}")
 
         self.pairs: List[Tuple[Path, Path]] = []
         missing: List[Path] = []

@@ -68,7 +68,7 @@ class ModelConfig:
     saca_position: str = "after_stage1" # after_patch_embed | after_stage0 | after_merge0 | after_stage1
     saca_positions: list[str] = field(default_factory=list)
     saca_gate_init: float = 0.0 
-    saca_warmup_epochs: int = 0 
+    saca_warmup_epochs: int = 5 
     
 
 @dataclass
@@ -76,14 +76,17 @@ class TrainingConfig:
     """Training hyperparameters"""
     epochs: int = 200
     batch_size: int = 64
-    lr: float = 1e-3
+    lr: float = 3e-4
     weight_decay: float = 1e-4
     lambda_recon: float = 0.0
     lambda_contrast: float = 0.0
     temperature: float = 0.2
     seed: int = 42
-    amp: bool = False
+    amp: bool = True
     cpu: bool = False
+    grad_clip: float = 1.0
+    warmup_epochs: int = 5
+    min_lr: float = 1e-6
     
     # Run mode
     enable_reconstruct: bool = False
@@ -103,6 +106,9 @@ class TrainingConfig:
     recon_loss: str = "weighted_bce_logits"  # "weighted_bce_logits" or "l1_sigmoid"
     fg_eps: float = 0.02
     fg_weight: float = 10.0
+    dice_loss_weight: float = 0.2
+    dice_mode: str = "fg"
+    dice_smooth: float = 1e-6
 
     # Data augmentation (contrastive)
     aug_p_noise: float = 0.7
@@ -233,9 +239,12 @@ class ExperimentConfig:
                 recon_loss=args.recon_loss,
                 fg_eps=args.fg_eps,
                 fg_weight=args.fg_weight,
-                dice_loss_weight=getattr(args, "dice_loss_weight", 0.0),
-                dice_mode=getattr(args, "dice_mode", "total"),
+                dice_loss_weight=getattr(args, "dice_loss_weight", 0.2),
+                dice_mode=getattr(args, "dice_mode", "fg"),
                 dice_smooth=getattr(args, "dice_smooth", 1e-6),
+                grad_clip=getattr(args, "grad_clip", 1.0),
+                warmup_epochs=getattr(args, "warmup_epochs", 5),
+                min_lr=getattr(args, "min_lr", 1e-6),
             ),
             data=DataConfig(
                 data_root=args.data_root,
@@ -363,7 +372,7 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--saca_position", type=str, default="after_stage1", choices=["after_patch_embed", "after_stage0", "after_merge0", "after_stage1"])
     p.add_argument("--saca_positions", type=str, default="")
     p.add_argument("--saca_gate_init", type=float, default=0.0)
-    p.add_argument("--saca_warmup_epochs", type=int, default=0)
+    p.add_argument("--saca_warmup_epochs", type=int, default=5)
 
     # Training
     p.add_argument("--enable-reconstruct", action="store_true")
@@ -387,11 +396,11 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--fg-weight", type=float, default=10.0, help="Extra foreground weight for weighted_bce_logits")
     
     # Dice auxiliary (segmentation)
-    p.add_argument("--dice-loss-weight", type=float, default=0.0, help="Weight for auxiliary soft dice loss")
-    p.add_argument("--dice-mode", type=str, default="total", choices=["total", "fg"], help="Dice over total image or fg only")
+    p.add_argument("--dice-loss-weight", type=float, default=0.2, help="Weight for auxiliary soft dice loss")
+    p.add_argument("--dice-mode", type=str, default="fg", choices=["total", "fg"], help="Dice over total image or fg only")
     p.add_argument("--dice-smooth", type=float, default=1e-6, help="Smoothing epsilon for dice")
     p.add_argument("--epochs", type=int, default=200)
-    p.add_argument("--lr", type=float, default=1e-3)
+    p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--weight-decay", type=float, default=1e-4)
     p.add_argument("--lambda-recon", type=float, default=0.0)
     p.add_argument("--lambda-contrast", type=float, default=0.0)
@@ -399,6 +408,11 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--cpu", action="store_true")
     p.add_argument("--amp", action="store_true")
+    p.add_argument("--no-amp", dest="amp", action="store_false")
+    p.set_defaults(amp=True)
+    p.add_argument("--grad-clip", type=float, default=1.0)
+    p.add_argument("--warmup-epochs", type=int, default=5)
+    p.add_argument("--min-lr", type=float, default=1e-6)
     
     # Checkpoint / pretrained
     p.add_argument("--resume-ckpt", type=str, default="", help="Path to checkpoint .pt")

@@ -28,6 +28,8 @@ python -m mask_reconstruction.main \
 ```
 Optional flags: `--mask_key`, `--threshold` (for dice metric binarization), `--vis-num`, `--vis-threshold`, plus all base ver2 flags (SACA, contrastive, single/dual view, checkpoints, etc.). Image and mask are resized together (bilinear for image, nearest for mask); override sizing with `--target-size` and `--resize-mode` (letterbox/direct). Enable `--debug-shapes 1` to log sample shapes.
 
+Stability defaults: lr=3e-4, AMP enabled by default, grad clipping (--grad-clip) default 1.0, cosine LR with warmup (--warmup-epochs). Dice auxiliary enabled by default (--dice-loss-weight 0.2, --dice-mode fg). Plane conditioning set via --plane.
+
 Visualization (optional):
 - `--vis-every N` enables saving validation prediction grids every N epochs (N=0 disables).
 - `--vis-num K` limits how many validation samples to plot (default 4).

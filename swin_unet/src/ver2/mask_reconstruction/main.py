@@ -35,6 +35,7 @@ def parse_args() -> argparse.Namespace:
     grp.add_argument("--target-size", type=int, default=0, help="Force square resize to this size (0 keeps original)")
     grp.add_argument("--resize-mode", type=str, default="letterbox", choices=["letterbox", "direct"], help="Resize strategy for image/mask pair")
     grp.add_argument("--debug-shapes", type=int, default=0, help="Log sample shapes for debugging (0/1)")
+    grp.add_argument("--grad-clip", type=float, default=1.0, help="Gradient clipping max norm")
 
     # Make base data-root optional by clearing required flag to allow train_dir-only workflows
     for action in parser._actions:
@@ -146,6 +147,7 @@ def main() -> None:
         target_size=int(args.target_size),
         resize_mode=args.resize_mode,
         debug_shapes=bool(args.debug_shapes),
+        plane=args.plane,
     )
     val_ds = None
     if val_dir:
@@ -159,6 +161,7 @@ def main() -> None:
             target_size=int(args.target_size),
             resize_mode=args.resize_mode,
             debug_shapes=bool(args.debug_shapes),
+            plane=args.plane,
         )
     train_loader, val_loader = make_dataloaders(train_ds, cfg, device, val_ds=val_ds)
 
