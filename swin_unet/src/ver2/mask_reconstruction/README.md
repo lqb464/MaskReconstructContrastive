@@ -26,7 +26,7 @@ python -m mask_reconstruction.main \
   --dice-loss-weight 0.1 --dice-mode total --dice-smooth 1e-6 \
   --vis-every 2 --vis-num 4 --vis-threshold 0.5 --no-tqdm 0
 ```
-Optional flags: `--mask_key`, `--threshold` (for dice metric binarization), `--vis-num`, `--vis-threshold`, plus all base ver2 flags (SACA, contrastive, single/dual view, checkpoints, etc.).
+Optional flags: `--mask_key`, `--threshold` (for dice metric binarization), `--vis-num`, `--vis-threshold`, plus all base ver2 flags (SACA, contrastive, single/dual view, checkpoints, etc.). Image and mask are resized together (bilinear for image, nearest for mask); override sizing with `--target-size` and `--resize-mode` (letterbox/direct). Enable `--debug-shapes 1` to log sample shapes.
 
 Visualization (optional):
 - `--vis-every N` enables saving validation prediction grids every N epochs (N=0 disables).

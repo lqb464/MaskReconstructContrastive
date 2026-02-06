@@ -1,6 +1,13 @@
 from __future__ import annotations
 
+"""
+Alzheimer classifier training (dual-view Swin-UNet encoder).
+- Uses dual-view encode path so SACA is active when enabled.
+- Supports feature extraction at stage1 / stage2 / bottleneck with fusion modes.
+"""
+
 import argparse
+import csv
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -17,21 +24,23 @@ from datasets import load_dataset
 from sklearn.metrics import confusion_matrix, f1_score
 
 from ..models.model_utils import flip_lr
-from ..models.swin_unet_dualview_ssl import SwinUNetDualViewSSL
+from ..models.swin_unet_dualview_ssl import (
+    ClassificationHead,
+    SwinUNetDualViewSSL,
+)
 from ..training.ckpt_io import load_checkpoint_weights_filtered
 
 from .io import ensure_dir, save_json
 
 
+# ------------------------------------------------------------
+# Loss utilities
+# ------------------------------------------------------------
 class FocalLoss(nn.Module):
     """
     Multi-class focal loss on logits.
     - logits: [B, K]
     - target: [B] with class indices
-    alpha:
-      - None: no class weighting
-      - float: scalar alpha applied uniformly
-      - list/tuple/tensor of shape [K]: per-class alpha
     """
 
     def __init__(self, gamma: float = 2.0, alpha: Optional[torch.Tensor] = None, reduction: str = "mean"):
@@ -68,41 +77,12 @@ class FocalLoss(nn.Module):
         return loss.mean()
 
 
-class EncoderClassifier(nn.Module):
-    def __init__(
-        self,
-        encoder: SwinUNetDualViewSSL,
-        num_classes: int,
-        dropout: float = 0.0,
-        view_mode: str = "two",
-    ):
-        super().__init__()
-        self.encoder = encoder
-        c3 = 8 * int(getattr(encoder, "embed_dim", 96))
-        self.dropout = nn.Dropout(p=float(dropout)) if dropout > 0 else nn.Identity()
-        self.fc = nn.Linear(c3, num_classes)
-        self.view_mode = str(view_mode).lower().strip()
-        if self.view_mode not in {"two", "one_v1", "one_v2"}:
-            raise ValueError(f"invalid view_mode: {self.view_mode}")
-
-    def forward(self, x1: torch.Tensor, x2: torch.Tensor, plane_one_hot: torch.Tensor) -> torch.Tensor:
-        if self.view_mode == "two":
-            b1 = self.encoder.encode_bottleneck(x1, plane_one_hot, view=1)
-            b2 = self.encoder.encode_bottleneck(x2, plane_one_hot, view=2)
-            h1 = b1.mean(dim=(1, 2))
-            h2 = b2.mean(dim=(1, 2))
-            h = 0.5 * (h1 + h2)
-        elif self.view_mode == "one_v1":
-            b = self.encoder.encode_bottleneck(x1, plane_one_hot, view=1)
-            h = b.mean(dim=(1, 2))
-        else:
-            b = self.encoder.encode_bottleneck(x2, plane_one_hot, view=2)
-            h = b.mean(dim=(1, 2))
-        h = self.dropout(h)
-        return self.fc(h)
-
-
+# ------------------------------------------------------------
+# Data
+# ------------------------------------------------------------
 class HFDataset(torch.utils.data.Dataset):
+    """Wrap HF dataset -> (x1, x2, y) with dual view (flip_lr)."""
+
     def __init__(self, hf_ds, tfm):
         if not hasattr(hf_ds, "features") or "label" not in hf_ds.features:
             raise ValueError("dataset is missing required 'label' feature")
@@ -114,15 +94,13 @@ class HFDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx: int):
         item = self.ds[idx]
-        if "label" not in item:
+        if "label" not in item or item["label"] is None:
             raise ValueError("dataset item missing 'label'")
-        y = item["label"]
-        if y is None:
-            raise ValueError("dataset item label is None")
+        y = int(item["label"])
         img = item["image"]
         x1 = self.tfm(img)
         x2 = flip_lr(x1)
-        return x1, x2, int(y)
+        return x1, x2, y
 
 
 def prepare_batch(
@@ -153,45 +131,9 @@ def build_plane_one_hot(plane: str, batch_size: int, device: torch.device) -> to
     return v.view(1, 2).repeat(batch_size, 1)
 
 
-def save_confusion_matrix_png(cm, class_names, out_path: Path, title: str) -> None:
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    import numpy as np
-
-    ensure_dir(out_path.parent)
-
-    plt.figure(figsize=(6, 5))
-    plt.imshow(cm, interpolation="nearest")
-    plt.title(title)
-    plt.colorbar()
-
-    tick_marks = np.arange(len(class_names))
-    plt.xticks(tick_marks, class_names, rotation=45, ha="right")
-    plt.yticks(tick_marks, class_names)
-
-    thresh = cm.max() * 0.5 if cm.max() > 0 else 0.0
-    for i in range(cm.shape[0]):
-        for j in range(cm.shape[1]):
-            v = int(cm[i, j])
-            plt.text(
-                j,
-                i,
-                str(v),
-                horizontalalignment="center",
-                verticalalignment="center",
-                color="white" if cm[i, j] > thresh else "black",
-                fontsize=9,
-            )
-
-    plt.ylabel("True label")
-    plt.xlabel("Predicted label")
-    plt.tight_layout()
-    plt.savefig(str(out_path), dpi=150)
-    plt.close()
-
-
+# ------------------------------------------------------------
+# Arg parsing helpers
+# ------------------------------------------------------------
 def parse_focal_alpha(value: str, num_classes: int) -> Optional[torch.Tensor]:
     if not value:
         return None
@@ -218,50 +160,41 @@ def parse_ce_class_weights(value: str, num_classes: int) -> torch.Tensor:
     return torch.tensor(vals, dtype=torch.float32)
 
 
-def print_label_map(label_names: List[str]) -> None:
-    for i, name in enumerate(label_names):
-        print(f"[label_map] {i} -> {name}")
+# ------------------------------------------------------------
+# Config dataclass for clarity
+# ------------------------------------------------------------
+@dataclass
+class ClsConfig:
+    num_classes: int
+    class_names: List[str]
+    feature_level: str
+    fusion_mode: str
+    clf_hidden_dim: Optional[int]
+    dropout: float
+    amp: bool
+    device: torch.device
+    loss_type: str
+    focal_gamma: float
+    focal_alpha: Optional[torch.Tensor]
+    ce_weights: Optional[torch.Tensor]
+    freeze_encoder_epochs: int
+    saca_enabled: bool
+    view_mode: str
 
 
-def normalize_label_name(name: str) -> str:
-    s = name.lower().strip().replace("_", " ").replace("-", " ")
-    s = " ".join(s.split())
-    if "moderate" in s:
-        return "moderate demented"
-    if "very mild" in s:
-        return "very mild demented"
-    if "mild" in s:
-        return "mild demented"
-    if "non" in s:
-        return "non-demented"
-    return s
-
-
-def infer_num_classes(ds) -> int:
-    try:
-        names = list(ds.features["label"].names)
-        return len(names)
-    except Exception:
-        labels = []
-        for i in range(len(ds)):
-            item = ds[i]
-            if "label" not in item:
-                raise ValueError("labels missing from dataset")
-            if item["label"] is None:
-                raise ValueError("labels missing from dataset")
-            labels.append(int(item["label"]))
-        return int(max(labels)) + 1 if labels else 0
+# ------------------------------------------------------------
+# Model builders
+# ------------------------------------------------------------
+def set_seed(seed: int) -> None:
+    torch.manual_seed(seed)
 
 
 def build_model(args: argparse.Namespace, device: torch.device) -> SwinUNetDualViewSSL:
-    if getattr(args, "enable_masking", False):
-        raise RuntimeError("masking must be disabled for classifier training")
-    if getattr(args, "enable_contrastive", False):
-        raise RuntimeError("contrastive must be disabled for classifier training")
-    if getattr(args, "enable_reconstruct", False):
-        raise RuntimeError("reconstruct must be disabled for classifier training")
+    single_view = args.view_mode != "two"
+    if args.enable_saca and single_view:
+        raise ValueError("SACA requires dual-view classification; set --view_mode two or disable SACA.")
 
-    encoder = SwinUNetDualViewSSL(
+    model = SwinUNetDualViewSSL(
         in_ch=args.in_ch,
         image_size=args.image_size,
         patch_size=args.patch_size,
@@ -278,238 +211,54 @@ def build_model(args: argparse.Namespace, device: torch.device) -> SwinUNetDualV
         saca_warmup_epochs=args.saca_warmup_epochs,
         enable_reconstruct=False,
         enable_contrastive=False,
+        single_view=single_view,
     ).to(device)
 
-    if encoder.enable_reconstruct or encoder.enable_contrastive:
+    # Encoder-only sanity
+    if model.enable_reconstruct or model.enable_contrastive:
         raise RuntimeError("encoder must be encoder-only (no reconstruct/contrastive)")
-    if getattr(encoder, "proj", None) is not None:
+    if getattr(model, "proj", None) is not None:
         raise RuntimeError("projection head must be disabled for classifier training")
 
-    return encoder
-
-
-def maybe_load_encoder_weights(args: argparse.Namespace, encoder: SwinUNetDualViewSSL, device: torch.device) -> None:
-    if not args.resume_ckpt:
-        return
-    if args.ckpt_load_mode != "encoder_only":
-        return
-    if load_checkpoint_weights_filtered is None:
-        raise RuntimeError("training.ckpt_io.load_checkpoint_weights_filtered is not available in your environment")
-    ckpt_path = Path(args.resume_ckpt)
-    _ = load_checkpoint_weights_filtered(
-        ckpt_path=ckpt_path,
-        device=device,
-        model=encoder,
-        include_prefixes=encoder.encoder_state_dict_prefixes(),
-        exclude_prefixes=("proj_c1", "proj_c2", "proj_c3", "proj"),
-    )
-    print("[ckpt] loaded encoder_only from:", str(ckpt_path))
+    return model
 
 
 @torch.no_grad()
-def evaluate(
-    model: nn.Module,
-    loader: DataLoader,
-    device: torch.device,
-    criterion: nn.Module,
-) -> Dict[str, object]:
-    model.eval()
-    total = 0
-    correct = 0
-    loss_sum = 0.0
-    all_pred: List[torch.Tensor] = []
-    all_true: List[torch.Tensor] = []
-
-    for batch in loader:
-        x1, x2, y = prepare_batch(batch, device)
-        plane = build_plane_one_hot("axial", x1.size(0), device)
-        logits = model(x1, x2, plane)
-        loss = criterion(logits, y)
-
-        pred = logits.argmax(dim=-1)
-        correct += int((pred == y).sum().item())
-        total += int(y.numel())
-        loss_sum += float(loss.item()) * float(y.numel())
-
-        all_pred.append(pred.detach().cpu())
-        all_true.append(y.detach().cpu())
-
-    y_true = torch.cat(all_true, dim=0).numpy() if all_true else []
-    y_pred = torch.cat(all_pred, dim=0).numpy() if all_pred else []
-
-    return {
-        "acc": float(correct) / float(max(total, 1)),
-        "ce": float(loss_sum) / float(max(total, 1)),
-        "f1_macro": float(f1_score(y_true, y_pred, average="macro")) if len(y_true) else 0.0,
-        "f1_weighted": float(f1_score(y_true, y_pred, average="weighted")) if len(y_true) else 0.0,
-        "y_true": y_true,
-        "y_pred": y_pred,
-    }
-
-
-def train_one_fold(
+def infer_feature_dim(
+    model: SwinUNetDualViewSSL,
     args: argparse.Namespace,
-    train_loader: DataLoader,
-    test_loader: DataLoader,
+    feature_level: str,
     device: torch.device,
-    num_classes: int,
-    out_dir: Path,
-    class_names: List[str],
-) -> Dict[str, object]:
-    ensure_dir(out_dir)
-    ckpt_dir = out_dir / "checkpoints"
-    plots_dir = out_dir / "plots"
-    ensure_dir(ckpt_dir)
-    ensure_dir(plots_dir)
+) -> int:
+    model.eval()
+    B = 1
+    dummy = torch.zeros(B, args.in_ch, args.image_size, args.image_size, device=device)
+    plane = torch.zeros(B, 2, device=device)
+    feat1, feat2 = model.encode_dual(dummy, dummy, plane, feature_level=feature_level)
+    c1 = feat1.shape[-1]
+    c2 = feat2.shape[-1]
+    if c1 != c2:
+        raise RuntimeError("feature dims between views do not match")
+    return int(c1)
 
-    encoder = build_model(args, device)
-    maybe_load_encoder_weights(args, encoder, device)
 
-    print(f"[view_mode] {args.view_mode}")
-    if args.view_mode in {"one_v1", "one_v2"} and args.enable_saca:
-        raise RuntimeError("saca must be disabled for single-view mode")
-    model = EncoderClassifier(
-        encoder=encoder,
+def build_head(model: SwinUNetDualViewSSL, args: argparse.Namespace, num_classes: int, device: torch.device) -> ClassificationHead:
+    feat_dim = infer_feature_dim(model, args, args.feature_level, device)
+    fused_dim = feat_dim * 2 if args.fusion_mode == "concat" else feat_dim
+    hidden = args.clf_hidden_dim if args.clf_hidden_dim > 0 else None
+    head = ClassificationHead(
+        in_dim=fused_dim,
         num_classes=num_classes,
+        hidden_dim=hidden,
         dropout=args.dropout,
-        view_mode=args.view_mode,
     ).to(device)
-    if model.fc.out_features != num_classes:
-        raise RuntimeError("classifier head size must match num_classes")
-    
-    print(model)
-
-    if args.loss_type == "focal":
-        print("[loss] type=focal")
-        alpha = parse_focal_alpha(args.focal_alpha, num_classes)
-        if alpha is not None:
-            alpha_vec = alpha if alpha.numel() > 1 else alpha.repeat(num_classes)
-            for i, name in enumerate(class_names):
-                print(f"[focal_alpha] idx={i} name={name} w={float(alpha_vec[i].item())}")
-        criterion = FocalLoss(gamma=args.focal_gamma, alpha=alpha, reduction="mean").to(device)
-    elif args.loss_type == "wce":
-        print("[loss] type=wce (weighted cross entropy)")
-        weights = parse_ce_class_weights(args.ce_class_weights, num_classes)
-        for i, name in enumerate(class_names):
-            print(f"[ce_weights] idx={i} name={name} w={float(weights[i].item())}")
-        criterion = nn.CrossEntropyLoss(weight=weights.to(device=device, dtype=torch.float32)).to(device)
-    elif args.loss_type == "ce":
-        print("[loss] type=ce (unweighted cross entropy)")
-        criterion = nn.CrossEntropyLoss().to(device)
-    else:
-        raise ValueError(f"unsupported loss_type: {args.loss_type}")
-
-    opt = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    scaler = GradScaler(enabled=(args.amp and device.type == "cuda"))
-
-    best_f1 = -1.0
-    best_epoch = -1
-    best_test = None
-
-    for epoch in range(1, args.epochs + 1):
-        freeze_n = int(getattr(args, "freeze_encoder_epochs", 0))
-        encoder_trainable = not (epoch <= freeze_n)
-        encoder.set_encoder_trainable(trainable=encoder_trainable)
-
-        if epoch == 1 and freeze_n > 0:
-            print(f"[train] freeze encoder for first {freeze_n} epochs")
-        if epoch == freeze_n + 1 and freeze_n > 0:
-            print("[train] encoder unfrozen")
-
-        model.train()
-        total = 0
-        correct = 0
-        loss_sum = 0.0
-        train_pred = []
-        train_true = []
-
-        for batch in train_loader:
-            x1, x2, y = prepare_batch(batch, device)
-            opt.zero_grad(set_to_none=True)
-
-            with autocast(device_type=device.type, enabled=(args.amp and device.type == "cuda")):
-                plane = build_plane_one_hot("axial", x1.size(0), device)
-                logits = model(x1, x2, plane)
-                loss = criterion(logits, y)
-
-            scaler.scale(loss).backward()
-            scaler.step(opt)
-            scaler.update()
-
-            pred = logits.argmax(dim=-1)
-            correct += int((pred == y).sum().item())
-            total += int(y.numel())
-            loss_sum += float(loss.item()) * float(y.numel())
-            train_pred.append(pred.detach().cpu())
-            train_true.append(y.detach().cpu())
-
-        train_acc = float(correct) / float(max(total, 1))
-        train_loss = float(loss_sum) / float(max(total, 1))
-        test_metrics = evaluate(model, test_loader, device, criterion)
-        if train_true:
-            train_y_true = torch.cat(train_true, dim=0).numpy()
-            train_y_pred = torch.cat(train_pred, dim=0).numpy()
-            train_cm = confusion_matrix(train_y_true, train_y_pred, labels=list(range(num_classes)))
-            print(f"[epoch {epoch:03d}] train_cm:\n{train_cm}")
-        test_cm = confusion_matrix(
-            test_metrics["y_true"],
-            test_metrics["y_pred"],
-            labels=list(range(num_classes)),
-        )
-        print(f"[epoch {epoch:03d}] test_cm:\n{test_cm}")
-
-        print(
-            f"[epoch {epoch:03d}] "
-            f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} "
-            f"test_loss={test_metrics['ce']:.4f} test_acc={test_metrics['acc']:.4f} "
-            f"test_f1={test_metrics['f1_macro']:.4f}"
-        )
-
-        score = test_metrics["f1_macro"]
-        if score > best_f1:
-            best_f1 = float(score)
-            best_epoch = epoch
-            best_test = test_metrics
-            torch.save(
-                {
-                    "epoch": epoch,
-                    "best_f1": best_f1,
-                    "test_acc_at_best_f1": test_metrics["acc"],
-                    "encoder_state": encoder.state_dict(),
-                    "clf_state": model.state_dict(),
-                    "opt": opt.state_dict(),
-                    "args": vars(args),
-                },
-                ckpt_dir / "best_cls.pt",
-            )
-            print(f"[best_f1] epoch={epoch:03d} test_f1={best_f1:.4f}")
-
-        torch.save(
-            {
-                "epoch": epoch,
-                "best_f1": best_f1,
-                "encoder_state": encoder.state_dict(),
-                "clf_state": model.state_dict(),
-                "opt": opt.state_dict(),
-                "args": vars(args),
-            },
-            ckpt_dir / "latest_cls.pt",
-        )
-
-    return {
-        "best_epoch": best_epoch,
-        "best_score": best_f1,
-        "test": best_test,
-    }
+    return head
 
 
-def run(args: argparse.Namespace) -> None:
-    torch.manual_seed(args.seed)
-    device = torch.device("cpu" if args.cpu else ("cuda" if torch.cuda.is_available() else "cpu"))
-
-    out_dir = Path(args.out_dir)
-    ensure_dir(out_dir)
-
+# ------------------------------------------------------------
+# Data loader builder
+# ------------------------------------------------------------
+def build_dataloaders(args: argparse.Namespace, device: torch.device) -> Tuple[DataLoader, DataLoader, List[str]]:
     ds = load_dataset("Falah/Alzheimer_MRI")
     train_ds = ds["train"]
     test_ds = ds["test"]
@@ -530,38 +279,8 @@ def run(args: argparse.Namespace) -> None:
     except Exception as exc:
         raise RuntimeError("dataset label names are required for classifier training") from exc
 
-    if getattr(args, "label_order", ""):
-        raw = [part.strip() for part in str(args.label_order).split(",") if part.strip()]
-        if not raw:
-            raise RuntimeError("label_order override is empty after parsing")
-        expected_order = [normalize_label_name(name) for name in raw]
-    else:
-        expected_order = [
-            "mild demented",
-            "moderate demented",
-            "non-demented",
-            "very mild demented",
-        ]
-
-    detected = [normalize_label_name(name) for name in label_names]
-    if len(detected) != len(expected_order):
-        raise RuntimeError(f"label count mismatch: detected={detected} expected={expected_order}")
-    if detected != expected_order:
-        raise RuntimeError(
-            f"label order mismatch: detected={detected} expected={expected_order}"
-        )
-
-    if getattr(args, "label_order", ""):
-        class_names = [name.strip() for name in str(args.label_order).split(",") if name.strip()]
-    else:
-        class_names = [
-            "Mild Demented",
-            "Moderate Demented",
-            "Non-Demented",
-            "Very Mild Demented",
-        ]
-    num_classes = 4
-    print_label_map(class_names)
+    class_names = normalize_class_names(args, label_names)
+    num_classes = len(class_names)
 
     train_loader = DataLoader(
         train_pt,
@@ -579,26 +298,451 @@ def run(args: argparse.Namespace) -> None:
         pin_memory=(device.type == "cuda"),
         drop_last=False,
     )
+    return train_loader, test_loader, class_names
 
-    metrics = train_one_fold(
-        args=args,
-        train_loader=train_loader,
-        test_loader=test_loader,
-        device=device,
+
+# ------------------------------------------------------------
+# Checkpoints
+# ------------------------------------------------------------
+def load_checkpoint(
+    args: argparse.Namespace,
+    model: SwinUNetDualViewSSL,
+    head: ClassificationHead,
+    device: torch.device,
+) -> Dict[str, object]:
+    if not args.resume_ckpt or args.ckpt_load_mode == "none":
+        return {"start_epoch": 1, "best_f1": -1.0}
+
+    ckpt_path = Path(args.resume_ckpt)
+    if not ckpt_path.exists():
+        raise FileNotFoundError(f"resume_ckpt not found: {ckpt_path}")
+
+    # encoder_only path uses filtered loading
+    if args.ckpt_load_mode == "encoder_only":
+        _ = load_checkpoint_weights_filtered(
+            ckpt_path=ckpt_path,
+            device=device,
+            model=model,
+            include_prefixes=model.encoder_state_dict_prefixes(),
+            exclude_prefixes=("proj_c1", "proj_c2", "proj_c3", "proj"),
+        )
+        print("[ckpt] loaded encoder_only weights from", ckpt_path)
+        return {"start_epoch": 1, "best_f1": -1.0}
+
+    # full path: try structured checkpoint first
+    obj = torch.load(ckpt_path, map_location=device)
+    if "encoder_state" in obj:
+        model.load_state_dict(obj["encoder_state"], strict=False)
+        if "head_state" in obj:
+            head.load_state_dict(obj["head_state"], strict=False)
+        print("[ckpt] loaded structured checkpoint", ckpt_path)
+        return {
+            "start_epoch": int(obj.get("epoch", 0)) + 1,
+            "best_f1": float(obj.get("best_f1", -1.0)),
+        }
+
+    # fallback: load full model state dict
+    if "model" in obj:
+        model.load_state_dict(obj["model"], strict=False)
+        print("[ckpt] loaded model state from", ckpt_path)
+    return {"start_epoch": 1, "best_f1": -1.0}
+
+
+def maybe_freeze_after_load(args: argparse.Namespace, model: SwinUNetDualViewSSL) -> None:
+    if args.ckpt_load_mode != "full":
+        return
+    if getattr(args, "freeze_recon", False):
+        for p in model.parameters():
+            p.requires_grad = False
+        print("[freeze] all encoder/decoder params frozen (freeze_recon)")
+    elif getattr(args, "freeze_decoder_recon", False):
+        dec_prefixes = (
+            "up2_shared",
+            "up1_v1",
+            "up1_v2",
+            "up0_v1",
+            "up0_v2",
+            "final_up_v1",
+            "final_up_v2",
+            "recon_head_v1",
+            "recon_head_v2",
+            "proj_c1",
+            "proj_c2",
+            "proj_c3",
+            "proj",
+        )
+        for name, p in model.named_parameters():
+            if name.startswith(dec_prefixes):
+                p.requires_grad = False
+        print("[freeze] decoder/reconstruction params frozen (freeze_decoder_recon)")
+
+
+# ------------------------------------------------------------
+# Metrics and logging
+# ------------------------------------------------------------
+def fuse_features(h1: torch.Tensor, h2: torch.Tensor, mode: str) -> torch.Tensor:
+    if mode == "avg":
+        return 0.5 * (h1 + h2)
+    if mode == "max":
+        return torch.max(h1, h2)
+    if mode == "concat":
+        return torch.cat([h1, h2], dim=1)
+    raise ValueError("fusion mode must be avg, max, or concat")
+
+
+def compute_metrics(logits: torch.Tensor, target: torch.Tensor) -> Dict[str, float]:
+    with torch.no_grad():
+        pred = logits.argmax(dim=-1)
+        acc = float((pred == target).sum().item()) / float(max(target.numel(), 1))
+    return {"acc": acc}
+
+
+def write_epoch_csv(
+    path: Path,
+    epoch: int,
+    train_loss: float,
+    train_f1: float,
+    val_loss: float,
+    val_f1: float,
+) -> None:
+    ensure_dir(path.parent)
+    header = ["epoch", "train_loss", "train_f1_macro", "val_loss", "val_f1_macro"]
+    row = [epoch, train_loss, train_f1, val_loss, val_f1]
+    write_header = not path.exists()
+    with path.open("a", newline="") as f:
+        writer = csv.writer(f)
+        if write_header:
+            writer.writerow(header)
+        writer.writerow(row)
+
+
+# ------------------------------------------------------------
+# Training / validation loops
+# ------------------------------------------------------------
+def train_one_epoch(
+    args: argparse.Namespace,
+    cfg: ClsConfig,
+    model: SwinUNetDualViewSSL,
+    head: ClassificationHead,
+    loader: DataLoader,
+    optimizer: torch.optim.Optimizer,
+    scaler: GradScaler,
+    device: torch.device,
+) -> Dict[str, float]:
+    model.train()
+    head.train()
+
+    total = 0
+    correct = 0
+    loss_sum = 0.0
+    all_true = []
+    all_pred = []
+
+    if cfg.loss_type == "focal":
+        loss_fn = FocalLoss(gamma=cfg.focal_gamma, alpha=cfg.focal_alpha, reduction="mean").to(device)
+    elif cfg.loss_type == "wce":
+        loss_fn = nn.CrossEntropyLoss(weight=cfg.ce_weights).to(device)
+    else:
+        loss_fn = nn.CrossEntropyLoss().to(device)
+
+    for batch in loader:
+        x1, x2, y = prepare_batch(batch, device)
+        optimizer.zero_grad(set_to_none=True)
+
+        with autocast(device_type=device.type, enabled=(cfg.amp and device.type == "cuda")):
+            plane = build_plane_one_hot("axial", x1.size(0), device)
+            if cfg.view_mode == "one_v1":
+                h1 = model._pool_hw(model.encode_bottleneck(x1, plane, view=1))
+                h2 = h1
+            elif cfg.view_mode == "one_v2":
+                h1 = model._pool_hw(model.encode_bottleneck(x2, plane, view=2))
+                h2 = h1
+            else:
+                feat1, feat2 = model.encode_dual(
+                    x1,
+                    x2,
+                    plane,
+                    feature_level=cfg.feature_level,
+                )
+                h1 = model._pool_hw(feat1)
+                h2 = model._pool_hw(feat2)
+
+            fused = fuse_features(h1, h2, cfg.fusion_mode)
+            logits = head(fused)
+
+            loss = loss_fn(logits, y)
+
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+
+        pred = logits.argmax(dim=-1)
+        correct += int((pred == y).sum().item())
+        total += int(y.numel())
+        loss_sum += float(loss.item()) * float(y.numel())
+        all_pred.append(pred.detach().cpu())
+        all_true.append(y.detach().cpu())
+
+    y_true = torch.cat(all_true, dim=0).numpy() if all_true else []
+    y_pred = torch.cat(all_pred, dim=0).numpy() if all_pred else []
+
+    f1_macro = float(f1_score(y_true, y_pred, average="macro")) if len(y_true) else 0.0
+
+    return {
+        "loss": float(loss_sum) / float(max(total, 1)),
+        "acc": float(correct) / float(max(total, 1)),
+        "f1_macro": f1_macro,
+        "y_true": y_true,
+        "y_pred": y_pred,
+    }
+
+
+@torch.no_grad()
+def validate_one_epoch(
+    args: argparse.Namespace,
+    cfg: ClsConfig,
+    model: SwinUNetDualViewSSL,
+    head: ClassificationHead,
+    loader: DataLoader,
+    device: torch.device,
+) -> Dict[str, float]:
+    model.eval()
+    head.eval()
+
+    total = 0
+    correct = 0
+    loss_sum = 0.0
+    all_true = []
+    all_pred = []
+
+    if cfg.loss_type == "focal":
+        loss_fn = FocalLoss(gamma=cfg.focal_gamma, alpha=cfg.focal_alpha, reduction="mean").to(device)
+    elif cfg.loss_type == "wce":
+        loss_fn = nn.CrossEntropyLoss(weight=cfg.ce_weights).to(device)
+    else:
+        loss_fn = nn.CrossEntropyLoss().to(device)
+
+    for batch in loader:
+        x1, x2, y = prepare_batch(batch, device)
+        plane = build_plane_one_hot("axial", x1.size(0), device)
+
+        if cfg.view_mode == "one_v1":
+            h1 = model._pool_hw(model.encode_bottleneck(x1, plane, view=1))
+            h2 = h1
+        elif cfg.view_mode == "one_v2":
+            h1 = model._pool_hw(model.encode_bottleneck(x2, plane, view=2))
+            h2 = h1
+        else:
+            feat1, feat2 = model.encode_dual(
+                x1,
+                x2,
+                plane,
+                feature_level=cfg.feature_level,
+            )
+            h1 = model._pool_hw(feat1)
+            h2 = model._pool_hw(feat2)
+
+        fused = fuse_features(h1, h2, cfg.fusion_mode)
+        logits = head(fused)
+        loss = loss_fn(logits, y)
+
+        pred = logits.argmax(dim=-1)
+        correct += int((pred == y).sum().item())
+        total += int(y.numel())
+        loss_sum += float(loss.item()) * float(y.numel())
+        all_pred.append(pred.detach().cpu())
+        all_true.append(y.detach().cpu())
+
+    y_true = torch.cat(all_true, dim=0).numpy() if all_true else []
+    y_pred = torch.cat(all_pred, dim=0).numpy() if all_pred else []
+
+    f1_macro = float(f1_score(y_true, y_pred, average="macro")) if len(y_true) else 0.0
+
+    return {
+        "loss": float(loss_sum) / float(max(total, 1)),
+        "acc": float(correct) / float(max(total, 1)),
+        "f1_macro": f1_macro,
+        "y_true": y_true,
+        "y_pred": y_pred,
+    }
+
+
+# ------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------
+def normalize_label_name(name: str) -> str:
+    s = name.lower().strip().replace("_", " ").replace("-", " ")
+    s = " ".join(s.split())
+    if "moderate" in s:
+        return "moderate demented"
+    if "very mild" in s:
+        return "very mild demented"
+    if "mild" in s:
+        return "mild demented"
+    if "non" in s:
+        return "non-demented"
+    return s
+
+
+def normalize_class_names(args: argparse.Namespace, label_names: List[str]) -> List[str]:
+    detected = [normalize_label_name(name) for name in label_names]
+    if getattr(args, "label_order", ""):
+        raw = [part.strip() for part in str(args.label_order).split(",") if part.strip()]
+        expected_order = [normalize_label_name(name) for name in raw]
+    else:
+        expected_order = [
+            "mild demented",
+            "moderate demented",
+            "non-demented",
+            "very mild demented",
+        ]
+
+    if len(detected) != len(expected_order):
+        raise RuntimeError(f"label count mismatch: detected={detected} expected={expected_order}")
+    if detected != expected_order:
+        raise RuntimeError(f"label order mismatch: detected={detected} expected={expected_order}")
+
+    if getattr(args, "label_order", ""):
+        return [name.strip() for name in str(args.label_order).split(",") if name.strip()]
+    return [
+        "Mild Demented",
+        "Moderate Demented",
+        "Non-Demented",
+        "Very Mild Demented",
+    ]
+
+
+def build_loss_and_cfg(
+    args: argparse.Namespace,
+    device: torch.device,
+    num_classes: int,
+    class_names: List[str],
+) -> ClsConfig:
+    focal_alpha = parse_focal_alpha(args.focal_alpha, num_classes) if args.loss_type == "focal" else None
+    ce_weights = parse_ce_class_weights(args.ce_class_weights, num_classes).to(device) if args.loss_type == "wce" else None
+
+    return ClsConfig(
         num_classes=num_classes,
-        out_dir=out_dir,
         class_names=class_names,
+        feature_level=args.feature_level,
+        fusion_mode=args.fusion_mode,
+        clf_hidden_dim=args.clf_hidden_dim if args.clf_hidden_dim > 0 else None,
+        dropout=args.dropout,
+        amp=args.amp,
+        device=device,
+        loss_type=args.loss_type,
+        focal_gamma=args.focal_gamma,
+        focal_alpha=focal_alpha,
+        ce_weights=ce_weights,
+        freeze_encoder_epochs=args.freeze_encoder_epochs,
+        saca_enabled=bool(args.enable_saca),
+        view_mode=args.view_mode,
     )
-    best_test = metrics.get("test") or {}
+
+
+def save_checkpoint(
+    path: Path,
+    epoch: int,
+    best_f1: float,
+    model: SwinUNetDualViewSSL,
+    head: ClassificationHead,
+    optimizer: torch.optim.Optimizer,
+    scaler: GradScaler,
+    args: argparse.Namespace,
+) -> None:
+    obj = {
+        "epoch": epoch,
+        "best_f1": float(best_f1),
+        "encoder_state": model.state_dict(),
+        "head_state": head.state_dict(),
+        "opt": optimizer.state_dict(),
+        "scaler": scaler.state_dict(),
+        "args": vars(args),
+    }
+    torch.save(obj, path)
+
+
+# ------------------------------------------------------------
+# Main run
+# ------------------------------------------------------------
+def run(args: argparse.Namespace) -> None:
+    set_seed(args.seed)
+    device = torch.device("cpu" if args.cpu else ("cuda" if torch.cuda.is_available() else "cpu"))
+
+    out_dir = Path(args.out_dir)
+    ensure_dir(out_dir)
+
+    train_loader, test_loader, class_names = build_dataloaders(args, device)
+    num_classes = len(class_names)
+    cfg = build_loss_and_cfg(args, device, num_classes, class_names)
+
+    model = build_model(args, device)
+    head = build_head(model, args, num_classes, device)
+
+    ckpt_info = load_checkpoint(args, model, head, device)
+    maybe_freeze_after_load(args, model)
+
+    params = list(model.parameters()) + list(head.parameters())
+    optimizer = AdamW(params, lr=args.lr, weight_decay=args.weight_decay)
+    scaler = GradScaler(enabled=(args.amp and device.type == "cuda"))
+
+    best_f1 = ckpt_info.get("best_f1", -1.0)
+    best_epoch = -1
+    start_epoch = ckpt_info.get("start_epoch", 1)
+
+    print("[label_map]")
+    for i, name in enumerate(class_names):
+        print(f"  {i} -> {name}")
+
+    for epoch in range(start_epoch, args.epochs + 1):
+        model.current_epoch = epoch
+
+        if not getattr(args, "freeze_recon", False):
+            freeze_n = int(getattr(args, "freeze_encoder_epochs", 0))
+            encoder_trainable = not (epoch <= freeze_n)
+            model.set_encoder_trainable(trainable=encoder_trainable)
+            if epoch == 1 and freeze_n > 0:
+                print(f"[train] freeze encoder for first {freeze_n} epochs")
+            if epoch == freeze_n + 1 and freeze_n > 0:
+                print("[train] encoder unfrozen")
+
+        train_metrics = train_one_epoch(args, cfg, model, head, train_loader, optimizer, scaler, device)
+        val_metrics = validate_one_epoch(args, cfg, model, head, test_loader, device)
+
+        write_epoch_csv(out_dir / "epoch_log.csv", epoch, train_metrics["loss"], train_metrics["f1_macro"], val_metrics["loss"], val_metrics["f1_macro"])
+
+        print(
+            f"[epoch {epoch:03d}] "
+            f"train_loss={train_metrics['loss']:.4f} train_acc={train_metrics['acc']:.4f} train_f1={train_metrics['f1_macro']:.4f} "
+            f"val_loss={val_metrics['loss']:.4f} val_acc={val_metrics['acc']:.4f} val_f1={val_metrics['f1_macro']:.4f}"
+        )
+
+        # confusion matrices (optional print)
+        train_cm = confusion_matrix(train_metrics["y_true"], train_metrics["y_pred"], labels=list(range(num_classes)))
+        val_cm = confusion_matrix(val_metrics["y_true"], val_metrics["y_pred"], labels=list(range(num_classes)))
+        print(f"[epoch {epoch:03d}] train_cm:\n{train_cm}")
+        print(f"[epoch {epoch:03d}] val_cm:\n{val_cm}")
+
+        # checkpointing
+        ckpt_dir = ensure_dir(out_dir / "checkpoints")
+        save_checkpoint(ckpt_dir / "latest_cls.pt", epoch, best_f1, model, head, optimizer, scaler, args)
+
+        if val_metrics["f1_macro"] > best_f1:
+            best_f1 = float(val_metrics["f1_macro"])
+            best_epoch = epoch
+            save_checkpoint(ckpt_dir / "best_cls.pt", epoch, best_f1, model, head, optimizer, scaler, args)
+            print(f"[best_f1] epoch={epoch:03d} val_f1={best_f1:.4f}")
+
+        # log SACA debug info
+        try:
+            dbg = model.get_saca_debug_info()
+            print("[saca]", dbg)
+        except Exception:
+            pass
+
     record = {
-        "best_epoch": int(metrics.get("best_epoch", -1)),
-        "best_score": float(metrics.get("best_score", -1.0)),
-        "test_acc": float(best_test.get("acc", 0.0)),
-        "test_ce": float(best_test.get("ce", 0.0)),
-        "test_f1_macro": float(best_test.get("f1_macro", 0.0)),
-        "test_f1_weighted": float(best_test.get("f1_weighted", 0.0)),
+        "best_epoch": int(best_epoch if best_epoch != -1 else epoch),
+        "best_score": float(best_f1),
     }
     save_json(out_dir / "metrics" / "single_split_metrics.json", record)
-    print("[done] best_f1:", metrics["best_score"])
-
-
+    print("[done] best_f1:", best_f1)

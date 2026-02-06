@@ -32,6 +32,9 @@ def parse_args() -> argparse.Namespace:
     grp.add_argument("--vis-num", type=int, default=4, help="Number of validation samples to visualize")
     grp.add_argument("--vis-threshold", type=float, default=0.5, help="Threshold for visualization binarization")
     grp.add_argument("--no-tqdm", type=int, default=0, help="Disable progress bars (default off)")
+    grp.add_argument("--target-size", type=int, default=0, help="Force square resize to this size (0 keeps original)")
+    grp.add_argument("--resize-mode", type=str, default="letterbox", choices=["letterbox", "direct"], help="Resize strategy for image/mask pair")
+    grp.add_argument("--debug-shapes", type=int, default=0, help="Log sample shapes for debugging (0/1)")
 
     # Make base data-root optional by clearing required flag to allow train_dir-only workflows
     for action in parser._actions:
@@ -140,6 +143,9 @@ def main() -> None:
         strict_pairs=bool(args.strict_pairs),
         mask_key=(args.mask_key or None),
         image_size=int(cfg.data.image_size) if cfg.data.image_size else None,
+        target_size=int(args.target_size),
+        resize_mode=args.resize_mode,
+        debug_shapes=bool(args.debug_shapes),
     )
     val_ds = None
     if val_dir:
@@ -150,6 +156,9 @@ def main() -> None:
             strict_pairs=bool(args.strict_pairs),
             mask_key=(args.mask_key or None),
             image_size=int(cfg.data.image_size) if cfg.data.image_size else None,
+            target_size=int(args.target_size),
+            resize_mode=args.resize_mode,
+            debug_shapes=bool(args.debug_shapes),
         )
     train_loader, val_loader = make_dataloaders(train_ds, cfg, device, val_ds=val_ds)
 

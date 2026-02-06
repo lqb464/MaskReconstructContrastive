@@ -115,6 +115,35 @@ class Mlp(nn.Module):
         return x
 
 
+class ClassificationHead(nn.Module):
+    """
+    Simple classification head used by downstream classifiers.
+    Supports optional hidden layer with dropout.
+    """
+
+    def __init__(self, in_dim: int, num_classes: int, hidden_dim: Optional[int] = None, dropout: float = 0.0):
+        super().__init__()
+        self.in_dim = in_dim
+        self.num_classes = num_classes
+        self.hidden_dim = hidden_dim
+        self.dropout = nn.Dropout(p=float(dropout)) if dropout > 0 else nn.Identity()
+
+        if hidden_dim is None or hidden_dim <= 0:
+            self.net = nn.Linear(in_dim, num_classes)
+        else:
+            self.net = nn.Sequential(
+                nn.Linear(in_dim, hidden_dim),
+                nn.GELU(),
+                self.dropout,
+                nn.Linear(hidden_dim, num_classes),
+            )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: [B, D]
+        assert x.dim() == 2, "ClassificationHead expects flattened features"
+        return self.net(x)
+
+
 class WindowAttention(nn.Module):
     def __init__(self, dim: int, window_size: int, num_heads: int, qkv_bias: bool = True, attn_drop: float = 0.0, proj_drop: float = 0.0):
         super().__init__()
@@ -893,6 +922,74 @@ class SwinUNetDualViewSSL(nn.Module):
         _, b = self._shared_trunk(s1, plane_one_hot)
         return b
 
+    def encode_dual(
+        self,
+        x1: torch.Tensor,
+        x2: torch.Tensor,
+        plane_one_hot: torch.Tensor,
+        feature_level: str = "bottleneck",
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Dual-view encoder path that mirrors the supervised forward pass, ensuring SACA is applied.
+        Returns NHWC features for both views at the requested level.
+        feature_level: one of {'stage1', 'stage2', 'bottleneck'}
+        """
+        feature_level = str(feature_level).lower().strip()
+        if feature_level not in {"stage1", "stage2", "bottleneck"}:
+            raise ValueError("feature_level must be stage1, stage2, or bottleneck")
+
+        # ---- patch embed ----
+        f0_1 = self.patch_embed_1(x1)
+        f0_2 = self.patch_embed_2(x2)
+
+        # SACA: after_patch_embed
+        f0_1, f0_2 = self.maybe_saca("after_patch_embed", f0_1, f0_2)
+
+        # ---- stage0 ----
+        s0_1 = self.stage0_1(f0_1)
+        s0_2 = self.stage0_2(f0_2)
+
+        # SACA: after_stage0
+        s0_1, s0_2 = self.maybe_saca("after_stage0", s0_1, s0_2)
+
+        # ---- merge0 ----
+        f1_1 = self.merge0_1(s0_1)
+        f1_2 = self.merge0_2(s0_2)
+
+        # SACA: after_merge0
+        f1_1, f1_2 = self.maybe_saca("after_merge0", f1_1, f1_2)
+
+        # ---- stage1 ----
+        s1_1 = self.stage1_1(f1_1)
+        s1_2 = self.stage1_2(f1_2)
+
+        # SACA: after_stage1
+        s1_1, s1_2 = self.maybe_saca("after_stage1", s1_1, s1_2)
+
+        if feature_level == "stage1":
+            return s1_1, s1_2
+
+        # ---- stage2 ----
+        u2_1 = self.merge1(s1_1)
+        u2_1 = self.plane_cond(u2_1, plane_one_hot)
+        s2_1 = self.stage2(u2_1)
+
+        u2_2 = self.merge1(s1_2)
+        u2_2 = self.plane_cond(u2_2, plane_one_hot)
+        s2_2 = self.stage2(u2_2)
+
+        if feature_level == "stage2":
+            return s2_1, s2_2
+
+        # ---- bottleneck ----
+        u3_1 = self.merge2(s2_1)
+        b1 = self.stage3(u3_1)
+
+        u3_2 = self.merge2(s2_2)
+        b2 = self.stage3(u3_2)
+
+        return b1, b2
+
     def param_count_breakdown(self) -> Dict[str, int]:
         early_view1 = [self.patch_embed_1, self.stage0_1, self.merge0_1, self.stage1_1]
         early_view2 = [self.patch_embed_2, self.stage0_2, self.merge0_2, self.stage1_2]
@@ -1109,4 +1206,5 @@ class SwinUNetDualViewSSL(nn.Module):
 __all__ = [
     "SwinUNetDualViewSSL",
     "flip_lr",
+    "ClassificationHead",
 ]

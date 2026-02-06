@@ -15,6 +15,16 @@ def build_argparser() -> argparse.ArgumentParser:
         default="encoder_only",
         choices=["none", "full", "encoder_only"],
     )
+    p.add_argument(
+        "--freeze-recon",
+        action="store_true",
+        help="When ckpt-load-mode=full, freeze entire encoder/decoder after loading",
+    )
+    p.add_argument(
+        "--freeze-decoder-recon",
+        action="store_true",
+        help="When ckpt-load-mode=full, freeze decoder/reconstruction blocks after loading",
+    )
     p.add_argument("--image_size", type=int, default=256)
     p.add_argument("--patch_size", type=int, default=16)
     p.add_argument("--in-ch", type=int, default=1)
@@ -48,6 +58,22 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--cpu", action="store_true")
     p.add_argument("--seed", type=int, default=42)
 
+    p.add_argument(
+        "--feature_level",
+        type=str,
+        default="bottleneck",
+        choices=["stage1", "stage2", "bottleneck"],
+        help="Feature level for classification pooling",
+    )
+    p.add_argument(
+        "--fusion_mode",
+        type=str,
+        default="avg",
+        choices=["avg", "concat", "max"],
+        help="Fusion strategy for dual-view features",
+    )
+    p.add_argument("--clf_hidden_dim", type=int, default=0, help="Optional hidden dim for classification head (0=linear)")
+
     p.add_argument("--freeze_encoder_epochs", type=int, default=0)
     p.add_argument("--dropout", type=float, default=0.0)
 
@@ -70,6 +96,4 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--focal_alpha", type=str, default="")
 
     return p
-
-
 
