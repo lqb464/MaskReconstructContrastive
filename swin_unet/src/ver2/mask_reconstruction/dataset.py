@@ -50,6 +50,7 @@ class MaskReconstructionDataset(Dataset):
         debug_shapes: bool = False,
         return_dual_view: bool = False,
         debug_pair_alignment: bool = False,
+        plane: str = "axial",
     ):
         self.data_dir = Path(data_dir).expanduser()
         if not self.data_dir.exists():
