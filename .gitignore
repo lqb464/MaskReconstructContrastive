@@ -209,3 +209,4 @@ __marimo__/
 
 unet/outputs/*
 swin_unet/outputs/*
+AGENTS.md
