@@ -217,7 +217,6 @@ class MaskReconstructionTrainer:
                     {
                         "lt": f"{total_loss/steps:.4f}",
                         "d": f"{total_dice/steps:.4f}",
-                        "lr": f"{lr:.2e}",
                     }
                 )
 

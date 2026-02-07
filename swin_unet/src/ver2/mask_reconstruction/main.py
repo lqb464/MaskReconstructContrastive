@@ -205,6 +205,7 @@ def main() -> None:
         vis_num=int(getattr(args, "vis_n_results", args.vis_num)),
         vis_threshold=float(args.vis_threshold),
         disable_tqdm=bool(args.no_tqdm),
+        train_step_dice=True
     )
     trainer.fit(train_loader, val_loader, epochs=int(cfg.training.epochs))
     generate_plots(out_dir / "epoch_log.csv", out_dir / "plot")
