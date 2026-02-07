@@ -12,7 +12,7 @@ from ..training.utils import get_device, ensure_dir
 from ..data.dataset import split_indices
 
 from .dataset import MaskReconstructionDataset
-from .experiment import ExperimentConfig, build_argparser
+from .experiment import ExperimentConfig, build_argparser, enforce_recon_only_args
 from .trainer import MaskReconstructionTrainer
 from .plotting import generate_plots
 from .utils import make_worker_init_fn, set_seed
@@ -45,6 +45,7 @@ def parse_args() -> argparse.Namespace:
             if action.default is None:
                 action.default = ""
     args = parser.parse_args()
+    enforce_recon_only_args(args)
     return args
 
 
@@ -104,6 +105,10 @@ def build_model(cfg: ExperimentConfig) -> SwinUNetDualViewSSL:
     """Instantiate Swin-UNet using shared config to honor SACA/contrastive flags."""
     mcfg = cfg.model
     tcfg = cfg.training
+    if bool(getattr(tcfg, "enable_contrastive", False)):
+        raise ValueError("mask_reconstruction entrypoint forbids contrastive mode.")
+    if bool(getattr(cfg.mask, "enable_masking", False)):
+        raise ValueError("mask_reconstruction entrypoint forbids masking mode.")
     model = SwinUNetDualViewSSL(
         in_ch=mcfg.in_ch,
         image_size=cfg.data.image_size,
@@ -121,7 +126,7 @@ def build_model(cfg: ExperimentConfig) -> SwinUNetDualViewSSL:
         saca_gate_init=mcfg.saca_gate_init,
         saca_warmup_epochs=mcfg.saca_warmup_epochs,
         enable_reconstruct=tcfg.enable_reconstruct,
-        enable_contrastive=tcfg.enable_contrastive,
+        enable_contrastive=False,
         contrastive_loss_type=cfg.contrast_loss.contrastive_loss_type,
         contrastive_position=cfg.contrast_loss.contrastive_position,
         single_view=tcfg.single_view,
@@ -135,6 +140,11 @@ def main() -> None:
     if not getattr(args, "data_root", ""):
         args.data_root = args.train_dir
     cfg = ExperimentConfig.from_args(args)
+    # Hard guardrails for this task-specific entrypoint.
+    cfg.training.enable_contrastive = False
+    cfg.mask.enable_masking = False
+    if bool(cfg.training.enable_contrastive) or bool(cfg.mask.enable_masking):
+        raise ValueError("mask_reconstruction/main.py enforces reconstruction-only (no masking, no contrastive).")
     set_seed(int(cfg.training.seed))
 
     device = get_device(cpu=bool(cfg.training.cpu))
@@ -184,6 +194,12 @@ def main() -> None:
 
     model = build_model(cfg).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=float(cfg.training.lr), weight_decay=float(cfg.training.weight_decay))
+    # Smoke snippet (manual quick check):
+    # dummy_x = torch.randn(2, 1, cfg.data.image_size, cfg.data.image_size, device=device)
+    # dummy_y = torch.rand_like(dummy_x)
+    # dummy_plane = torch.tensor([[1.0, 0.0], [0.0, 1.0]], device=device)
+    # r1, r2, _, _ = model(dummy_x, None, dummy_plane)  # dual view path
+    # assert r1.shape == dummy_y.shape and (r2 is None or r2.shape == dummy_y.shape)
 
     out_dir = Path(cfg.logging.out_dir)
     if cfg.logging.run_name:
@@ -205,7 +221,7 @@ def main() -> None:
         vis_num=int(getattr(args, "vis_n_results", args.vis_num)),
         vis_threshold=float(args.vis_threshold),
         disable_tqdm=bool(args.no_tqdm),
-        train_step_dice=True
+        train_step_dice=False,
     )
     trainer.fit(train_loader, val_loader, epochs=int(cfg.training.epochs))
     generate_plots(out_dir / "epoch_log.csv", out_dir / "plot")

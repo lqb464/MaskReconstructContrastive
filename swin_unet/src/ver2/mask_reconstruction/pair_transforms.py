@@ -70,6 +70,8 @@ def _resize_pair_tensors(img: torch.Tensor, mask: torch.Tensor, size: int, mode:
     img, mask: [1,1,H,W]
     Returns resized tensors [1,1,size,size].
     """
+    # Keep mask interpolation in float32 to avoid float64 promotion overhead on CPU workers.
+    mask = mask.to(dtype=torch.float32)
     if mode == "direct":
         img_r = F.interpolate(img, size=(size, size), mode="bilinear", align_corners=False)
         mask_r = F.interpolate(mask, size=(size, size), mode="nearest")
@@ -106,7 +108,7 @@ def apply_pair_transforms(
     mask_np = _ensure_mask_hw(mask_array)
 
     img_t = torch.from_numpy(img_np).unsqueeze(0).unsqueeze(0)
-    mask_t = torch.from_numpy(mask_np).unsqueeze(0).unsqueeze(0).to(dtype=torch.float64)
+    mask_t = torch.from_numpy(mask_np).unsqueeze(0).unsqueeze(0).to(dtype=torch.float32)
 
     if image_size > 0:
         img_t, mask_t = _resize_pair_tensors(img_t, mask_t, int(image_size), mode=resize_mode)
@@ -126,4 +128,3 @@ __all__ = [
     "load_mask_pil_from_array",
     "apply_pair_transforms",
 ]
-

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +26,8 @@ def load_checkpoint_weights_filtered(
     require_no_missing: bool = False,
 ) -> Any:
     """
-    Load model weights with strict=False but always logs missing/unexpected keys.
+    Load model weights with strict=False and emit loud diagnostics for partial loads.
+    Use require_no_missing=True for fail-fast behavior in recon-only training.
     """
     ckpt = torch.load(Path(path), map_location=map_location)
     if isinstance(ckpt, dict) and state_key in ckpt and isinstance(ckpt[state_key], dict):
@@ -43,20 +45,23 @@ def load_checkpoint_weights_filtered(
     missing = list(load_msg.missing_keys)
     unexpected = list(load_msg.unexpected_keys)
     if missing or unexpected:
-        log.warning(
-            "Checkpoint load report (%s): missing_keys=%d unexpected_keys=%d",
-            path,
-            len(missing),
-            len(unexpected),
-        )
+        log.warning("Checkpoint load report (%s): missing_keys=%d unexpected_keys=%d", path, len(missing), len(unexpected))
         if missing:
-            log.warning("Missing keys sample: %s", ", ".join(missing[:10]))
+            msg = (
+                f"Checkpoint missing keys ({len(missing)}): {missing}. "
+                "For strict recon-only loads, pass require_no_missing=True. "
+                "For intentional partial loads, keep require_no_missing=False."
+            )
+            if require_no_missing:
+                raise RuntimeError(msg)
+            warnings.warn(msg, RuntimeWarning, stacklevel=2)
         if unexpected:
-            log.warning("Unexpected keys sample: %s", ", ".join(unexpected[:10]))
-    if require_no_missing and missing:
-        raise RuntimeError(f"Missing {len(missing)} keys while loading checkpoint: {path}")
+            warnings.warn(
+                f"Checkpoint has unexpected keys ({len(unexpected)}): {unexpected}.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
     return load_msg
 
 
 __all__ = ["save_checkpoint", "load_checkpoint_weights_filtered"]
-

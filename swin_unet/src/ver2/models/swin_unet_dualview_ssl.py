@@ -201,6 +201,8 @@ class WindowAttention(nn.Module):
         attn = attn + rel_bias.unsqueeze(0)
 
         if attn_mask is not None:
+            if attn_mask.dtype != attn.dtype:
+                attn_mask = attn_mask.to(dtype=attn.dtype)
             nW = attn_mask.size(0)
             attn = attn.view(Bn // nW, nW, self.num_heads, N, N)
             attn = attn + attn_mask.unsqueeze(1).unsqueeze(0)
@@ -235,7 +237,7 @@ class SwinTransformerBlock(nn.Module):
             x = F.pad(x, (0, 0, 0, pad_r, 0, pad_b))
         Hp, Wp = x.shape[1], x.shape[2]
 
-        attn_mask = get_attn_mask_cached(Hp, Wp, ws, ss, x.device)
+        attn_mask = get_attn_mask_cached(Hp, Wp, ws, ss, x.device, dtype=x.dtype)
 
         shortcut = x
         x = self.norm1(x)
@@ -360,7 +362,9 @@ class SACA(nn.Module):
         self.norm_kv2 = nn.LayerNorm(dim)
         self.xattn_21 = WindowCrossAttention(dim=dim, window_size=window_size, num_heads=num_heads)
 
-        self.gate = nn.Parameter(torch.tensor(float(gate_init)))
+        # Per-channel gate keeps SACA lightweight while being more expressive than a scalar gate.
+        # tanh(gate) is used in forward for stable bounded scaling around 0 at initialization.
+        self.gate = nn.Parameter(torch.full((dim,), float(gate_init)))
 
         self.norm2_1 = nn.LayerNorm(dim)
         self.mlp1 = Mlp(dim, mlp_ratio=mlp_ratio)
@@ -410,8 +414,9 @@ class SACA(nn.Module):
         delta2 = window_reverse(delta2, ws, H1, W1, B)
 
         # Residual with gate
-        x1 = x1p + self.gate * delta1
-        x2 = x2p + self.gate * delta2
+        gate = torch.tanh(self.gate).view(1, 1, 1, -1)
+        x1 = x1p + gate * delta1
+        x2 = x2p + gate * delta2
 
         # Per-view MLP refinement (keeps same style as Swin blocks)
         x1 = x1 + self.mlp1(self.norm2_1(x1))
@@ -465,11 +470,29 @@ class PlaneCondition(nn.Module):
 # Decoder up blocks
 # -------------------------
 class SwinUpBlock(nn.Module):
-    def __init__(self, in_dim: int, skip_dim: int, out_dim: int, depth: int, num_heads: int, window_size: int):
+    def __init__(
+        self,
+        in_dim: int,
+        skip_dim: int,
+        out_dim: int,
+        depth: int,
+        num_heads: int,
+        window_size: int,
+        enable_fusion_refine: bool = True,
+    ):
         super().__init__()
         self.up = PatchExpand(in_dim)
         self.proj = nn.Linear((in_dim // 2) + skip_dim, out_dim)
         self.norm = nn.LayerNorm(out_dim)
+        self.fusion_refine = (
+            nn.Sequential(
+                nn.Conv2d(out_dim, out_dim, kernel_size=3, padding=1, groups=out_dim, bias=False),
+                nn.GELU(),
+                nn.Conv2d(out_dim, out_dim, kernel_size=1, bias=False),
+            )
+            if enable_fusion_refine
+            else None
+        )
         self.layer = BasicLayer(out_dim, depth=depth, num_heads=num_heads, window_size=window_size)
 
     def forward(self, x: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
@@ -481,6 +504,10 @@ class SwinUpBlock(nn.Module):
             x = x[:, :skip.shape[1], :skip.shape[2], :]
         x = torch.cat([x, skip], dim=-1)
         x = self.norm(self.proj(x))
+        if self.fusion_refine is not None:
+            x_nchw = nhwc_to_nchw(x)
+            x_nchw = x_nchw + self.fusion_refine(x_nchw)
+            x = nchw_to_nhwc(x_nchw)
         x = self.layer(x)
         return x
 
@@ -529,6 +556,7 @@ class SwinUNetDualViewSSL(nn.Module):
         contrastive_loss_type: str = "infonce",
         contrastive_position: str = "bottleneck",
         single_view: bool = False,
+        verbose: bool = False,
     ):
         super().__init__()
         
@@ -554,6 +582,7 @@ class SwinUNetDualViewSSL(nn.Module):
         self.enable_reconstruct = enable_reconstruct
         self.enable_contrastive = enable_contrastive
         self.single_view = single_view
+        self.verbose = bool(verbose)
         
         # ---- Contrastive Loss ----
         self.contrastive_position = contrastive_position    
@@ -678,6 +707,8 @@ class SwinUNetDualViewSSL(nn.Module):
             self.proj_c2 = None
             self.proj_c3 = None
             self.proj = None
+            # Recon-only path must avoid projection-head work entirely.
+            assert (self.proj_c1, self.proj_c2, self.proj_c3) == (None, None, None)
 
 
 
@@ -710,7 +741,9 @@ class SwinUNetDualViewSSL(nn.Module):
             )
             self.final_up_v1 = FinalPatchExpand(dim=C0, patch_size=patch_size, out_dim=32)
             self.recon_head_v1 = nn.Sequential(
-                nn.Conv2d(32, 16, kernel_size=3, padding=1),
+                nn.Conv2d(32, 24, kernel_size=3, padding=1),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(24, 16, kernel_size=3, padding=1),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(16, 1, kernel_size=1),
             )
@@ -733,7 +766,9 @@ class SwinUNetDualViewSSL(nn.Module):
             )
             self.final_up_v2 = FinalPatchExpand(dim=C0, patch_size=patch_size, out_dim=32)
             self.recon_head_v2 = nn.Sequential(
-                nn.Conv2d(32, 16, kernel_size=3, padding=1),
+                nn.Conv2d(32, 24, kernel_size=3, padding=1),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(24, 16, kernel_size=3, padding=1),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(16, 1, kernel_size=1),
             )
@@ -760,7 +795,8 @@ class SwinUNetDualViewSSL(nn.Module):
         if self.enable_reconstruct and (self.up2_shared is None):
             raise RuntimeError("enable_reconstruct=True but decoder is not initialized")
         
-        print(self.get_saca_debug_info())
+        if self.verbose:
+            print(self.get_saca_debug_string())
 
 
     def encoder_state_dict_prefixes(self) -> tuple[str, ...]:
@@ -841,8 +877,6 @@ class SwinUNetDualViewSSL(nn.Module):
         Lightweight debug info for logging.
         Safe to call every epoch.
         """
-        
-        print("="*100)
         info = {
             "saca_enable": bool(self.enable_saca),
             "saca_position": self.saca_position if self.enable_saca else "disabled",
@@ -853,8 +887,14 @@ class SwinUNetDualViewSSL(nn.Module):
 
         if self.enable_saca:
             for pos, mod in self.saca_modules.items():
-                info[f"saca_gate_{pos}"] = float(mod.gate.detach().cpu())
+                gate = torch.tanh(mod.gate.detach())
+                info[f"saca_gate_{pos}_mean"] = float(gate.mean().cpu())
+                info[f"saca_gate_{pos}_absmax"] = float(gate.abs().max().cpu())
         return info
+
+    def get_saca_debug_string(self) -> str:
+        info = self.get_saca_debug_info()
+        return " | ".join(f"{k}={v}" for k, v in info.items())
 
     
     def _validate_saca_config(self, C0: int, C1: int, num_heads):
@@ -900,6 +940,23 @@ class SwinUNetDualViewSSL(nn.Module):
     def _pool_hw(x_nhwc: torch.Tensor) -> torch.Tensor:
         # x_nhwc: [B,H,W,C] -> [B,C]
         return x_nhwc.mean(dim=(1, 2))
+
+    @staticmethod
+    def _apply_pixel_mask(x: torch.Tensor, pixel_mask: Optional[torch.Tensor]) -> torch.Tensor:
+        if pixel_mask is None:
+            return x
+        if pixel_mask.ndim != 4:
+            raise ValueError(f"pixel_mask must be 4D [B,1,H,W] or [B,C,H,W], got shape {tuple(pixel_mask.shape)}")
+        if pixel_mask.shape[0] != x.shape[0] or pixel_mask.shape[-2:] != x.shape[-2:]:
+            raise ValueError(
+                f"pixel_mask shape {tuple(pixel_mask.shape)} is incompatible with input shape {tuple(x.shape)}"
+            )
+        if pixel_mask.shape[1] not in {1, x.shape[1]}:
+            raise ValueError(
+                f"pixel_mask channel dimension must be 1 or match input channels ({x.shape[1]}), "
+                f"got {pixel_mask.shape[1]}"
+            )
+        return x * (1.0 - pixel_mask.to(dtype=x.dtype))
     
     def _shared_trunk(self, s1: torch.Tensor, plane_one_hot: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         if self.merge1 is None or self.plane_cond is None or self.stage2 is None:
@@ -915,7 +972,15 @@ class SwinUNetDualViewSSL(nn.Module):
         return s2, b
 
     @torch.no_grad()
-    def encode_bottleneck(self, x: torch.Tensor, plane_one_hot: torch.Tensor, view: int = 1) -> torch.Tensor:
+    def encode_bottleneck(
+        self,
+        x: torch.Tensor,
+        plane_one_hot: torch.Tensor,
+        view: int = 1,
+        *,
+        pixel_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        x = self._apply_pixel_mask(x, pixel_mask)
         if view == 1:
             f0 = self.patch_embed_1(x)
             s0 = self.stage0_1(f0)
@@ -940,6 +1005,8 @@ class SwinUNetDualViewSSL(nn.Module):
         x2: torch.Tensor,
         plane_one_hot: torch.Tensor,
         levels: list[str],
+        *,
+        pixel_mask: Optional[torch.Tensor] = None,
     ) -> Dict[str, Tuple[torch.Tensor, torch.Tensor]]:
         """
         Dual-view encoder path that mirrors forward(), applying SACA where configured.
@@ -954,6 +1021,8 @@ class SwinUNetDualViewSSL(nn.Module):
         need_bottleneck = "bottleneck" in requested
 
         # ---- patch embed ----
+        x1 = self._apply_pixel_mask(x1, pixel_mask)
+        x2 = self._apply_pixel_mask(x2, pixel_mask)
         f0_1 = self.patch_embed_1(x1)
         f0_2 = self.patch_embed_2(x2)
         f0_1, f0_2 = self.maybe_saca("after_patch_embed", f0_1, f0_2)
@@ -1009,9 +1078,11 @@ class SwinUNetDualViewSSL(nn.Module):
         x2: torch.Tensor,
         plane_one_hot: torch.Tensor,
         feature_level: str = "bottleneck",
+        *,
+        pixel_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         feature_level = str(feature_level).lower().strip()
-        feats = self.encode_dual_features(x1, x2, plane_one_hot, [feature_level])
+        feats = self.encode_dual_features(x1, x2, plane_one_hot, [feature_level], pixel_mask=pixel_mask)
         return feats[feature_level]
 
     def param_count_breakdown(self) -> Dict[str, int]:
@@ -1077,16 +1148,23 @@ class SwinUNetDualViewSSL(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        pixel_mask: torch.Tensor,
+        pixel_mask: Optional[torch.Tensor],
         plane_one_hot: torch.Tensor,
     ):
+        if plane_one_hot.shape[0] != x.shape[0]:
+            raise ValueError(
+                f"plane_one_hot batch ({plane_one_hot.shape[0]}) must match input batch ({x.shape[0]})."
+            )
+        if not self.enable_contrastive and any(p is not None for p in (self.proj_c1, self.proj_c2, self.proj_c3)):
+            raise RuntimeError("Contrastive heads must be None when enable_contrastive=False.")
+
         if self.single_view:
             if self.enable_saca:
                 raise ValueError("SACA requires dual-view. Disable SACA or use dual-view mode.")
             if self.enable_contrastive:
                 raise ValueError("single_view requires contrastive disabled.")
 
-            x1_masked = x * (1.0 - pixel_mask)
+            x1_masked = self._apply_pixel_mask(x, pixel_mask)
 
             f0_1 = self.patch_embed_1(x1_masked)
             s0_1 = self.stage0_1(f0_1)
@@ -1106,12 +1184,12 @@ class SwinUNetDualViewSSL(nn.Module):
 
             return recon_raw_orig, None, None, None
 
-        x1_masked = x * (1.0 - pixel_mask)
+        x1_masked = self._apply_pixel_mask(x, pixel_mask)
         # NOTE:
         # View2 uses a flipped image but the SAME pixel mask (mask is NOT flipped).
         # This is intentional to create mask diversity between views,
         # encouraging invariance beyond exact masked-region alignment.
-        x2_masked = flip_lr(x) * (1.0 - pixel_mask)
+        x2_masked = self._apply_pixel_mask(flip_lr(x), pixel_mask)
 
 
         # ---- patch embed ----

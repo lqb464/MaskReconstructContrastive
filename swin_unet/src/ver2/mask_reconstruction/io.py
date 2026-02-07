@@ -60,6 +60,9 @@ def load_mask_npz_array(path: str | Path, key: Optional[str] = None) -> np.ndarr
 
 def load_mask_npz(path: str | Path, key: Optional[str] = None) -> torch.Tensor:
     """
+    Legacy helper retained for compatibility with older callers.
+    Current mask reconstruction dataset path uses load_mask_npz_array() + pair_transforms.
+
     Load mask from NPZ file.
     - Uses the provided key when given, otherwise the first array in the NPZ.
     - Returns float32 tensor [1,H,W] with values {0,1}.

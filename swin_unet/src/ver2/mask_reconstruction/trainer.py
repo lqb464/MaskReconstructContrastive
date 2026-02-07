@@ -80,7 +80,16 @@ class MaskReconstructionTrainer:
         self.disable_tqdm = bool(disable_tqdm)
         self.vis_enabled = self.vis_every > 0 and self.vis_num > 0
         cfg_train_step_dice = bool(getattr(cfg_logging, "train_step_dice", False))
-        self.train_step_dice = bool(train_step_dice) or cfg_train_step_dice
+        requested_train_step_dice = bool(train_step_dice) or cfg_train_step_dice
+        # Recon-only task guardrail: dice is validation-only in this entrypoint.
+        self.train_step_dice = False
+        if requested_train_step_dice:
+            log.warning("train_step_dice is ignored in mask reconstruction trainer (validation-only metric).")
+
+        if bool(getattr(cfg.training, "enable_contrastive", False)) or bool(getattr(model, "enable_contrastive", False)):
+            raise ValueError("Mask reconstruction trainer is recon-only; enable_contrastive must be False.")
+        if bool(getattr(cfg.mask, "enable_masking", False)):
+            raise ValueError("Mask reconstruction trainer expects masking disabled (cfg.mask.enable_masking=False).")
 
         self.use_amp = bool(cfg.training.amp) and device.type == "cuda"
         self.scaler = GradScaler(enabled=self.use_amp)
@@ -99,8 +108,6 @@ class MaskReconstructionTrainer:
 
         self.best_val = float("-inf")
         self._val_vis_batch: dict[str, torch.Tensor] | None = None
-        self._pixel_mask_cache: torch.Tensor | None = None
-        self._pixel_mask_cache_shape: tuple[int, int, int, int] | None = None
 
     def _build_scheduler(self, total_epochs: int) -> None:
         total_epochs = max(1, int(total_epochs))
@@ -119,18 +126,6 @@ class MaskReconstructionTrainer:
         self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lr_lambda)
         self._scheduler_total_epochs = total_epochs
 
-    def _get_zero_pixel_mask(self, *, b: int, h: int, w: int, device: torch.device) -> torch.Tensor:
-        shape = (int(b), 1, int(h), int(w))
-        if (
-            self._pixel_mask_cache is None
-            or self._pixel_mask_cache_shape != shape
-            or self._pixel_mask_cache.device != device
-            or self._pixel_mask_cache.dtype != torch.float32
-        ):
-            self._pixel_mask_cache = torch.zeros(shape, device=device, dtype=torch.float32)
-            self._pixel_mask_cache_shape = shape
-        return self._pixel_mask_cache
-
     def _forward_losses(
         self,
         x: torch.Tensor,
@@ -141,9 +136,19 @@ class MaskReconstructionTrainer:
         return_vis: bool = False,
         vis_items: int = 0,
     ) -> Tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor] | None]:
-        pixel_mask = self._get_zero_pixel_mask(b=y.shape[0], h=y.shape[-2], w=y.shape[-1], device=y.device)
+        assert x.shape == y.shape, f"Input/target shape mismatch before loss: {tuple(x.shape)} vs {tuple(y.shape)}"
+        assert plane_one_hot.shape[0] == x.shape[0], "plane_one_hot batch dimension must match input batch size"
+
+        # Recon-only task invariant: pixel masking is disabled, so pass None to avoid per-step mask allocation.
+        pixel_mask = None
+        assert pixel_mask is None, "pixel_mask must remain None in mask reconstruction trainer."
         recon1, recon2, _, _ = self.model(x, pixel_mask, plane_one_hot)
+        assert recon1.shape == y.shape, f"recon1/target shape mismatch: {tuple(recon1.shape)} vs {tuple(y.shape)}"
         target_view2 = flip_lr(y) if (recon2 is not None and self.align_flip_target) else y
+        if recon2 is not None:
+            assert recon2.shape == target_view2.shape, (
+                f"recon2/target_view2 shape mismatch: {tuple(recon2.shape)} vs {tuple(target_view2.shape)}"
+            )
 
         loss_recon = F.binary_cross_entropy_with_logits(recon1, y)
         if recon2 is not None:
@@ -151,12 +156,16 @@ class MaskReconstructionTrainer:
 
         dice = torch.zeros((), device=x.device)
         if compute_dice:
-            dice1 = dice_coefficient(torch.sigmoid(recon1), y, threshold=self.threshold)
-            if recon2 is not None:
-                dice2 = dice_coefficient(torch.sigmoid(recon2), target_view2, threshold=self.threshold)
-                dice = 0.5 * (dice1 + dice2)
-            else:
-                dice = dice1
+            # Metric-only path: keep this under no_grad even if caller toggles compute_dice in training by mistake.
+            with torch.no_grad():
+                prob1 = torch.sigmoid(recon1)
+                dice1 = dice_coefficient(prob1, y, threshold=self.threshold)
+                if recon2 is not None:
+                    prob2 = torch.sigmoid(recon2)
+                    dice2 = dice_coefficient(prob2, target_view2, threshold=self.threshold)
+                    dice = 0.5 * (dice1 + dice2)
+                else:
+                    dice = dice1
 
         lambda_recon = self.cfg.training.lambda_recon if self.cfg.training.lambda_recon > 0 else 1.0
         total = lambda_recon * loss_recon
@@ -194,7 +203,7 @@ class MaskReconstructionTrainer:
                     x,
                     y,
                     plane,
-                    compute_dice=self.train_step_dice,
+                    compute_dice=False,
                 )
 
             if self.use_amp:
@@ -212,7 +221,6 @@ class MaskReconstructionTrainer:
             steps += 1
 
             if not self.disable_tqdm:
-                lr = self.optimizer.param_groups[0]["lr"]
                 progress.set_postfix(
                     {
                         "lt": f"{total_loss/steps:.4f}",
@@ -352,7 +360,6 @@ class MaskReconstructionTrainer:
             ):
                 vis_path = self.vis_dir / f"val_vis_epoch_{epoch:04d}.png"
                 save_val_visualization_grid(
-                    model=self.model,
                     val_batch=self._val_vis_batch,
                     device=self.device,
                     out_path=vis_path,
@@ -364,4 +371,3 @@ class MaskReconstructionTrainer:
 
 
 __all__ = ["MaskReconstructionTrainer"]
-

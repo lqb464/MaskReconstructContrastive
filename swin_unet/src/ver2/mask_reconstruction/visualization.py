@@ -54,7 +54,6 @@ def run_tsne_visualization(*, enabled: bool = False, **kwargs):
 @torch.no_grad()
 def save_val_visualization_grid(
     *,
-    model,
     val_batch: dict[str, torch.Tensor],
     device: torch.device,
     out_path: Path,
@@ -68,27 +67,26 @@ def save_val_visualization_grid(
 ) -> None:
     """
     Validation visualization with dual-view support.
-    Uses precomputed validation tensors when available to avoid duplicate forward pass.
+    This function only consumes precomputed tensors from validation and never performs model forward.
     """
-    model_was_training = model.training
-    model.eval()
     max_items = min(int(max_items), 4)
 
     if max_items <= 0:
-        if model_was_training:
-            model.train()
         return
+
+    required_keys = ("input", "target", "recon1_logits")
+    missing_required = [k for k in required_keys if k not in val_batch]
+    if missing_required:
+        raise RuntimeError(
+            "save_val_visualization_grid requires precomputed validation outputs. "
+            f"Missing keys: {missing_required}. Pass recon logits from validation forward."
+        )
 
     x = val_batch["input"].to(device, non_blocking=True)
     y = val_batch["target"].to(device, non_blocking=True)
-    plane = val_batch.get("plane_one_hot")
-    if plane is not None:
-        plane = plane.to(device, non_blocking=True)
 
     n_items = min(max_items, x.size(0))
     if n_items <= 0:
-        if model_was_training:
-            model.train()
         return
 
     x = x[:n_items]
@@ -99,24 +97,16 @@ def save_val_visualization_grid(
     else:
         y_flip = flip_lr(y)
 
-    logits_orig = val_batch.get("recon1_logits")
-    if logits_orig is not None:
-        logits_orig = logits_orig[:n_items].to(device, non_blocking=True)
-    else:
-        pixel_mask = torch.zeros((n_items, 1, y.shape[-2], y.shape[-1]), device=device, dtype=torch.float32)
-        logits_orig, _, _, _ = model(x, pixel_mask, plane)
+    logits_orig = val_batch["recon1_logits"][:n_items].to(device, non_blocking=True)
 
     logits_flip = None
     if show_flip:
-        logits_flip = val_batch.get("recon2_logits")
-        if logits_flip is not None:
-            logits_flip = logits_flip[:n_items].to(device, non_blocking=True)
-        else:
-            if plane is None:
-                raise RuntimeError("plane_one_hot is required for fallback visualization forward.")
-            x_flip = torch.flip(x, dims=[-1])
-            pixel_mask = torch.zeros((n_items, 1, y.shape[-2], y.shape[-1]), device=device, dtype=torch.float32)
-            logits_flip, _, _, _ = model(x_flip, pixel_mask, plane)
+        if "recon2_logits" not in val_batch:
+            raise RuntimeError(
+                "show_flip=True requires val_batch['recon2_logits']; "
+                "run validation forward once and pass the precomputed logits."
+            )
+        logits_flip = val_batch["recon2_logits"][:n_items].to(device, non_blocking=True)
 
     prob_orig = torch.sigmoid(logits_orig)
     bin_orig = (prob_orig >= threshold).float()
@@ -273,8 +263,6 @@ def save_val_visualization_grid(
             del bin_f
 
     if len(samples) == 0:
-        if model_was_training:
-            model.train()
         return
 
     _pack_and_save(samples, out_path)
@@ -290,9 +278,4 @@ def save_val_visualization_grid(
         if bin_flip is not None:
             del bin_flip
 
-    if model_was_training:
-        model.train()
-
-
 __all__ = ["save_val_visualization_grid", "save_image_grid", "run_tsne_visualization"]
-

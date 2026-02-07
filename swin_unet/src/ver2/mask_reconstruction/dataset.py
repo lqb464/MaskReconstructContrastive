@@ -75,6 +75,7 @@ class MaskReconstructionDataset(Dataset):
         self.debug_shapes = debug_shapes
         self.return_dual_view = return_dual_view
         self.debug_pair_alignment = bool(debug_pair_alignment) and _DEBUG_PAIR_ALIGNMENT_ENV
+        self.debug_pair_alignment_mod = max(1, int(os.getenv("MASK_RECON_DEBUG_PAIR_ALIGNMENT_MOD", "64")))
 
         self.plane_one_hot = plane_to_one_hot(plane)
         if self.debug_shapes:
@@ -130,8 +131,8 @@ class MaskReconstructionDataset(Dataset):
         x, y = apply_pair_transforms(img_pil, mask_np, target_sz, do_hflip=False, resize_mode=self.resize_mode)
         y = (y > 0).float()
 
-        # Debug alignment logging (first few samples when enabled)
-        if self.debug_pair_alignment and idx < 3:
+        # Debug alignment logging is opt-in and sampled to avoid throughput collapse.
+        if self.debug_pair_alignment and (idx % self.debug_pair_alignment_mod == 0):
             bbox = (y[0] > 0).nonzero(as_tuple=False)
             if bbox.numel() > 0:
                 rmin, cmin = bbox[:, 0].min().item(), bbox[:, 1].min().item()
@@ -171,8 +172,9 @@ class MaskReconstructionDataset(Dataset):
                 print(f"[pair_debug] warning: low edge/mask overlap (IoU~{iou_proxy:.4f}) for {img_path.name}")
 
         if self.return_dual_view:
-            x2, y2 = apply_pair_transforms(img_pil, mask_np, target_sz, do_hflip=True, resize_mode=self.resize_mode)
-            y2 = (y2 > 0).float()
+            # Reuse already transformed tensors; mirror in tensor space to avoid duplicate resize/convert work.
+            x2 = torch.flip(x, dims=[-1])
+            y2 = torch.flip(y, dims=[-1])
             assert x2.shape[-2:] == y2.shape[-2:], f"Shape mismatch after transforms view2: {x2.shape} vs {y2.shape}"
         else:
             x2, y2 = None, None
