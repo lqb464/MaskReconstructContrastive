@@ -29,6 +29,7 @@ from ...models.swin_unet_dualview_ssl import (
     SwinUNetDualViewSSL,
 )
 from ...training.ckpt_io import load_checkpoint_weights_filtered
+from ...training.utils import get_device
 
 from .io import ensure_dir, save_json
 
@@ -734,7 +735,7 @@ def save_checkpoint(
 # ------------------------------------------------------------
 def run(args: argparse.Namespace) -> None:
     set_seed(args.seed)
-    device = torch.device("cpu" if args.cpu else ("cuda" if torch.cuda.is_available() else "cpu"))
+    device = get_device(bool(args.cpu))
 
     # Backward compatibility with older arg names
     if not hasattr(args, "fusion") and hasattr(args, "fusion_mode"):

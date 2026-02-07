@@ -9,11 +9,13 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 
+from ...data.pair_transforms import load_image_pil as _shared_load_image_pil
+
 log = logging.getLogger(__name__)
 
 
 def load_image_pil(path: str | Path) -> Image.Image:
-    return Image.open(path).convert("L")
+    return _shared_load_image_pil(path)
 
 
 def load_mask_pil_from_array(arr: np.ndarray) -> Image.Image:

@@ -4,9 +4,10 @@ import json
 from pathlib import Path
 from typing import Any, Dict
 
+from ...training.utils import ensure_dir as _shared_ensure_dir
 
 def ensure_dir(path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True)
+    _shared_ensure_dir(path)
 
 
 def save_json(path: Path, data: Dict[str, Any]) -> None:
