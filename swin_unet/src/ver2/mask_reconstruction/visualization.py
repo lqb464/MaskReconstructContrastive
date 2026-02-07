@@ -1,22 +1,54 @@
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Callable
+import logging
 import os
+from pathlib import Path
+from typing import Callable, Dict, List, Optional
 
+import matplotlib
 import torch
 import torch.nn.functional as F
-import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-from ..viz.visualization import save_image_grid
+from ..models.swin_unet_dualview_ssl import flip_lr
+from ..viz.visualization import (
+    run_tsne_visualization as _run_tsne_visualization_base,
+    save_image_grid as _save_image_grid_base,
+)
+
+log = logging.getLogger(__name__)
 
 
-def should_visualize(epoch: int, is_best_epoch: bool, is_last_epoch: bool, cfg) -> bool:
-    _ = cfg
-    return epoch == 0 or bool(is_best_epoch) or bool(is_last_epoch)
+def save_image_grid(
+    tensors: List[torch.Tensor],
+    titles: List[str],
+    out_path: str,
+    annotations: Optional[Dict[int, List[str]]] = None,
+    panel_vmax: Optional[Dict[int, float]] = None,
+    max_items: int = 4,
+) -> None:
+    """
+    Thin wrapper with hard item cap to avoid unbounded visualization memory.
+    """
+    max_items = max(1, int(max_items))
+    capped_tensors = [t[:max_items] for t in tensors]
+    _save_image_grid_base(
+        tensors=capped_tensors,
+        titles=titles,
+        out_path=out_path,
+        annotations=annotations,
+        panel_vmax=panel_vmax,
+    )
+    del capped_tensors
+
+
+def run_tsne_visualization(*, enabled: bool = False, **kwargs):
+    if not enabled:
+        return None
+    log.warning("t-SNE visualization enabled; this is CPU heavy.")
+    return _run_tsne_visualization_base(**kwargs)
 
 
 @torch.no_grad()
@@ -36,7 +68,7 @@ def save_val_visualization_grid(
 ) -> None:
     """
     Validation visualization with dual-view support.
-    Builds one grid from the first validation batch only.
+    Uses precomputed validation tensors when available to avoid duplicate forward pass.
     """
     model_was_training = model.training
     model.eval()
@@ -49,7 +81,9 @@ def save_val_visualization_grid(
 
     x = val_batch["input"].to(device, non_blocking=True)
     y = val_batch["target"].to(device, non_blocking=True)
-    plane = val_batch["plane_one_hot"].to(device, non_blocking=True)
+    plane = val_batch.get("plane_one_hot")
+    if plane is not None:
+        plane = plane.to(device, non_blocking=True)
 
     n_items = min(max_items, x.size(0))
     if n_items <= 0:
@@ -59,27 +93,45 @@ def save_val_visualization_grid(
 
     x = x[:n_items]
     y = y[:n_items]
-    plane = plane[:n_items]
-    pixel_mask = torch.zeros_like(y)
+    y_flip = val_batch.get("target_flip")
+    if y_flip is not None:
+        y_flip = y_flip[:n_items].to(device, non_blocking=True)
+    else:
+        y_flip = flip_lr(y)
 
-    logits_orig, _, _, _ = model(x, pixel_mask, plane)
+    logits_orig = val_batch.get("recon1_logits")
+    if logits_orig is not None:
+        logits_orig = logits_orig[:n_items].to(device, non_blocking=True)
+    else:
+        pixel_mask = torch.zeros((n_items, 1, y.shape[-2], y.shape[-1]), device=device, dtype=torch.float32)
+        logits_orig, _, _, _ = model(x, pixel_mask, plane)
+
+    logits_flip = None
+    if show_flip:
+        logits_flip = val_batch.get("recon2_logits")
+        if logits_flip is not None:
+            logits_flip = logits_flip[:n_items].to(device, non_blocking=True)
+        else:
+            if plane is None:
+                raise RuntimeError("plane_one_hot is required for fallback visualization forward.")
+            x_flip = torch.flip(x, dims=[-1])
+            pixel_mask = torch.zeros((n_items, 1, y.shape[-2], y.shape[-1]), device=device, dtype=torch.float32)
+            logits_flip, _, _, _ = model(x_flip, pixel_mask, plane)
+
     prob_orig = torch.sigmoid(logits_orig)
     bin_orig = (prob_orig >= threshold).float()
-
-    if show_flip:
-        x_flip = torch.flip(x, dims=[-1])
-        logits_flip, _, _, _ = model(x_flip, pixel_mask, plane)
+    x_flip = torch.flip(x, dims=[-1]) if show_flip else None
+    if show_flip and logits_flip is not None:
         prob_flip = torch.sigmoid(logits_flip)
         bin_flip = (prob_flip >= threshold).float()
     else:
-        x_flip = None
         prob_flip = None
         bin_flip = None
 
     samples = []
     for i in range(n_items):
         dice_o = dice_fn(prob_orig[i : i + 1], y[i : i + 1]).item()
-        dice_f = dice_fn(prob_flip[i : i + 1], y[i : i + 1]).item() if show_flip else None
+        dice_f = dice_fn(prob_flip[i : i + 1], y_flip[i : i + 1]).item() if show_flip and prob_flip is not None else None
         samples.append(
             {
                 "x": x[i : i + 1].cpu(),
@@ -87,15 +139,14 @@ def save_val_visualization_grid(
                 "prob_o": prob_orig[i : i + 1].cpu(),
                 "bin_o": bin_orig[i : i + 1].cpu(),
                 "x_flip": x_flip[i : i + 1].cpu() if show_flip else None,
-                "prob_f": prob_flip[i : i + 1].cpu() if show_flip else None,
-                "bin_f": bin_flip[i : i + 1].cpu() if show_flip else None,
+                "prob_f": prob_flip[i : i + 1].cpu() if show_flip and prob_flip is not None else None,
+                "bin_f": bin_flip[i : i + 1].cpu() if show_flip and bin_flip is not None else None,
                 "dice_o": dice_o,
                 "dice_f": dice_f,
             }
         )
 
     def _save_overlay(x_in: torch.Tensor, y_in: torch.Tensor, path: Path, k: int = 4):
-        """Save overlay of mask on input for first k samples."""
         os.makedirs(path.parent, exist_ok=True)
         k = min(k, x_in.size(0))
         fig, axes = plt.subplots(1, k, figsize=(3 * k, 3))
@@ -122,7 +173,6 @@ def save_val_visualization_grid(
         return rmin, rmax, cmin, cmax
 
     def _save_cropped(x_in, y_in, prob_o, bin_o, prob_f, bin_f, path: Path, out_size: int = 256):
-        """Center crop to mask bbox (with margin) then resize for display only."""
         os.makedirs(path.parent, exist_ok=True)
         bbox = _tight_bbox(y_in)
         if bbox is None:
@@ -134,36 +184,37 @@ def save_val_visualization_grid(
         c0 = max(0, cmin - margin)
         c1 = min(y_in.shape[-1], cmax + margin + 1)
 
-        def crop_and_resize(t):
+        def crop_and_resize(t: torch.Tensor, *, is_mask: bool) -> torch.Tensor:
             t = t[:, :, r0:r1, c0:c1]
-            if t.dtype == torch.float32:
-                return F.interpolate(t, size=(out_size, out_size), mode="bilinear", align_corners=False)
-            return F.interpolate(t.float(), size=(out_size, out_size), mode="nearest")
+            if is_mask:
+                return F.interpolate(t.float(), size=(out_size, out_size), mode="nearest")
+            return F.interpolate(t, size=(out_size, out_size), mode="bilinear", align_corners=False)
 
-        tensors = [crop_and_resize(x_in), crop_and_resize(y_in)]
+        tensors = [crop_and_resize(x_in, is_mask=False), crop_and_resize(y_in, is_mask=True)]
         titles = ["input_crop", "target_crop"]
         annotations = {}
 
-        tensors += [crop_and_resize(prob_o), crop_and_resize(bin_o)]
+        tensors += [crop_and_resize(prob_o, is_mask=False), crop_and_resize(bin_o, is_mask=True)]
         titles += ["prob_o_crop", "bin_o_crop"]
         if prob_f is not None and bin_f is not None:
-            tensors += [crop_and_resize(prob_f), crop_and_resize(bin_f)]
+            tensors += [crop_and_resize(prob_f, is_mask=False), crop_and_resize(bin_f, is_mask=True)]
             titles += ["prob_f_crop", "bin_f_crop"]
 
-        save_image_grid(tensors=tensors, titles=titles, out_path=str(path), annotations=annotations)
+        save_image_grid(tensors=tensors, titles=titles, out_path=str(path), annotations=annotations, max_items=max_items)
+        del tensors, titles, annotations
 
-    def _pack_and_save(samples, path: Path):
-        if len(samples) == 0:
+    def _pack_and_save(items, path: Path):
+        if len(items) == 0:
             return
-        x_cat = torch.cat([s["x"] for s in samples], dim=0)
-        y_cat = torch.cat([s["y"] for s in samples], dim=0)
-        prob_o = torch.cat([s["prob_o"] for s in samples], dim=0)
-        bin_o = torch.cat([s["bin_o"] for s in samples], dim=0)
-        ann_o = [f"Dice(o)={s['dice_o']:.3f}" for s in samples]
+        x_cat = torch.cat([s["x"] for s in items], dim=0)
+        y_cat = torch.cat([s["y"] for s in items], dim=0)
+        prob_o = torch.cat([s["prob_o"] for s in items], dim=0)
+        bin_o = torch.cat([s["bin_o"] for s in items], dim=0)
+        ann_o = [f"Dice(o)={s['dice_o']:.3f}" for s in items]
 
         tensors = [x_cat, y_cat]
         titles = ["input", "target"]
-        annotations = {}
+        annotations: dict[int, list[str]] = {}
 
         if not compact_mode:
             tensors += [prob_o]
@@ -175,14 +226,13 @@ def save_val_visualization_grid(
             col_bin_o = len(tensors)
             tensors += [bin_o]
             titles += [f"pred_bin_o(th={threshold})"]
-
         annotations[col_bin_o] = ann_o
 
-        if show_flip:
-            x_f = torch.cat([s["x_flip"] for s in samples], dim=0)
-            prob_f = torch.cat([s["prob_f"] for s in samples], dim=0)
-            bin_f = torch.cat([s["bin_f"] for s in samples], dim=0)
-            ann_f = [f"Dice(f)={s['dice_f']:.3f}" for s in samples]
+        if show_flip and items[0]["x_flip"] is not None and items[0]["prob_f"] is not None and items[0]["bin_f"] is not None:
+            x_f = torch.cat([s["x_flip"] for s in items], dim=0)
+            prob_f = torch.cat([s["prob_f"] for s in items], dim=0)
+            bin_f = torch.cat([s["bin_f"] for s in items], dim=0)
+            ann_f = [f"Dice(f)={s['dice_f']:.3f}" for s in items]
 
             tensors += [x_f]
             titles += ["input_flip"]
@@ -197,13 +247,30 @@ def save_val_visualization_grid(
                 tensors += [bin_f]
                 titles += [f"pred_bin_f(th={threshold})"]
             annotations[col_bin_f] = [f"{a_o} | {a_f}" for a_o, a_f in zip(ann_o, ann_f)]
+        else:
+            prob_f = None
+            bin_f = None
 
-        save_image_grid(tensors=tensors, titles=titles, out_path=str(path), annotations=annotations)
+        save_image_grid(tensors=tensors, titles=titles, out_path=str(path), annotations=annotations, max_items=max_items)
 
         if debug_overlay:
             _save_overlay(x_cat, y_cat, path.with_name(path.stem + "_overlay.png"))
         if debug_unletterbox:
-            _save_cropped(x_cat, y_cat, prob_o, bin_o, prob_f if show_flip else None, bin_f if show_flip else None, path.with_name(path.stem + "_cropped.png"))
+            _save_cropped(
+                x_cat,
+                y_cat,
+                prob_o,
+                bin_o,
+                prob_f if show_flip else None,
+                bin_f if show_flip else None,
+                path.with_name(path.stem + "_cropped.png"),
+            )
+
+        del x_cat, y_cat, prob_o, bin_o, tensors, titles, annotations, ann_o
+        if prob_f is not None:
+            del prob_f
+        if bin_f is not None:
+            del bin_f
 
     if len(samples) == 0:
         if model_was_training:
@@ -211,9 +278,21 @@ def save_val_visualization_grid(
         return
 
     _pack_and_save(samples, out_path)
+    del samples, x, y, logits_orig, prob_orig, bin_orig
+    if show_flip:
+        del y_flip
+        if x_flip is not None:
+            del x_flip
+        if logits_flip is not None:
+            del logits_flip
+        if prob_flip is not None:
+            del prob_flip
+        if bin_flip is not None:
+            del bin_flip
 
     if model_was_training:
         model.train()
 
 
-__all__ = ["save_val_visualization_grid", "should_visualize"]
+__all__ = ["save_val_visualization_grid", "save_image_grid", "run_tsne_visualization"]
+

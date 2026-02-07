@@ -1,27 +1,35 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple, Dict
 
 import torch
-import torch.nn.functional as F
 from torch.utils.data import Dataset
 import numpy as np
 
 from ..data.dataset import plane_to_one_hot
-from ..data.pair_transforms import (
+from .pair_transforms import (
     load_image_pil,
-    load_mask_pil_from_array,
     apply_pair_transforms,
 )
-from .io import load_mask_npz
+from .io import load_mask_npz_array
 
 log = logging.getLogger(__name__)
+
+_DEBUG_PAIR_ALIGNMENT_ENV = bool(int(os.getenv("MASK_RECON_DEBUG_PAIR_ALIGNMENT", "0")))
+_SOBEL_X_KERNEL = torch.tensor([[[[-1.0, 0.0, 1.0], [-2.0, 0.0, 2.0], [-1.0, 0.0, 1.0]]]], dtype=torch.float32)
+_SOBEL_Y_KERNEL = torch.tensor([[[[-1.0, -2.0, -1.0], [0.0, 0.0, 0.0], [1.0, 2.0, 1.0]]]], dtype=torch.float32)
+_MASK_EDGE_KERNEL = torch.ones((1, 1, 3, 3), dtype=torch.float32)
 
 
 class MaskReconstructionDataset(Dataset):
     """
+    Mask reconstruction dataset.
+    Unlike the generic folder/subfolder classification dataset, this class enforces image-mask pairing
+    and returns reconstruction targets for each input slice.
+
     Dataset for PNG -> mask reconstruction.
 
     Expects a single folder containing:
@@ -66,11 +74,13 @@ class MaskReconstructionDataset(Dataset):
         self.resize_mode = resize_mode
         self.debug_shapes = debug_shapes
         self.return_dual_view = return_dual_view
-        self.debug_pair_alignment = debug_pair_alignment
+        self.debug_pair_alignment = bool(debug_pair_alignment) and _DEBUG_PAIR_ALIGNMENT_ENV
 
         self.plane_one_hot = plane_to_one_hot(plane)
         if self.debug_shapes:
             print(f"[dataset] plane={plane} one_hot={self.plane_one_hot.tolist()}")
+        if bool(debug_pair_alignment) and not _DEBUG_PAIR_ALIGNMENT_ENV:
+            log.info("debug_pair_alignment requested but MASK_RECON_DEBUG_PAIR_ALIGNMENT=0, so debug is disabled.")
 
         self.pairs: List[Tuple[Path, Path]] = []
         missing: List[Path] = []
@@ -107,14 +117,17 @@ class MaskReconstructionDataset(Dataset):
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor | str]:
         img_path, mask_path = self.pairs[idx]
         img_pil = load_image_pil(img_path)
-        mask_np = load_mask_npz(mask_path, key=self.mask_key).numpy()
-        mask_pil = load_mask_pil_from_array(mask_np)
+        mask_np = load_mask_npz_array(mask_path, key=self.mask_key)
 
-        target_sz = self.target_size if self.target_size > 0 else self.image_size
-        if target_sz is None or target_sz <= 0:
-            target_sz = img_pil.size[0]
+        if self.target_size > 0:
+            target_sz = int(self.target_size)
+        elif self.image_size is not None and self.image_size > 0:
+            target_sz = int(self.image_size)
+        else:
+            w, h = img_pil.size
+            target_sz = int(max(w, h))
 
-        x, y = apply_pair_transforms(img_pil, mask_pil, target_sz, do_hflip=False, resize_mode=self.resize_mode)
+        x, y = apply_pair_transforms(img_pil, mask_np, target_sz, do_hflip=False, resize_mode=self.resize_mode)
         y = (y > 0).float()
 
         # Debug alignment logging (first few samples when enabled)
@@ -126,27 +139,28 @@ class MaskReconstructionDataset(Dataset):
             else:
                 rmin = cmin = rmax = cmax = -1
             pad_frac = float((x < 1e-3).float().mean().item())
+            mask_hw = tuple(mask_np.shape[-2:]) if mask_np.ndim >= 2 else tuple(mask_np.shape)
             print(
                 f"[pair_debug] idx={idx} img={img_path.name} orig_hw={img_pil.size[::-1]} "
-                f"mask_hw={mask_pil.size[::-1]} target_sz={target_sz} resize_mode={self.resize_mode} hflip=False "
+                f"mask_hw={mask_hw} target_sz={target_sz} resize_mode={self.resize_mode} hflip=False "
                 f"tensor_hw={tuple(x.shape[-2:])} mask_bbox={(rmin, rmax, cmin, cmax)} pad_frac~{pad_frac:.3f}"
             )
             # crude edge vs mask boundary overlap (IoU proxy)
             sobel_x = torch.nn.functional.conv2d(
                 x.unsqueeze(0),
-                weight=torch.tensor([[[[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]]]], device=x.device, dtype=x.dtype),
+                weight=_SOBEL_X_KERNEL.to(device=x.device, dtype=x.dtype),
                 padding=1,
             )
             sobel_y = torch.nn.functional.conv2d(
                 x.unsqueeze(0),
-                weight=torch.tensor([[[[-1, -2, -1], [0, 0, 0], [1, 2, 1]]]], device=x.device, dtype=x.dtype),
+                weight=_SOBEL_Y_KERNEL.to(device=x.device, dtype=x.dtype),
                 padding=1,
             )
             edges = (sobel_x.abs() + sobel_y.abs()).squeeze(0)
             edge_mask = (edges > edges.mean()).float()
             mask_bound = torch.nn.functional.conv2d(
                 y.unsqueeze(0),
-                weight=torch.ones((1, 1, 3, 3), device=y.device, dtype=y.dtype),
+                weight=_MASK_EDGE_KERNEL.to(device=y.device, dtype=y.dtype),
                 padding=1,
             ).squeeze(0)
             mask_edge = ((mask_bound > 0) & (mask_bound < 9)).float()
@@ -157,7 +171,7 @@ class MaskReconstructionDataset(Dataset):
                 print(f"[pair_debug] warning: low edge/mask overlap (IoU~{iou_proxy:.4f}) for {img_path.name}")
 
         if self.return_dual_view:
-            x2, y2 = apply_pair_transforms(img_pil, mask_pil, target_sz, do_hflip=True, resize_mode=self.resize_mode)
+            x2, y2 = apply_pair_transforms(img_pil, mask_np, target_sz, do_hflip=True, resize_mode=self.resize_mode)
             y2 = (y2 > 0).float()
             assert x2.shape[-2:] == y2.shape[-2:], f"Shape mismatch after transforms view2: {x2.shape} vs {y2.shape}"
         else:
@@ -167,6 +181,7 @@ class MaskReconstructionDataset(Dataset):
             print(f"[debug] sample {idx}: shape {x.shape[-2:]} target_sz={target_sz} mode={self.resize_mode}")
 
         assert x.shape[-2:] == y.shape[-2:], f"Shape mismatch after transforms: {x.shape} vs {y.shape}"
+        assert x.ndim == 3 and y.ndim == 3 and x.shape[0] == 1 and y.shape[0] == 1, f"Unexpected tensor shapes: {x.shape}, {y.shape}"
 
         if self.return_dual_view:
             return {

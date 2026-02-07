@@ -1,23 +1,25 @@
 from __future__ import annotations
 
 import csv
+import logging
+import math
 from pathlib import Path
 from typing import Dict, Tuple
 
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
 from torch.amp import GradScaler, autocast
-import math
+from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from ..config.experiment import ExperimentConfig
 from ..models.swin_unet_dualview_ssl import SwinUNetDualViewSSL, flip_lr
-from ..training.ckpt_io import save_checkpoint
 from ..training.utils import ensure_dir
-from tqdm import tqdm
-
+from .ckpt_io import save_checkpoint
 from .dice import dice_coefficient
 from .visualization import save_val_visualization_grid
+
+log = logging.getLogger(__name__)
 
 
 class EpochLogger:
@@ -61,6 +63,7 @@ class MaskReconstructionTrainer:
         vis_num: int = 4,
         vis_threshold: float = 0.5,
         disable_tqdm: bool = False,
+        train_step_dice: bool = False,
     ):
         self.model = model
         self.optimizer = optimizer
@@ -76,15 +79,34 @@ class MaskReconstructionTrainer:
         self.vis_threshold = float(vis_threshold)
         self.disable_tqdm = bool(disable_tqdm)
         self.vis_enabled = self.vis_every > 0 and self.vis_num > 0
+        cfg_train_step_dice = bool(getattr(cfg_logging, "train_step_dice", False))
+        self.train_step_dice = bool(train_step_dice) or cfg_train_step_dice
 
         self.use_amp = bool(cfg.training.amp) and device.type == "cuda"
         self.scaler = GradScaler(enabled=self.use_amp)
 
-        # cosine schedule with warmup
-        total_epochs = int(cfg.training.epochs)
-        warmup = int(getattr(cfg.training, "warmup_epochs", 0))
-        min_lr = float(getattr(cfg.training, "min_lr", 0.0))
-        base_lr = float(cfg.training.lr)
+        self._warmup_epochs = int(getattr(cfg.training, "warmup_epochs", 0))
+        self._min_lr = float(getattr(cfg.training, "min_lr", 0.0))
+        self._base_lr = float(cfg.training.lr)
+        self._scheduler_total_epochs = int(cfg.training.epochs)
+        self.lr_scheduler: torch.optim.lr_scheduler.LambdaLR | None = None
+        self._build_scheduler(self._scheduler_total_epochs)
+
+        self.out_dir = ensure_dir(Path(out_dir))
+        self.ckpt_dir = ensure_dir(self.out_dir / "checkpoints")
+        self.vis_dir = ensure_dir(self.out_dir / "vis") if self.vis_enabled else None
+        self.logger = EpochLogger(self.out_dir / "epoch_log.csv")
+
+        self.best_val = float("-inf")
+        self._val_vis_batch: dict[str, torch.Tensor] | None = None
+        self._pixel_mask_cache: torch.Tensor | None = None
+        self._pixel_mask_cache_shape: tuple[int, int, int, int] | None = None
+
+    def _build_scheduler(self, total_epochs: int) -> None:
+        total_epochs = max(1, int(total_epochs))
+        warmup = self._warmup_epochs
+        min_lr = self._min_lr
+        base_lr = self._base_lr
 
         def lr_lambda(epoch: int):
             if warmup > 0 and epoch < warmup:
@@ -95,17 +117,31 @@ class MaskReconstructionTrainer:
             return (min_lr / base_lr) + (1 - min_lr / base_lr) * cosine
 
         self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lr_lambda)
+        self._scheduler_total_epochs = total_epochs
 
-        self.out_dir = ensure_dir(Path(out_dir))
-        self.ckpt_dir = ensure_dir(self.out_dir / "checkpoints")
-        self.vis_dir = ensure_dir(self.out_dir / "vis") if self.vis_enabled else None
-        self.logger = EpochLogger(self.out_dir / "epoch_log.csv")
+    def _get_zero_pixel_mask(self, *, b: int, h: int, w: int, device: torch.device) -> torch.Tensor:
+        shape = (int(b), 1, int(h), int(w))
+        if (
+            self._pixel_mask_cache is None
+            or self._pixel_mask_cache_shape != shape
+            or self._pixel_mask_cache.device != device
+            or self._pixel_mask_cache.dtype != torch.float32
+        ):
+            self._pixel_mask_cache = torch.zeros(shape, device=device, dtype=torch.float32)
+            self._pixel_mask_cache_shape = shape
+        return self._pixel_mask_cache
 
-        self.best_val = float("-inf")
-        self._val_vis_batch: dict[str, torch.Tensor] | None = None
-
-    def _forward_losses(self, x: torch.Tensor, y: torch.Tensor, plane_one_hot: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        pixel_mask = torch.zeros_like(y)
+    def _forward_losses(
+        self,
+        x: torch.Tensor,
+        y: torch.Tensor,
+        plane_one_hot: torch.Tensor,
+        *,
+        compute_dice: bool,
+        return_vis: bool = False,
+        vis_items: int = 0,
+    ) -> Tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor] | None]:
+        pixel_mask = self._get_zero_pixel_mask(b=y.shape[0], h=y.shape[-2], w=y.shape[-1], device=y.device)
         recon1, recon2, _, _ = self.model(x, pixel_mask, plane_one_hot)
         target_view2 = flip_lr(y) if (recon2 is not None and self.align_flip_target) else y
 
@@ -113,16 +149,32 @@ class MaskReconstructionTrainer:
         if recon2 is not None:
             loss_recon = 0.5 * (loss_recon + F.binary_cross_entropy_with_logits(recon2, target_view2))
 
-        dice1 = dice_coefficient(torch.sigmoid(recon1), y, threshold=self.threshold)
-        if recon2 is not None:
-            dice2 = dice_coefficient(torch.sigmoid(recon2), target_view2, threshold=self.threshold)
-            dice = 0.5 * (dice1 + dice2)
-        else:
-            dice = dice1
+        dice = torch.zeros((), device=x.device)
+        if compute_dice:
+            dice1 = dice_coefficient(torch.sigmoid(recon1), y, threshold=self.threshold)
+            if recon2 is not None:
+                dice2 = dice_coefficient(torch.sigmoid(recon2), target_view2, threshold=self.threshold)
+                dice = 0.5 * (dice1 + dice2)
+            else:
+                dice = dice1
 
         lambda_recon = self.cfg.training.lambda_recon if self.cfg.training.lambda_recon > 0 else 1.0
         total = lambda_recon * loss_recon
-        return total, dice
+
+        vis_payload: dict[str, torch.Tensor] | None = None
+        if return_vis and vis_items > 0:
+            n_vis = min(int(vis_items), x.size(0))
+            vis_payload = {
+                "input": x[:n_vis].detach(),
+                "target": y[:n_vis].detach(),
+                "plane_one_hot": plane_one_hot[:n_vis].detach(),
+                "recon1_logits": recon1[:n_vis].detach(),
+            }
+            if recon2 is not None:
+                vis_payload["recon2_logits"] = recon2[:n_vis].detach()
+                vis_payload["target_flip"] = target_view2[:n_vis].detach()
+
+        return total, dice, vis_payload
 
     def train_one_epoch(self, loader: DataLoader) -> Tuple[float, float]:
         self.model.train()
@@ -138,7 +190,12 @@ class MaskReconstructionTrainer:
 
             self.optimizer.zero_grad(set_to_none=True)
             with autocast(device_type=self.device.type, enabled=self.use_amp):
-                loss, dice = self._forward_losses(x, y, plane)
+                loss, dice, _ = self._forward_losses(
+                    x,
+                    y,
+                    plane,
+                    compute_dice=self.train_step_dice,
+                )
 
             if self.use_amp:
                 self.scaler.scale(loss).backward()
@@ -166,13 +223,10 @@ class MaskReconstructionTrainer:
 
         if steps == 0:
             return 0.0, 0.0
-        return (
-            total_loss / steps,
-            total_dice / steps,
-        )
+        return total_loss / steps, total_dice / steps
 
     @torch.no_grad()
-    def validate(self, loader: DataLoader) -> Tuple[float, float]:
+    def validate(self, loader: DataLoader, *, capture_vis: bool = False) -> Tuple[float, float]:
         self.model.eval()
         total_loss = 0.0
         total_dice = 0.0
@@ -185,17 +239,24 @@ class MaskReconstructionTrainer:
             y = batch["target"].to(self.device, non_blocking=True)
             plane = batch["plane_one_hot"].to(self.device, non_blocking=True)
 
-            if steps == 0 and self.vis_enabled:
+            want_vis = False
+            n_vis = 0
+            if capture_vis and steps == 0 and self.vis_enabled:
                 n_vis = min(self.vis_num, x.size(0))
-                if n_vis > 0:
-                    self._val_vis_batch = {
-                        "input": x[:n_vis].detach(),
-                        "target": y[:n_vis].detach(),
-                        "plane_one_hot": plane[:n_vis].detach(),
-                    }
+                want_vis = n_vis > 0
 
             with autocast(device_type=self.device.type, enabled=self.use_amp):
-                loss, dice = self._forward_losses(x, y, plane)
+                loss, dice, vis_payload = self._forward_losses(
+                    x,
+                    y,
+                    plane,
+                    compute_dice=True,
+                    return_vis=want_vis,
+                    vis_items=n_vis,
+                )
+
+            if vis_payload is not None:
+                self._val_vis_batch = vis_payload
 
             total_loss += loss.detach().item()
             total_dice += dice.detach().item()
@@ -211,10 +272,7 @@ class MaskReconstructionTrainer:
 
         if steps == 0:
             return 0.0, 0.0
-        return (
-            total_loss / steps,
-            total_dice / steps,
-        )
+        return total_loss / steps, total_dice / steps
 
     def _save_ckpt(self, epoch: int) -> None:
         latest_path = self.ckpt_dir / "latest.pt"
@@ -241,15 +299,25 @@ class MaskReconstructionTrainer:
         )
 
     def fit(self, train_loader: DataLoader, val_loader: DataLoader, epochs: int) -> None:
+        epochs = int(epochs)
+        if epochs != self._scheduler_total_epochs:
+            if int(self.cfg.training.epochs) != epochs:
+                log.warning(
+                    "cfg.training.epochs (%d) differs from fit epochs (%d); scheduler will use fit epochs.",
+                    int(self.cfg.training.epochs),
+                    epochs,
+                )
+            self._build_scheduler(epochs)
+
         for epoch in range(1, epochs + 1):
-            # Inform the model about epoch for any internal scheduling (e.g., SACA warmup)
             if hasattr(self.model, "current_epoch"):
                 self.model.current_epoch = epoch
 
             train_loss, train_dice = self.train_one_epoch(train_loader)
-            val_loss, val_dice = self.validate(val_loader)
+            capture_vis = self.vis_enabled and (epoch % self.vis_every == 0)
+            val_loss, val_dice = self.validate(val_loader, capture_vis=capture_vis)
 
-            if hasattr(self, "lr_scheduler") and self.lr_scheduler is not None:
+            if self.lr_scheduler is not None:
                 self.lr_scheduler.step()
 
             self.logger.append(
@@ -266,8 +334,7 @@ class MaskReconstructionTrainer:
             if not self.save_best_only:
                 self._save_ckpt(epoch)
 
-            # Selection rule: reconstruct -> maximize val_dice; else minimize val_loss
-            metric = val_dice  # always select by val_dice
+            metric = val_dice
             if metric > self.best_val:
                 self.best_val = metric
                 self._save_best(epoch)
@@ -280,11 +347,9 @@ class MaskReconstructionTrainer:
             )
 
             if (
-                self.vis_enabled
+                capture_vis
                 and self.vis_dir is not None
-                and val_loader is not None
                 and self._val_vis_batch is not None
-                and (epoch % self.vis_every == 0)
             ):
                 vis_path = self.vis_dir / f"val_vis_epoch_{epoch:04d}.png"
                 save_val_visualization_grid(
@@ -298,7 +363,6 @@ class MaskReconstructionTrainer:
                 )
                 print(f"[vis] Saved val visualization: {vis_path}")
 
-            # scheduler already stepped; nothing else to do here
-
 
 __all__ = ["MaskReconstructionTrainer"]
+

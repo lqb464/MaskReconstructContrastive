@@ -10,6 +10,7 @@ from PIL import Image
 
 def load_png_grayscale(path: str | Path) -> torch.Tensor:
     """
+    Legacy helper retained for compatibility.
     Load a PNG image as float32 tensor in [0,1] with shape [1,H,W].
     No resizing is applied.
     """
@@ -29,11 +30,9 @@ def _first_npz_array(npz: np.lib.npyio.NpzFile) -> np.ndarray:
     return npz[first_key]
 
 
-def load_mask_npz(path: str | Path, key: Optional[str] = None) -> torch.Tensor:
+def load_mask_npz_array(path: str | Path, key: Optional[str] = None) -> np.ndarray:
     """
-    Load mask from NPZ file.
-    - Uses the provided key when given, otherwise the first array in the NPZ.
-    - Returns float32 tensor [1,H,W] with values {0,1}.
+    Load mask from NPZ as integer numpy array [H,W] without binarization.
     """
     p = Path(path)
     with np.load(p) as data:
@@ -41,21 +40,34 @@ def load_mask_npz(path: str | Path, key: Optional[str] = None) -> torch.Tensor:
 
     arr = np.asarray(arr)
     if arr.ndim == 2:
-        arr = arr[None, ...]  # [1,H,W]
+        pass
     elif arr.ndim == 3:
-        # Accept channel-last masks of shape [H,W,1]
         if arr.shape[0] == 1:
-            pass  # already [1,H,W]
+            arr = arr[0]
         elif arr.shape[-1] == 1:
-            arr = np.transpose(arr, (2, 0, 1))
+            arr = arr[..., 0]
         else:
-            raise ValueError(f"Unexpected mask shape {arr.shape}; expected [H,W] or [1,H,W].")
+            raise ValueError(f"Unexpected mask shape {arr.shape}; expected [H,W] or [1,H,W] or [H,W,1].")
     else:
         raise ValueError(f"Unexpected mask ndim={arr.ndim}; expected 2 or 3.")
 
-    arr_bin = (arr != 0).astype(np.float32)
+    if not np.issubdtype(arr.dtype, np.integer):
+        arr = np.rint(arr).astype(np.int64)
+    else:
+        arr = arr.astype(np.int64, copy=False)
+    return arr
+
+
+def load_mask_npz(path: str | Path, key: Optional[str] = None) -> torch.Tensor:
+    """
+    Load mask from NPZ file.
+    - Uses the provided key when given, otherwise the first array in the NPZ.
+    - Returns float32 tensor [1,H,W] with values {0,1}.
+    """
+    arr = load_mask_npz_array(path, key=key)
+    arr_bin = (arr != 0).astype(np.float32)[None, ...]
     tensor = torch.from_numpy(arr_bin)
     return tensor
 
 
-__all__ = ["load_png_grayscale", "load_mask_npz"]
+__all__ = ["load_png_grayscale", "load_mask_npz", "load_mask_npz_array"]

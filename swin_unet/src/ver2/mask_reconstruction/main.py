@@ -1,19 +1,21 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader, Subset
 
-from ..config.experiment import build_argparser, ExperimentConfig
 from ..models.swin_unet_dualview_ssl import SwinUNetDualViewSSL
-from ..training.utils import get_device, set_seed, ensure_dir
+from ..training.utils import get_device, ensure_dir
 from ..data.dataset import split_indices
 
 from .dataset import MaskReconstructionDataset
+from .experiment import ExperimentConfig, build_argparser
 from .trainer import MaskReconstructionTrainer
 from .plotting import generate_plots
+from .utils import make_worker_init_fn, set_seed
 
 
 def parse_args() -> argparse.Namespace:
@@ -52,11 +54,16 @@ def make_dataloaders(
     device: torch.device,
     val_ds: MaskReconstructionDataset | None = None,
 ):
+    seed_workers = bool(int(os.getenv("MASK_RECON_SEED_WORKERS", "0")))
+    worker_init_fn = make_worker_init_fn(int(cfg.training.seed)) if seed_workers else None
+
     def _loader(dataset, shuffle: bool) -> DataLoader:
         extra = {}
         if cfg.data.num_workers > 0:
             extra["persistent_workers"] = True
             extra["prefetch_factor"] = 2
+            if worker_init_fn is not None:
+                extra["worker_init_fn"] = worker_init_fn
         return DataLoader(
             dataset,
             batch_size=int(cfg.training.batch_size),
@@ -205,4 +212,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-from .plotting import generate_plots
