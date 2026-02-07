@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import argparse
 
-from .train import run
-
 
 def build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser()

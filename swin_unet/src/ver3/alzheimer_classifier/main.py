@@ -1,14 +1,19 @@
 from __future__ import annotations
 
-from .train import run
+from typing import Optional, Sequence
+
+from ..common.cli_utils import run_entrypoint
 from .cli import build_argparser
 
-def main():
-    parser = build_argparser()
-    args = parser.parse_args()
-    run(args)
+
+def main(argv: Optional[Sequence[str]] = None):
+    def _run(args):
+        from .train import run
+
+        return run(args)
+
+    run_entrypoint(build_argparser, _run, argv=argv)
 
 
 if __name__ == "__main__":
     main()
-

@@ -11,26 +11,53 @@ from __future__ import annotations
 import json
 from dataclasses import fields, is_dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, get_origin, get_args, get_type_hints, Union
+from typing import Any, Dict, Optional, Sequence, get_origin, get_args, get_type_hints, Union
 
 
 import numpy as np
-import torch
-import torch.nn.functional as F
-from torch import nn
-from torch.amp import autocast
-from torch.utils.data import DataLoader
 
-from .data.augmentation import sample_masks_anti_mirror
-from .config.experiment import ExperimentConfig
-from .data.dataset import FolderSubfolderImageDataset, load_label_map_from_csv
-from .common.losses import masked_l1_loss, mixed_l1_loss, nt_xent_loss, compute_embedding_variance, ssim_index
-from .common.metrics import MetricsAccumulator
-from .model.swin_unet_dualview import SwinUNetDualViewSSLPhase1, flip_lr
-from .viz.visualization import save_image_grid, run_tsne_visualization
+_TORCH_IMPORT_ERROR = None
+try:
+    import torch
+    import torch.nn.functional as F
+    from torch import nn
+    from torch.amp import autocast
+    from torch.utils.data import DataLoader
+except ModuleNotFoundError as exc:
+    _TORCH_IMPORT_ERROR = exc
 
-from .training.utils import get_device, ensure_dir
-from .common.losses import masked_bce_logits_weighted, mixed_bce_logits_weighted
+    class _MissingTorch:
+        def no_grad(self, func=None):
+            if func is None:
+                def _decorator(f):
+                    return f
+                return _decorator
+            return func
+
+        def __getattr__(self, name):
+            raise ModuleNotFoundError("torch is required to run eval") from exc
+
+    class _MissingNN:
+        Module = object
+
+    class _NoOpAutocast:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    torch = _MissingTorch()
+    F = _MissingTorch()
+    nn = _MissingNN()
+
+    def autocast(*args, **kwargs):  # type: ignore[no-redef]
+        return _NoOpAutocast()
+
+    class DataLoader:  # type: ignore[no-redef]
+        pass
+
+from .common.cli_utils import run_entrypoint
 
 
 def dataclass_from_dict(dc_type, raw: dict):
@@ -111,6 +138,10 @@ def visualize_once(
     cfg: ExperimentConfig,
     tag: str = "eval",
 ):
+    from .data.augmentation import sample_masks_anti_mirror
+    from .models.model_utils import flip_lr
+    from .viz.visualization import save_image_grid
+
     model.eval()
     batch = next(iter(loader))
     x = batch["input"].to(device, non_blocking=True)
@@ -197,6 +228,19 @@ def run_eval(
     device: torch.device,
     cfg: ExperimentConfig,
 ) -> Dict[str, float]:
+    from .common.losses import (
+        compute_embedding_variance,
+        masked_bce_logits_weighted,
+        masked_l1_loss,
+        mixed_bce_logits_weighted,
+        mixed_l1_loss,
+        nt_xent_loss,
+        ssim_index,
+    )
+    from .common.metrics import MetricsAccumulator
+    from .data.augmentation import sample_masks_anti_mirror
+    from .models.model_utils import flip_lr
+
     model.eval()
     meter = MetricsAccumulator()
 
@@ -353,8 +397,15 @@ def build_argparser():
     return p
 
 
-def main():
-    args = build_argparser().parse_args()
+def run(args):
+    if _TORCH_IMPORT_ERROR is not None:
+        raise ModuleNotFoundError("torch is required to run eval") from _TORCH_IMPORT_ERROR
+    from .config.experiment import ExperimentConfig
+    from .data.dataset import FolderSubfolderImageDataset, load_label_map_from_csv
+    from .models.swin_unet_dualview_ssl import SwinUNetDualViewSSL as SwinUNetDualViewSSLPhase1
+    from .training.utils import ensure_dir, get_device
+    from .viz.visualization import run_tsne_visualization
+
     device = get_device(args.cpu)
 
     run_dir = Path(args.run_dir).expanduser() if args.run_dir else None
@@ -473,6 +524,10 @@ def main():
             label_val="label",
             data_module=None,
         )
+
+
+def main(argv: Optional[Sequence[str]] = None):
+    run_entrypoint(build_argparser, run, argv=argv)
 
 
 if __name__ == "__main__":

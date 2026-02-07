@@ -3,22 +3,13 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+from typing import Optional, Sequence
 
-import torch
-from torch.utils.data import DataLoader, Subset
-
-from ..models.swin_unet_dualview_ssl import SwinUNetDualViewSSL
-from ..training.utils import get_device, ensure_dir
-from ..data.dataset import split_indices
-
-from .dataset import MaskReconstructionDataset
+from ..common.cli_utils import run_entrypoint
 from .experiment import ExperimentConfig, build_argparser, enforce_recon_only_args
-from .trainer import MaskReconstructionTrainer
-from .plotting import generate_plots
-from .utils import make_worker_init_fn, set_seed
 
 
-def parse_args() -> argparse.Namespace:
+def build_mask_argparser() -> argparse.ArgumentParser:
     # Reuse full ver2 CLI
     parser = build_argparser()
 
@@ -44,7 +35,12 @@ def parse_args() -> argparse.Namespace:
             action.required = False
             if action.default is None:
                 action.default = ""
-    args = parser.parse_args()
+    return parser
+
+
+def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+    parser = build_mask_argparser()
+    args = parser.parse_args(argv)
     enforce_recon_only_args(args)
     return args
 
@@ -55,6 +51,11 @@ def make_dataloaders(
     device: torch.device,
     val_ds: MaskReconstructionDataset | None = None,
 ):
+    from torch.utils.data import DataLoader, Subset
+
+    from ..data.dataset import split_indices
+    from .utils import make_worker_init_fn
+
     seed_workers = bool(int(os.getenv("MASK_RECON_SEED_WORKERS", "0")))
     worker_init_fn = make_worker_init_fn(int(cfg.training.seed)) if seed_workers else None
 
@@ -103,6 +104,8 @@ def make_dataloaders(
 
 def build_model(cfg: ExperimentConfig) -> SwinUNetDualViewSSL:
     """Instantiate Swin-UNet using shared config to honor SACA/contrastive flags."""
+    from ..models.swin_unet_dualview_ssl import SwinUNetDualViewSSL
+
     mcfg = cfg.model
     tcfg = cfg.training
     if bool(getattr(tcfg, "enable_contrastive", False)):
@@ -134,8 +137,16 @@ def build_model(cfg: ExperimentConfig) -> SwinUNetDualViewSSL:
     return model
 
 
-def main() -> None:
-    args = parse_args()
+def run(args: argparse.Namespace) -> None:
+    import torch
+
+    from ..training.utils import ensure_dir, get_device
+    from .dataset import MaskReconstructionDataset
+    from .plotting import generate_plots
+    from .trainer import MaskReconstructionTrainer
+    from .utils import set_seed
+
+    enforce_recon_only_args(args)
     # Map train_dir to data_root for shared config compatibility if not provided
     if not getattr(args, "data_root", ""):
         args.data_root = args.train_dir
@@ -225,6 +236,10 @@ def main() -> None:
     )
     trainer.fit(train_loader, val_loader, epochs=int(cfg.training.epochs))
     generate_plots(out_dir / "epoch_log.csv", out_dir / "plot")
+
+
+def main(argv: Optional[Sequence[str]] = None) -> None:
+    run_entrypoint(build_mask_argparser, run, argv=argv)
 
 
 if __name__ == "__main__":

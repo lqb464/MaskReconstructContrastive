@@ -1,11 +1,16 @@
-from .data.dataset import create_dataloaders_from_folder
-from .config.experiment import ExperimentConfig, build_argparser
-from .training.utils import get_device, set_seed
-from .trainer import Trainer
+from __future__ import annotations
 
-def main():
-    parser = build_argparser()
-    args = parser.parse_args()
+from typing import Optional, Sequence
+
+from .common.cli_utils import run_entrypoint
+from .config.experiment import ExperimentConfig, build_argparser
+
+
+def run(args) -> None:
+    from .data.dataset import create_dataloaders_from_folder
+    from .trainer import Trainer
+    from .training.utils import get_device, set_seed
+
     cfg = ExperimentConfig.from_args(args)
     
     print("="*100)
@@ -60,6 +65,10 @@ def main():
 
     trainer = Trainer(cfg, device)
     trainer.fit(train_loader, val_loader)
+
+
+def main(argv: Optional[Sequence[str]] = None) -> None:
+    run_entrypoint(build_argparser, run, argv=argv)
 
 
 if __name__ == "__main__":
