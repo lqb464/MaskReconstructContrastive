@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
-from shutil import copyfile
 from typing import Dict, Tuple
 
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.amp import GradScaler, autocast
 import math
@@ -16,9 +16,8 @@ from ..training.ckpt_io import save_checkpoint
 from ..training.utils import ensure_dir
 from tqdm import tqdm
 
-from .dice import dice_coefficient, soft_dice_loss, soft_dice_loss_by_region
-from .visualization import save_val_visualization_grid, should_visualize
-from ..common.losses import nt_xent_loss, vicreg_loss, mixed_bce_logits_weighted_seg
+from .dice import dice_coefficient
+from .visualization import save_val_visualization_grid
 
 
 class EpochLogger:
@@ -27,17 +26,9 @@ class EpochLogger:
     HEADERS = [
         "epoch",
         "train_loss_total",
-        "train_loss_masked",
-        "train_loss_unmasked",
         "train_dice",
         "val_loss_total",
-        "val_loss_masked",
-        "val_loss_unmasked",
         "val_dice",
-        "train_loss_dice_aux",
-        "val_loss_dice_aux",
-        "train_loss_contrastive",
-        "val_loss_contrastive",
         "lr",
     ]
 
@@ -84,10 +75,7 @@ class MaskReconstructionTrainer:
         self.vis_num = max(0, min(4, cfg_vis_num))
         self.vis_threshold = float(vis_threshold)
         self.disable_tqdm = bool(disable_tqdm)
-        self.vis_enabled = self.vis_num > 0
-        self.dice_loss_weight = float(cfg.training.dice_loss_weight)
-        self.dice_mode = getattr(cfg.training, "dice_mode", "total")
-        self.dice_smooth = getattr(cfg.training, "dice_smooth", 1e-6)
+        self.vis_enabled = self.vis_every > 0 and self.vis_num > 0
 
         self.use_amp = bool(cfg.training.amp) and device.type == "cuda"
         self.scaler = GradScaler(enabled=self.use_amp)
@@ -116,112 +104,30 @@ class MaskReconstructionTrainer:
         self.best_val = float("-inf")
         self._val_vis_batch: dict[str, torch.Tensor] | None = None
 
-    def _forward_losses(self, x: torch.Tensor, y: torch.Tensor, plane_one_hot: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        pixel_mask = torch.zeros_like(y)  # No masking for this supervised task
-
-        recon1, recon2, z1, z2 = self.model(x, pixel_mask, plane_one_hot)
+    def _forward_losses(self, x: torch.Tensor, y: torch.Tensor, plane_one_hot: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        pixel_mask = torch.zeros_like(y)
+        recon1, recon2, _, _ = self.model(x, pixel_mask, plane_one_hot)
         target_view2 = flip_lr(y) if (recon2 is not None and self.align_flip_target) else y
 
-        # Reconstruction losses (mixed) and Dice metric/aux
-        dice = torch.tensor(0.0, device=x.device)
-        loss_total = torch.tensor(0.0, device=x.device)
-        loss_masked = torch.tensor(0.0, device=x.device)
-        loss_unmasked = torch.tensor(0.0, device=x.device)
-        loss_dice_aux = torch.tensor(0.0, device=x.device)
-        if self.cfg.training.enable_reconstruct:
-            fg1 = (y > 0.5).float()
-            lt1, lm1, lu1 = mixed_bce_logits_weighted_seg(
-                recon1,
-                y,
-                fg1,
-                fg_eps=self.cfg.training.fg_eps,
-                fg_weight=self.cfg.training.fg_weight,
-                alpha_mask=1.0,
-                beta_unmask=0.2,
-            )
-            loss_total = loss_total + lt1
-            loss_masked = loss_masked + lm1
-            loss_unmasked = loss_unmasked + lu1
+        loss_recon = F.binary_cross_entropy_with_logits(recon1, y)
+        if recon2 is not None:
+            loss_recon = 0.5 * (loss_recon + F.binary_cross_entropy_with_logits(recon2, target_view2))
 
-            if self.dice_loss_weight > 0:
-                if self.dice_mode == "fg":
-                    _, lmask1_dice, _ = soft_dice_loss_by_region(recon1, y, eps=self.dice_smooth)
-                    loss_dice_aux = loss_dice_aux + lmask1_dice
-                else:
-                    ltot1_dice = soft_dice_loss(recon1, y, eps=self.dice_smooth)
-                    loss_dice_aux = loss_dice_aux + ltot1_dice
+        dice1 = dice_coefficient(torch.sigmoid(recon1), y, threshold=self.threshold)
+        if recon2 is not None:
+            dice2 = dice_coefficient(torch.sigmoid(recon2), target_view2, threshold=self.threshold)
+            dice = 0.5 * (dice1 + dice2)
+        else:
+            dice = dice1
 
-            if recon2 is not None:
-                fg2 = (target_view2 > 0.5).float()
-                lt2, lm2, lu2 = mixed_bce_logits_weighted_seg(
-                    recon2,
-                    target_view2,
-                    fg2,
-                    fg_eps=self.cfg.training.fg_eps,
-                    fg_weight=self.cfg.training.fg_weight,
-                    alpha_mask=1.0,
-                    beta_unmask=0.2,
-                )
-                loss_total = loss_total + lt2
-                loss_masked = loss_masked + lm2
-                loss_unmasked = loss_unmasked + lu2
-
-                if self.dice_loss_weight > 0:
-                    if self.dice_mode == "fg":
-                        _, lmask2_dice, _ = soft_dice_loss_by_region(recon2, target_view2, eps=self.dice_smooth)
-                        loss_dice_aux = loss_dice_aux + lmask2_dice
-                    else:
-                        ltot2_dice = soft_dice_loss(recon2, target_view2, eps=self.dice_smooth)
-                        loss_dice_aux = loss_dice_aux + ltot2_dice
-
-                dice2 = dice_coefficient(torch.sigmoid(recon2), target_view2, threshold=self.threshold)
-            else:
-                dice2 = torch.tensor(0.0, device=x.device)
-
-            dice1 = dice_coefficient(torch.sigmoid(recon1), y, threshold=self.threshold)
-            dice = 0.5 * (dice1 + dice2) if recon2 is not None else dice1
-
-        # Contrastive
-        loss_con = torch.tensor(0.0, device=x.device)
-        if self.cfg.training.enable_contrastive:
-            if z1 is None or z2 is None:
-                raise RuntimeError("Contrastive enabled but model did not return embeddings.")
-            if self.cfg.contrast_loss.contrastive_loss_type == "vicreg":
-                loss_con = vicreg_loss(
-                    z1=z1,
-                    z2=z2,
-                    invariance_weight=self.cfg.contrast_loss.vicreg_invariance_weight,
-                    variance_weight=self.cfg.contrast_loss.vicreg_variance_weight,
-                    covariance_weight=self.cfg.contrast_loss.vicreg_covariance_weight,
-                    variance_eps=self.cfg.contrast_loss.vicreg_variance_eps,
-                    target_std=self.cfg.contrast_loss.vicreg_target_std,
-                )
-            else:
-                loss_con = nt_xent_loss(z1, z2, temperature=float(self.cfg.training.temperature))
-
-        # Total
         lambda_recon = self.cfg.training.lambda_recon if self.cfg.training.lambda_recon > 0 else 1.0
-        lambda_con = self.cfg.training.lambda_contrast
-        total = torch.tensor(0.0, device=x.device)
-        if self.cfg.training.enable_reconstruct:
-            total = total + lambda_recon * loss_total
-            if self.dice_loss_weight > 0:
-                total = total + self.dice_loss_weight * loss_dice_aux
-        if self.cfg.training.enable_contrastive and lambda_con != 0:
-            total = total + lambda_con * loss_con
-        if total.numel() == 0:
-            total = loss_total + lambda_con * loss_con
+        total = lambda_recon * loss_recon
+        return total, dice
 
-        return total, dice, loss_con, loss_masked, loss_unmasked, loss_dice_aux
-
-    def train_one_epoch(self, loader: DataLoader) -> Tuple[float, float, float, float, float, float]:
+    def train_one_epoch(self, loader: DataLoader) -> Tuple[float, float]:
         self.model.train()
         total_loss = 0.0
         total_dice = 0.0
-        total_con = 0.0
-        total_masked = 0.0
-        total_unmasked = 0.0
-        total_dice_aux = 0.0
         steps = 0
         progress = loader if self.disable_tqdm else tqdm(loader, desc="Train", leave=False, dynamic_ncols=True)
 
@@ -232,7 +138,7 @@ class MaskReconstructionTrainer:
 
             self.optimizer.zero_grad(set_to_none=True)
             with autocast(device_type=self.device.type, enabled=self.use_amp):
-                loss, dice, loss_con, loss_masked, loss_unmasked, loss_dice_aux = self._forward_losses(x, y, plane)
+                loss, dice = self._forward_losses(x, y, plane)
 
             if self.use_amp:
                 self.scaler.scale(loss).backward()
@@ -246,10 +152,6 @@ class MaskReconstructionTrainer:
 
             total_loss += loss.detach().item()
             total_dice += dice.detach().item()
-            total_con += loss_con.detach().item()
-            total_masked += loss_masked.detach().item()
-            total_unmasked += loss_unmasked.detach().item()
-            total_dice_aux += loss_dice_aux.detach().item()
             steps += 1
 
             if not self.disable_tqdm:
@@ -257,33 +159,23 @@ class MaskReconstructionTrainer:
                 progress.set_postfix(
                     {
                         "lt": f"{total_loss/steps:.4f}",
-                        "lm": f"{total_masked/steps:.4f}",
-                        "lu": f"{total_unmasked/steps:.4f}",
                         "d": f"{total_dice/steps:.4f}",
                         "lr": f"{lr:.2e}",
                     }
                 )
 
         if steps == 0:
-            return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+            return 0.0, 0.0
         return (
             total_loss / steps,
             total_dice / steps,
-            total_con / steps,
-            total_masked / steps,
-            total_unmasked / steps,
-            total_dice_aux / steps,
         )
 
     @torch.no_grad()
-    def validate(self, loader: DataLoader) -> Tuple[float, float, float, float, float, float]:
+    def validate(self, loader: DataLoader) -> Tuple[float, float]:
         self.model.eval()
         total_loss = 0.0
         total_dice = 0.0
-        total_con = 0.0
-        total_masked = 0.0
-        total_unmasked = 0.0
-        total_dice_aux = 0.0
         steps = 0
         self._val_vis_batch = None
         progress = loader if self.disable_tqdm else tqdm(loader, desc="Val", leave=False, dynamic_ncols=True)
@@ -303,35 +195,25 @@ class MaskReconstructionTrainer:
                     }
 
             with autocast(device_type=self.device.type, enabled=self.use_amp):
-                loss, dice, loss_con, loss_masked, loss_unmasked, loss_dice_aux = self._forward_losses(x, y, plane)
+                loss, dice = self._forward_losses(x, y, plane)
 
             total_loss += loss.detach().item()
             total_dice += dice.detach().item()
-            total_con += loss_con.detach().item()
-            total_masked += loss_masked.detach().item()
-            total_unmasked += loss_unmasked.detach().item()
-            total_dice_aux += loss_dice_aux.detach().item()
             steps += 1
 
             if not self.disable_tqdm:
                 progress.set_postfix(
                     {
                         "lt": f"{total_loss/steps:.4f}",
-                        "lm": f"{total_masked/steps:.4f}",
-                        "lu": f"{total_unmasked/steps:.4f}",
                         "d": f"{total_dice/steps:.4f}",
                     }
                 )
 
         if steps == 0:
-            return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+            return 0.0, 0.0
         return (
             total_loss / steps,
             total_dice / steps,
-            total_con / steps,
-            total_masked / steps,
-            total_unmasked / steps,
-            total_dice_aux / steps,
         )
 
     def _save_ckpt(self, epoch: int) -> None:
@@ -364,8 +246,8 @@ class MaskReconstructionTrainer:
             if hasattr(self.model, "current_epoch"):
                 self.model.current_epoch = epoch
 
-            train_loss, train_dice, train_con, train_masked, train_unmasked, train_dice_aux = self.train_one_epoch(train_loader)
-            val_loss, val_dice, val_con, val_masked, val_unmasked, val_dice_aux = self.validate(val_loader)
+            train_loss, train_dice = self.train_one_epoch(train_loader)
+            val_loss, val_dice = self.validate(val_loader)
 
             if hasattr(self, "lr_scheduler") and self.lr_scheduler is not None:
                 self.lr_scheduler.step()
@@ -374,18 +256,10 @@ class MaskReconstructionTrainer:
                 {
                     "epoch": epoch,
                     "train_loss_total": train_loss,
-                    "train_loss_masked": train_masked,
-                    "train_loss_unmasked": train_unmasked,
                     "train_dice": train_dice,
                     "val_loss_total": val_loss,
-                    "val_loss_masked": val_masked,
-                    "val_loss_unmasked": val_unmasked,
                     "val_dice": val_dice,
                     "lr": self.optimizer.param_groups[0]["lr"],
-                    "train_loss_dice_aux": train_dice_aux,
-                    "val_loss_dice_aux": val_dice_aux,
-                    "train_loss_contrastive": train_con,
-                    "val_loss_contrastive": val_con,
                 }
             )
 
@@ -394,36 +268,25 @@ class MaskReconstructionTrainer:
 
             # Selection rule: reconstruct -> maximize val_dice; else minimize val_loss
             metric = val_dice  # always select by val_dice
-            is_best_epoch = False
             if metric > self.best_val:
                 self.best_val = metric
                 self._save_best(epoch)
-                is_best_epoch = True
 
             print(
                 f"Epoch {epoch:03d}/{epochs:03d} | "
                 f"lr={self.optimizer.param_groups[0]['lr']:.2e} | "
-                f"train lt={train_loss:.4f} lm={train_masked:.4f} lu={train_unmasked:.4f} d={train_dice:.4f} "
-                f"dice_aux={train_dice_aux:.4f} con={train_con:.4f} | "
-                f"val lt={val_loss:.4f} lm={val_masked:.4f} lu={val_unmasked:.4f} d={val_dice:.4f} "
-                f"dice_aux={val_dice_aux:.4f} con={val_con:.4f}"
+                f"train lt={train_loss:.4f} d={train_dice:.4f} | "
+                f"val lt={val_loss:.4f} d={val_dice:.4f}"
             )
 
-            is_last_epoch = epoch == epochs
-            epoch_idx = epoch - 1
             if (
                 self.vis_enabled
                 and self.vis_dir is not None
                 and val_loader is not None
                 and self._val_vis_batch is not None
-                and should_visualize(
-                    epoch=epoch_idx,
-                    is_best_epoch=is_best_epoch,
-                    is_last_epoch=is_last_epoch,
-                    cfg=self.cfg,
-                )
+                and (epoch % self.vis_every == 0)
             ):
-                vis_path = self.vis_dir / f"vis_epoch_{epoch_idx}.png"
+                vis_path = self.vis_dir / f"val_vis_epoch_{epoch:04d}.png"
                 save_val_visualization_grid(
                     model=self.model,
                     val_batch=self._val_vis_batch,
@@ -434,10 +297,6 @@ class MaskReconstructionTrainer:
                     dice_fn=lambda p, t: dice_coefficient(p, t, threshold=self.vis_threshold),
                 )
                 print(f"[vis] Saved val visualization: {vis_path}")
-                if is_best_epoch:
-                    vis_best_path = self.vis_dir / f"vis_best_epoch_{epoch_idx}.png"
-                    copyfile(vis_path, vis_best_path)
-                    print(f"[vis] Saved best val visualization: {vis_best_path}")
 
             # scheduler already stepped; nothing else to do here
 
