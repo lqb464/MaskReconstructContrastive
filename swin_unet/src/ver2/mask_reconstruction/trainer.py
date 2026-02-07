@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
-from typing import Dict, Tuple, Callable
+from shutil import copyfile
+from typing import Dict, Tuple
 
 import torch
 from torch.utils.data import DataLoader
@@ -16,7 +17,7 @@ from ..training.utils import ensure_dir
 from tqdm import tqdm
 
 from .dice import dice_coefficient, soft_dice_loss, soft_dice_loss_by_region
-from .visualization import save_val_visualization_grid
+from .visualization import save_val_visualization_grid, should_visualize
 from ..common.losses import nt_xent_loss, vicreg_loss, mixed_bce_logits_weighted_seg
 
 
@@ -78,9 +79,12 @@ class MaskReconstructionTrainer:
         self.align_flip_target = align_flip_target
         self.cfg = cfg
         self.vis_every = int(vis_every)
-        self.vis_num = int(vis_num)
+        cfg_logging = getattr(cfg, "logging", None)
+        cfg_vis_num = int(getattr(cfg_logging, "vis_n_results", vis_num))
+        self.vis_num = max(0, min(4, cfg_vis_num))
         self.vis_threshold = float(vis_threshold)
         self.disable_tqdm = bool(disable_tqdm)
+        self.vis_enabled = self.vis_num > 0
         self.dice_loss_weight = float(cfg.training.dice_loss_weight)
         self.dice_mode = getattr(cfg.training, "dice_mode", "total")
         self.dice_smooth = getattr(cfg.training, "dice_smooth", 1e-6)
@@ -106,10 +110,11 @@ class MaskReconstructionTrainer:
 
         self.out_dir = ensure_dir(Path(out_dir))
         self.ckpt_dir = ensure_dir(self.out_dir / "checkpoints")
-        self.vis_dir = ensure_dir(self.out_dir / "vis") if self.vis_every > 0 else None
+        self.vis_dir = ensure_dir(self.out_dir / "vis") if self.vis_enabled else None
         self.logger = EpochLogger(self.out_dir / "epoch_log.csv")
 
         self.best_val = float("-inf")
+        self._val_vis_batch: dict[str, torch.Tensor] | None = None
 
     def _forward_losses(self, x: torch.Tensor, y: torch.Tensor, plane_one_hot: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         pixel_mask = torch.zeros_like(y)  # No masking for this supervised task
@@ -280,12 +285,22 @@ class MaskReconstructionTrainer:
         total_unmasked = 0.0
         total_dice_aux = 0.0
         steps = 0
+        self._val_vis_batch = None
         progress = loader if self.disable_tqdm else tqdm(loader, desc="Val", leave=False, dynamic_ncols=True)
 
         for batch in progress:
             x = batch["input"].to(self.device, non_blocking=True)
             y = batch["target"].to(self.device, non_blocking=True)
             plane = batch["plane_one_hot"].to(self.device, non_blocking=True)
+
+            if steps == 0 and self.vis_enabled:
+                n_vis = min(self.vis_num, x.size(0))
+                if n_vis > 0:
+                    self._val_vis_batch = {
+                        "input": x[:n_vis].detach(),
+                        "target": y[:n_vis].detach(),
+                        "plane_one_hot": plane[:n_vis].detach(),
+                    }
 
             with autocast(device_type=self.device.type, enabled=self.use_amp):
                 loss, dice, loss_con, loss_masked, loss_unmasked, loss_dice_aux = self._forward_losses(x, y, plane)
@@ -379,9 +394,11 @@ class MaskReconstructionTrainer:
 
             # Selection rule: reconstruct -> maximize val_dice; else minimize val_loss
             metric = val_dice  # always select by val_dice
+            is_best_epoch = False
             if metric > self.best_val:
                 self.best_val = metric
                 self._save_best(epoch)
+                is_best_epoch = True
 
             print(
                 f"Epoch {epoch:03d}/{epochs:03d} | "
@@ -392,11 +409,24 @@ class MaskReconstructionTrainer:
                 f"dice_aux={val_dice_aux:.4f} con={val_con:.4f}"
             )
 
-            if self.vis_every > 0 and val_loader is not None and (epoch == 0 or (epoch % self.vis_every) == 0):
-                vis_path = self.vis_dir / f"val_vis_epoch_{epoch:04d}.png"
+            is_last_epoch = epoch == epochs
+            epoch_idx = epoch - 1
+            if (
+                self.vis_enabled
+                and self.vis_dir is not None
+                and val_loader is not None
+                and self._val_vis_batch is not None
+                and should_visualize(
+                    epoch=epoch_idx,
+                    is_best_epoch=is_best_epoch,
+                    is_last_epoch=is_last_epoch,
+                    cfg=self.cfg,
+                )
+            ):
+                vis_path = self.vis_dir / f"vis_epoch_{epoch_idx}.png"
                 save_val_visualization_grid(
                     model=self.model,
-                    val_loader=val_loader,
+                    val_batch=self._val_vis_batch,
                     device=self.device,
                     out_path=vis_path,
                     threshold=self.vis_threshold,
@@ -404,6 +434,10 @@ class MaskReconstructionTrainer:
                     dice_fn=lambda p, t: dice_coefficient(p, t, threshold=self.vis_threshold),
                 )
                 print(f"[vis] Saved val visualization: {vis_path}")
+                if is_best_epoch:
+                    vis_best_path = self.vis_dir / f"vis_best_epoch_{epoch_idx}.png"
+                    copyfile(vis_path, vis_best_path)
+                    print(f"[vis] Saved best val visualization: {vis_best_path}")
 
             # scheduler already stepped; nothing else to do here
 
