@@ -34,6 +34,7 @@ def build_mask_argparser() -> argparse.ArgumentParser:
     grp.add_argument("--target-size", type=int, default=0, help="Force square resize to this size (0 keeps original)")
     grp.add_argument("--resize-mode", type=str, default="letterbox", choices=["letterbox", "direct"], help="Resize strategy for image/mask pair")
     grp.add_argument("--debug-shapes", type=int, default=0, help="Log sample shapes for debugging (0/1)")
+    grp.add_argument("--binarize-target", action="store_true", help="Binarize target mask with (y > 0).float()")
 
     # Make base data-root optional by clearing required flag to allow train_dir-only workflows
     for action in parser._actions:
@@ -181,6 +182,7 @@ def run(args: argparse.Namespace) -> None:
         resize_mode=args.resize_mode,
         debug_shapes=bool(args.debug_shapes),
         plane=args.plane,
+        binarize_target=bool(args.binarize_target),
     )
     val_ds = None
     if val_dir:
@@ -195,6 +197,7 @@ def run(args: argparse.Namespace) -> None:
             resize_mode=args.resize_mode,
             debug_shapes=bool(args.debug_shapes),
             plane=args.plane,
+            binarize_target=bool(args.binarize_target),
         )
     train_loader, val_loader = make_dataloaders(train_ds, cfg, device, val_ds=val_ds)
 

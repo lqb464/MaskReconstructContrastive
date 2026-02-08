@@ -59,6 +59,7 @@ class MaskReconstructionDataset(Dataset):
         return_dual_view: bool = False,
         debug_pair_alignment: bool = False,
         plane: str = "axial",
+        binarize_target: bool = False,
     ):
         self.data_dir = Path(data_dir).expanduser()
         if not self.data_dir.exists():
@@ -76,6 +77,7 @@ class MaskReconstructionDataset(Dataset):
         self.return_dual_view = return_dual_view
         self.debug_pair_alignment = bool(debug_pair_alignment) and _DEBUG_PAIR_ALIGNMENT_ENV
         self.debug_pair_alignment_mod = max(1, int(os.getenv("MASK_RECON_DEBUG_PAIR_ALIGNMENT_MOD", "64")))
+        self.binarize_target = bool(binarize_target)
 
         self.plane_one_hot = plane_to_one_hot(plane)
         if self.debug_shapes:
@@ -129,7 +131,10 @@ class MaskReconstructionDataset(Dataset):
             target_sz = int(max(w, h))
 
         x, y = apply_pair_transforms(img_pil, mask_np, target_sz, do_hflip=False, resize_mode=self.resize_mode)
-        y = (y > 0).float()
+        if self.binarize_target:
+            y = (y > 0).float()
+        else:
+            y = y.float() / 255.0
 
         # Debug alignment logging is opt-in and sampled to avoid throughput collapse.
         if self.debug_pair_alignment and (idx % self.debug_pair_alignment_mod == 0):
