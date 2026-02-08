@@ -203,7 +203,7 @@ class MaskReconstructionTrainer:
                     x,
                     y,
                     plane,
-                    compute_dice=False,
+                    compute_dice=True,
                 )
 
             if self.use_amp:
@@ -224,7 +224,6 @@ class MaskReconstructionTrainer:
                 progress.set_postfix(
                     {
                         "lt": f"{total_loss/steps:.4f}",
-                        "d": f"{total_dice/steps:.4f}",
                     }
                 )
 
