@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import logging
 import math
+import time
 from pathlib import Path
 from typing import Dict, Tuple
 
@@ -220,13 +221,6 @@ class MaskReconstructionTrainer:
             total_dice += dice.detach().item()
             steps += 1
 
-            if not self.disable_tqdm:
-                progress.set_postfix(
-                    {
-                        "lt": f"{total_loss/steps:.4f}",
-                    }
-                )
-
         if steps == 0:
             return 0.0, 0.0
         return total_loss / steps, total_dice / steps
@@ -268,14 +262,6 @@ class MaskReconstructionTrainer:
             total_dice += dice.detach().item()
             steps += 1
 
-            if not self.disable_tqdm:
-                progress.set_postfix(
-                    {
-                        "lt": f"{total_loss/steps:.4f}",
-                        "d": f"{total_dice/steps:.4f}",
-                    }
-                )
-
         if steps == 0:
             return 0.0, 0.0
         return total_loss / steps, total_dice / steps
@@ -316,12 +302,18 @@ class MaskReconstructionTrainer:
             self._build_scheduler(epochs)
 
         for epoch in range(1, epochs + 1):
+            epoch_start = time.perf_counter()
             if hasattr(self.model, "current_epoch"):
                 self.model.current_epoch = epoch
 
+            train_start = time.perf_counter()
             train_loss, train_dice = self.train_one_epoch(train_loader)
+            train_time = time.perf_counter() - train_start
             capture_vis = self.vis_enabled and (epoch % self.vis_every == 0)
+            val_start = time.perf_counter()
             val_loss, val_dice = self.validate(val_loader, capture_vis=capture_vis)
+            val_time = time.perf_counter() - val_start
+            epoch_time = time.perf_counter() - epoch_start
 
             if self.lr_scheduler is not None:
                 self.lr_scheduler.step()
@@ -349,7 +341,8 @@ class MaskReconstructionTrainer:
                 f"Epoch {epoch:03d}/{epochs:03d} | "
                 f"lr={self.optimizer.param_groups[0]['lr']:.2e} | "
                 f"train lt={train_loss:.4f} d={train_dice:.4f} | "
-                f"val lt={val_loss:.4f} d={val_dice:.4f}"
+                f"val lt={val_loss:.4f} d={val_dice:.4f} | "
+                f"time=train:{train_time:.2f}s,val:{val_time:.2f}s,total:{epoch_time:.2f}s"
             )
 
             if (
