@@ -1,3 +1,1 @@
-from __future__ import annotations
-
-"""Compatibility package for ver3.mask_reconstruction."""
+"""Task implementation package for mask reconstruction."""
