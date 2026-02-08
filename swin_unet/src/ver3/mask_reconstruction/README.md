@@ -1,64 +1,59 @@
-**Mask Reconstruction**
+**Mask Reconstruction (ver3)**
 
-Train the existing Swin-UNet dual-view model to predict a binary mask from a single PNG slice. Inputs are grayscale `[1,H,W]` in `[0,1]`; targets come from `*_mask.npz` stored beside each image.
+Train Swin-UNet to reconstruct mask slices from grayscale PNG inputs.
 
-**Dataset Layout**
-- Folder contains pairs: `name.png` and `name_mask.npz`.
-- If `--mask_key` is omitted, the first array in the NPZ is used. Nonzero values are treated as `1`.
-- Images and masks are resized to `image_size` from the shared config (default 192, override with `--image-size`). No input pixel masking is applied.
+**Sample Contract**
+- `input`: float32 `[1,H,W]` in `[0,1]`
+- `target`: float32 `[1,H,W]`, from mask ids as `mask/255.0` (or `(mask>0).float()` with `--binarize-target`)
+- `plane_one_hot`: float32 `[2]`
+- `path`: original image path string
 
-**Dual View Behavior**
-- View1 uses the raw image.
-- View2 uses `flip_lr(image)`. The target for view2 is also flipped to keep spatial alignment.
-- The model outputs logits `[B,1,H,W]` for both views; Dice is computed on sigmoid outputs.
+**Raw Dataset Layout**
+- Pairing rule: `name.png` with `name_mask.npz` in the same folder.
+- Typical split usage:
+  - `train_dir=/.../train/axial`
+  - `val_dir=/.../valid/axial`
 
-**Run Command (reconstruct-only, mixed loss + dice aux)**
-From `swin_unet/src/ver2`:
+**Offline Preprocessing (recommended)**
+Use this once to resize/normalize I/O offline and write preprocessed metadata:
+
+```bash
+python -m swin_unet.src.ver3.tools.preprocess_mask_dataset \
+  --input-dir /data/mask/train/axial \
+  --output-dir /data_preprocessed/mask/train/axial \
+  --image-size 256 \
+  --ext .png \
+  --output-mask-suffix _mask.npy \
+  --resize-mode letterbox \
+  --preserve-structure \
+  --num-workers 8
 ```
-python -m mask_reconstruction.main \
-  --train_dir /kaggle/input/synthstrip-data-v1-5-slices/synthstrip_data_v1.5_slices/test/axial \
-  --val_dir   /kaggle/input/synthstrip-data-v1-5-slices/synthstrip_data_v1.5_slices/valid/axial \
-  --out-dir after_stage0 \
-  --run-name after_stage0 \
-  --enable-reconstruct --disable-contrastive --dual-view \
-  --epochs 10 --batch-size 32 --lr 1e-3 --image-size 256 \
-  --enable_saca --saca_position after_stage0 \
-  --dice-loss-weight 0.1 --dice-mode total --dice-smooth 1e-6 \
-  --vis-every 2 --vis-num 4 --vis-threshold 0.5 --no-tqdm 0
-```
-Optional flags: `--mask_key`, `--threshold` (for dice metric binarization), `--vis-num`, `--vis-threshold`, plus all base ver2 flags (SACA, contrastive, single/dual view, checkpoints, etc.). Image and mask are resized together (bilinear for image, nearest for mask); override sizing with `--target-size` and `--resize-mode` (letterbox/direct). Enable `--debug-shapes 1` to log sample shapes.
 
-Stability defaults: lr=3e-4, AMP enabled by default, grad clipping (--grad-clip) default 1.0, cosine LR with warmup (--warmup-epochs). Dice auxiliary enabled by default (--dice-loss-weight 0.2, --dice-mode fg). Plane conditioning set via --plane.
+Outputs:
+- resized images (`.png` by default)
+- resized masks (`_mask.npy` by default)
+- `preprocess_meta.json` (size, format, normalization, version)
 
-Visualization (optional):
-- `--vis-every N` enables saving validation prediction grids every N epochs (N=0 disables).
-- `--vis-num K` limits how many validation samples to plot (default 4).
-- `--vis-threshold T` binarizes predictions for display (default 0.5).
-Outputs are saved to `out_dir/vis/val_vis_epoch_XXXX.png` showing input, target, predicted probability, thresholded mask with per-sample Dice.
+**Train With Preprocessed Data (no online resize path)**
+```bash
+python -m swin_unet.src.ver3.cli train-mask \
+  --preprocessed_dir /data_preprocessed/mask/train/axial \
+  --val_dir /data_preprocessed/mask/valid/axial \
+  --image-size 256 \
+  --enable-reconstruct --disable-contrastive --disable-masking \
+  --skip_resize_in_loader \
+  --batch-size 16 --epochs 20 \
+  --out-dir runs_mask --run-name mask_preprocessed
+```
 
-**Outputs**
-- `epoch_log.csv` in `out_dir` with columns: epoch, train/val loss_total, loss_masked, loss_unmasked, dice, train_loss_dice_aux, val_loss_dice_aux, train_loss_contrastive, val_loss_contrastive, lr.
-- Plots in `out_dir/plot/`: `loss_total.png`, `loss_masked.png`, `loss_unmasked.png`, `dice.png`, `dice_aux.png`, `contrastive.png`.
-- `checkpoints/latest.pt` (unless `--save_best_only 1`).
-- `checkpoints/best_val_dice.pt` saved when validation Dice improves.
+Notes:
+- `--preprocessed_dir` auto-enables loader skip-resize behavior.
+- Metadata (`preprocess_meta.json`) is validated against runtime `--image-size`.
+- If metadata contains `mask_suffix`/`image_ext`, loader uses those values automatically.
 
-**Smoke Test**
-Use a tiny folder with a couple of PNG/NPZ pairs:
-```
-python -m mask_reconstruction.main \
-  --data-root ./toy_pairs \
-  --train_dir ./toy_pairs \
-  --out-dir ./toy_run \
-  --epochs 1 --batch_size 2 --val_ratio 0.5 --amp 0
-```
-Expected: command finishes, `epoch_log.csv` contains one row, and `checkpoints/best_val_dice.pt` is created.
+**Sanity Checklist**
+- Folder has paired files with matching stems.
+- Preprocessed `H,W` matches training `--image-size` (square expected by current model).
+- Inputs are grayscale and masks remain integer id maps on disk.
+- If `--binarize-target` is off, target still uses `mask/255.0` to preserve existing training semantics.
 
-If you have separate splits:
-```
-python -m mask_reconstruction.main \
-  --train_dir ./toy_pairs/train \
-  --val_dir ./toy_pairs/val \
-  --out-dir ./toy_run \
-  --epochs 1 --batch_size 2 --amp 0 --vis-every 1
-```
-Expected: same outputs plus `vis/val_vis_epoch_0001.png`.

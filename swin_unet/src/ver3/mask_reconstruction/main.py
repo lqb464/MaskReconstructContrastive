@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 from typing import Optional, Sequence
@@ -12,6 +13,7 @@ from .experiment import ExperimentConfig, build_argparser, enforce_recon_only_ar
 from .dataset import MaskReconstructionDataset
 from ..models.swin_unet_dualview_ssl import SwinUNetDualViewSSL
 
+PREPROCESS_META_FILENAME = "preprocess_meta.json"
 
 
 
@@ -35,6 +37,8 @@ def build_mask_argparser() -> argparse.ArgumentParser:
     grp.add_argument("--resize-mode", type=str, default="letterbox", choices=["letterbox", "direct"], help="Resize strategy for image/mask pair")
     grp.add_argument("--debug-shapes", type=int, default=0, help="Log sample shapes for debugging (0/1)")
     grp.add_argument("--binarize-target", action="store_true", help="Binarize target mask with (y > 0).float()")
+    grp.add_argument("--preprocessed_dir", dest="preprocessed_dir", type=str, default="", help="Optional preprocessed train folder (offline-resized pairs).")
+    grp.add_argument("--skip_resize_in_loader", dest="skip_resize_in_loader", action="store_true", help="Skip resize in dataset loader (use with preprocessed data).")
 
     # Make base data-root optional by clearing required flag to allow train_dir-only workflows
     for action in parser._actions:
@@ -144,6 +148,52 @@ def build_model(cfg: ExperimentConfig) -> SwinUNetDualViewSSL:
     return model
 
 
+def _load_preprocess_meta_or_none(data_dir: str | Path) -> dict | None:
+    meta_path = Path(data_dir).expanduser() / PREPROCESS_META_FILENAME
+    if not meta_path.exists():
+        return None
+    with meta_path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _validate_preprocess_meta(meta: dict, *, expected_image_size: int, data_dir: str | Path) -> None:
+    image_size = meta.get("image_size")
+    if not isinstance(image_size, dict):
+        return
+    try:
+        h = int(image_size.get("height"))
+        w = int(image_size.get("width"))
+    except Exception:
+        return
+
+    if h != w:
+        raise ValueError(
+            f"Preprocessed data in {Path(data_dir).resolve()} has non-square image_size=({h}, {w}). "
+            "Current mask reconstruction model expects square --image-size."
+        )
+    if int(expected_image_size) > 0 and int(expected_image_size) != h:
+        raise ValueError(
+            f"Preprocessed metadata mismatch for {Path(data_dir).resolve()}: "
+            f"meta image_size={h} but runtime --image-size={expected_image_size}. "
+            "Use matching --image-size or regenerate preprocessed data."
+        )
+
+
+def _resolve_dataset_file_pattern(
+    meta: dict | None,
+    *,
+    image_ext_fallback: str,
+    mask_suffix_fallback: str,
+) -> tuple[str, str]:
+    if not meta:
+        return image_ext_fallback, mask_suffix_fallback
+    meta_image_ext = str(meta.get("image_ext", image_ext_fallback) or image_ext_fallback)
+    if meta_image_ext == "mixed_by_source":
+        meta_image_ext = image_ext_fallback
+    meta_mask_suffix = str(meta.get("mask_suffix", mask_suffix_fallback) or mask_suffix_fallback)
+    return meta_image_ext, meta_mask_suffix
+
+
 def run(args: argparse.Namespace) -> None:
     import torch
 
@@ -163,18 +213,49 @@ def run(args: argparse.Namespace) -> None:
     cfg.mask.enable_masking = False
     if bool(cfg.training.enable_contrastive) or bool(cfg.mask.enable_masking):
         raise ValueError("mask_reconstruction/main.py enforces reconstruction-only (no masking, no contrastive).")
+    if getattr(args, "preprocessed_dir", ""):
+        cfg.data.skip_resize_in_loader = True
     set_seed(int(cfg.training.seed))
 
     device = get_device(cpu=bool(cfg.training.cpu))
     print(f"[device] using {device}")
 
-    train_dir = args.train_dir
+    use_preprocessed_dir = bool(getattr(args, "preprocessed_dir", ""))
+    train_dir = args.preprocessed_dir if use_preprocessed_dir else args.train_dir
     val_dir = args.val_dir
+
+    train_meta = _load_preprocess_meta_or_none(train_dir)
+    if use_preprocessed_dir and train_meta is None:
+        raise FileNotFoundError(
+            f"--preprocessed_dir was provided but {PREPROCESS_META_FILENAME} was not found in {Path(train_dir).resolve()}."
+        )
+    if train_meta is not None:
+        _validate_preprocess_meta(train_meta, expected_image_size=int(cfg.data.image_size), data_dir=train_dir)
+
+    val_meta = _load_preprocess_meta_or_none(val_dir) if val_dir else None
+    if use_preprocessed_dir and val_dir and val_meta is None:
+        raise FileNotFoundError(
+            f"Validation directory {Path(val_dir).resolve()} does not contain {PREPROCESS_META_FILENAME}. "
+            "When using --preprocessed_dir, val_dir should point to a preprocessed folder too."
+        )
+    if val_meta is not None:
+        _validate_preprocess_meta(val_meta, expected_image_size=int(cfg.data.image_size), data_dir=val_dir)
+
+    train_image_ext, train_mask_suffix = _resolve_dataset_file_pattern(
+        train_meta,
+        image_ext_fallback=args.image_ext,
+        mask_suffix_fallback=args.mask_suffix,
+    )
+    val_image_ext, val_mask_suffix = _resolve_dataset_file_pattern(
+        val_meta,
+        image_ext_fallback=args.image_ext,
+        mask_suffix_fallback=args.mask_suffix,
+    )
 
     train_ds = MaskReconstructionDataset(
         data_dir=train_dir,
-        image_ext=args.image_ext,
-        mask_suffix=args.mask_suffix,
+        image_ext=train_image_ext,
+        mask_suffix=train_mask_suffix,
         strict_pairs=bool(args.strict_pairs),
         mask_key=(args.mask_key or None),
         image_size=int(cfg.data.image_size) if cfg.data.image_size else None,
@@ -183,13 +264,15 @@ def run(args: argparse.Namespace) -> None:
         debug_shapes=bool(args.debug_shapes),
         plane=args.plane,
         binarize_target=bool(args.binarize_target),
+        preprocessed=use_preprocessed_dir,
+        skip_resize_in_loader=bool(cfg.data.skip_resize_in_loader),
     )
     val_ds = None
     if val_dir:
         val_ds = MaskReconstructionDataset(
             data_dir=val_dir,
-            image_ext=args.image_ext,
-            mask_suffix=args.mask_suffix,
+            image_ext=val_image_ext,
+            mask_suffix=val_mask_suffix,
             strict_pairs=bool(args.strict_pairs),
             mask_key=(args.mask_key or None),
             image_size=int(cfg.data.image_size) if cfg.data.image_size else None,
@@ -198,6 +281,8 @@ def run(args: argparse.Namespace) -> None:
             debug_shapes=bool(args.debug_shapes),
             plane=args.plane,
             binarize_target=bool(args.binarize_target),
+            preprocessed=use_preprocessed_dir,
+            skip_resize_in_loader=bool(cfg.data.skip_resize_in_loader),
         )
     train_loader, val_loader = make_dataloaders(train_ds, cfg, device, val_ds=val_ds)
 

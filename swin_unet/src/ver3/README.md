@@ -128,6 +128,32 @@ python -m swin_unet.src.ver3.cli train-mask \
   --run-name mask_recon_exp
 ```
 
+Mask reconstruction offline preprocessing + fast loader path:
+
+```bash
+python -m swin_unet.src.ver3.tools.preprocess_mask_dataset \
+  --input-dir "$TRAIN_MASK_DIR" \
+  --output-dir /data_preprocessed/mask/train \
+  --image-size 256 \
+  --ext .png \
+  --output-mask-suffix _mask.npy \
+  --resize-mode letterbox \
+  --num-workers 8
+
+python -m swin_unet.src.ver3.cli train-mask \
+  --preprocessed_dir /data_preprocessed/mask/train \
+  --val_dir /data_preprocessed/mask/val \
+  --image-size 256 \
+  --skip_resize_in_loader \
+  --enable-reconstruct \
+  --disable-contrastive \
+  --disable-masking \
+  --batch-size 16 \
+  --epochs 20 \
+  --out-dir runs_mask \
+  --run-name mask_recon_preprocessed
+```
+
 Smoke checks:
 
 ```bash
@@ -170,7 +196,15 @@ bash scripts/smoke_ver3_cli_help.sh
 - Validation mode: `--val_dir` for explicit validation folder, otherwise internal split via `--val-ratio`.
 - Pair I/O flags: `--image_ext`, `--mask_suffix`, `--mask_key`, `--strict_pairs`.
 - Resize/debug flags: `--target-size`, `--resize-mode`, `--debug-shapes`.
+- Preprocessed fast-path flags: `--preprocessed_dir`, `--skip_resize_in_loader`.
+- Metadata checks: if `preprocess_meta.json` exists, loader validates preprocessed image size against runtime `--image-size`.
 - Behavior guardrail: this entrypoint enforces reconstruction-only (no contrastive, no masking).
+
+Mask reconstruction sanity checklist:
+- Pair folder structure is consistent (image + mask suffix by stem).
+- Preprocessed datasets include `preprocess_meta.json`.
+- Preprocessed `H,W` matches runtime `--image-size` (current mask model expects square).
+- Expected loader normalization remains `input/255.0` and `target/255.0` unless `--binarize-target` is used.
 
 ## Legacy Entrypoints
 

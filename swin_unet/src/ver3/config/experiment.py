@@ -128,9 +128,11 @@ class TrainingConfig:
 class DataConfig:
     """Data loading configuration"""
     data_root: str = ""
+    preprocessed_dir: str = ""
     train_mod: int = 1
     image_size: int = 192
     plane: str = "axial"  # "axial" | "coronal" | "auto"
+    skip_resize_in_loader: bool = False
 
     # Optional labels
     label_csv: str = ""
@@ -249,9 +251,11 @@ class ExperimentConfig:
             ),
             data=DataConfig(
                 data_root=args.data_root,
+                preprocessed_dir=getattr(args, "preprocessed_dir", ""),
                 train_mod=args.train_mod,
                 image_size=args.image_size,
                 plane=args.plane,
+                skip_resize_in_loader=getattr(args, "skip_resize_in_loader", False),
                 label_csv=args.label_csv,
                 label_path_col=args.label_path_col,
                 label_col=args.label_col,
@@ -318,9 +322,13 @@ def build_argparser() -> argparse.ArgumentParser:
 
     # Data (folder dataset)
     p.add_argument("--data-root", type=str, required=True, help="Root folder containing subfolders of images")
+    p.add_argument("--preprocessed-dir", type=str, default="", help="Optional root/folder of offline preprocessed data.")
     p.add_argument("--train-mod", type=int, default=1, help="Use only items where index%%train_mod==0")
     p.add_argument("--image-size", type=int, default=192)
     p.add_argument("--plane", type=str, default="axial", choices=["axial", "coronal", "auto"])
+    p.add_argument("--skip-resize-in-loader", action="store_true", help="Skip resize work in dataset loader (for preprocessed data).")
+    p.add_argument("--no-skip-resize-in-loader", dest="skip_resize_in_loader", action="store_false")
+    p.set_defaults(skip_resize_in_loader=False)
 
     # Optional label CSV mapping
     p.add_argument("--label-csv", type=str, default="", help="CSV mapping image_path -> label (optional)")

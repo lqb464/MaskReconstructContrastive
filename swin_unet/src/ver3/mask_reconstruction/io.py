@@ -30,14 +30,7 @@ def _first_npz_array(npz: np.lib.npyio.NpzFile) -> np.ndarray:
     return npz[first_key]
 
 
-def load_mask_npz_array(path: str | Path, key: Optional[str] = None) -> np.ndarray:
-    """
-    Load mask from NPZ as integer numpy array [H,W] without binarization.
-    """
-    p = Path(path)
-    with np.load(p) as data:
-        arr = data[key] if key is not None else _first_npz_array(data)
-
+def _ensure_mask_hw_int_array(arr: np.ndarray) -> np.ndarray:
     arr = np.asarray(arr)
     if arr.ndim == 2:
         pass
@@ -58,19 +51,45 @@ def load_mask_npz_array(path: str | Path, key: Optional[str] = None) -> np.ndarr
     return arr
 
 
+def load_mask_array(path: str | Path, key: Optional[str] = None) -> np.ndarray:
+    """
+    Load mask as integer numpy array [H,W] without binarization.
+    Supported formats:
+      - .npz (first array or explicit key)
+      - .npy
+    """
+    p = Path(path)
+    suffix = p.suffix.lower()
+    if suffix == ".npz":
+        with np.load(p) as data:
+            arr = data[key] if key is not None else _first_npz_array(data)
+        return _ensure_mask_hw_int_array(arr)
+    if suffix == ".npy":
+        arr = np.load(p, allow_pickle=False)
+        return _ensure_mask_hw_int_array(arr)
+    raise ValueError(f"Unsupported mask extension '{p.suffix}' for {p}. Expected .npz or .npy.")
+
+
+def load_mask_npz_array(path: str | Path, key: Optional[str] = None) -> np.ndarray:
+    """
+    Backward-compatible alias for existing callers.
+    """
+    return load_mask_array(path, key=key)
+
+
 def load_mask_npz(path: str | Path, key: Optional[str] = None) -> torch.Tensor:
     """
     Legacy helper retained for compatibility with older callers.
-    Current mask reconstruction dataset path uses load_mask_npz_array() + pair_transforms.
+    Current mask reconstruction dataset path uses load_mask_array() + pair_transforms.
 
     Load mask from NPZ file.
     - Uses the provided key when given, otherwise the first array in the NPZ.
     - Returns float32 tensor [1,H,W] with values {0,1}.
     """
-    arr = load_mask_npz_array(path, key=key)
+    arr = load_mask_array(path, key=key)
     arr_bin = (arr != 0).astype(np.float32)[None, ...]
     tensor = torch.from_numpy(arr_bin)
     return tensor
 
 
-__all__ = ["load_png_grayscale", "load_mask_npz", "load_mask_npz_array"]
+__all__ = ["load_png_grayscale", "load_mask_npz", "load_mask_npz_array", "load_mask_array"]
