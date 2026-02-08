@@ -10,7 +10,7 @@ import torch
 from ..common.cli_utils import run_entrypoint
 from .experiment import ExperimentConfig, build_argparser, enforce_recon_only_args
 from .dataset import MaskReconstructionDataset
-from ...models.swin_unet_dualview_ssl import SwinUNetDualViewSSL
+from ..models.swin_unet_dualview_ssl import SwinUNetDualViewSSL
 
 
 
