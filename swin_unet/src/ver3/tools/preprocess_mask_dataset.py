@@ -178,7 +178,15 @@ def process_one(sample: SamplePair, cfg: WorkerConfig) -> tuple[int, int]:
     )
 
     img_out = img_t.squeeze(0).squeeze(0).clamp(0.0, 1.0).mul(255.0).round().to(dtype=torch.uint8).cpu().numpy()
-    mask_out = mask_t.squeeze(0).squeeze(0).round().to(dtype=torch.int64).cpu().numpy()
+    mask_i64 = mask_t.squeeze(0).squeeze(0).round().to(dtype=torch.int64)
+    mask_min = int(mask_i64.min().item())
+    mask_max = int(mask_i64.max().item())
+    if mask_min < 0 or mask_max > 255:
+        raise ValueError(
+            f"Mask ids out of uint8 range for {sample.mask_path}: min={mask_min}, max={mask_max}. "
+            "Regenerate with a wider mask dtype if needed."
+        )
+    mask_out = mask_i64.to(dtype=torch.uint8).cpu().numpy()
 
     Image.fromarray(img_out, mode="L").save(out_image_path)
     _save_mask(out_mask_path, mask_out)
@@ -207,7 +215,7 @@ def write_meta(
         "input_image_ext": input_image_ext,
         "input_mask_suffix": input_mask_suffix,
         "input_dtype_range": "uint8_on_disk -> float32 [0,1] in loader",
-        "target_dtype_range": "int_ids_on_disk -> float32 target/255.0 in loader (or (target>0).float() with --binarize-target)",
+        "target_dtype_range": "uint8_ids_on_disk -> float32 target/255.0 in loader (or (target>0).float() with --binarize-target)",
         "normalization": {
             "input": "x = uint8 / 255.0",
             "target": "y = ids / 255.0 unless binarize_target is enabled in training",
