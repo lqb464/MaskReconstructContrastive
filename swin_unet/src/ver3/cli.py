@@ -76,7 +76,6 @@ def main(argv: Optional[Sequence[str]] = None) -> object:
     cmd = COMPAT_ALIASES.get(raw_argv[0], raw_argv[0])
     if cmd not in COMMAND_HANDLERS:
         parser = build_argparser()
-        print(parser)
         parser.error(f"Unknown command: {raw_argv[0]}")
     return dispatch_subcommand([cmd, *raw_argv[1:]], handlers=COMMAND_HANDLERS)
 

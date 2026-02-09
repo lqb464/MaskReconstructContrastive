@@ -216,6 +216,9 @@ def run(args: argparse.Namespace) -> None:
     if getattr(args, "preprocessed_dir", ""):
         cfg.data.skip_resize_in_loader = True
     set_seed(int(cfg.training.seed))
+    
+    print("[config] Loaded experiment configuration:")
+    print(cfg)
 
     device = get_device(cpu=bool(cfg.training.cpu))
     print(f"[device] using {device}")
