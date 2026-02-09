@@ -224,26 +224,28 @@ def run(args: argparse.Namespace) -> None:
     print(f"[device] using {device}")
 
     use_preprocessed_dir = bool(getattr(args, "preprocessed_dir", ""))
+    preprocessed_mode = bool(cfg.data.skip_resize_in_loader)
     train_dir = args.preprocessed_dir if use_preprocessed_dir else args.train_dir
     val_dir = args.val_dir
     print(
         f"[data] loader_mode: skip_resize_in_loader={bool(cfg.data.skip_resize_in_loader)} "
-        f"use_preprocessed_dir={use_preprocessed_dir}"
+        f"use_preprocessed_dir={use_preprocessed_dir} preprocessed_mode={preprocessed_mode}"
     )
 
     train_meta = _load_preprocess_meta_or_none(train_dir)
-    if use_preprocessed_dir and train_meta is None:
+    if preprocessed_mode and train_meta is None:
         raise FileNotFoundError(
-            f"--preprocessed_dir was provided but {PREPROCESS_META_FILENAME} was not found in {Path(train_dir).resolve()}."
+            f"Expected preprocessed metadata at {Path(train_dir).resolve() / PREPROCESS_META_FILENAME}. "
+            "When --skip_resize_in_loader is enabled, train_dir (or --preprocessed_dir if provided) must be preprocessed."
         )
     if train_meta is not None:
         _validate_preprocess_meta(train_meta, expected_image_size=int(cfg.data.image_size), data_dir=train_dir)
 
     val_meta = _load_preprocess_meta_or_none(val_dir) if val_dir else None
-    if use_preprocessed_dir and val_dir and val_meta is None:
+    if preprocessed_mode and val_dir and val_meta is None:
         raise FileNotFoundError(
-            f"Validation directory {Path(val_dir).resolve()} does not contain {PREPROCESS_META_FILENAME}. "
-            "When using --preprocessed_dir, val_dir should point to a preprocessed folder too."
+            f"Expected preprocessed metadata at {Path(val_dir).resolve() / PREPROCESS_META_FILENAME}. "
+            "When --skip_resize_in_loader is enabled, val_dir must be a preprocessed folder."
         )
     if val_meta is not None:
         _validate_preprocess_meta(val_meta, expected_image_size=int(cfg.data.image_size), data_dir=val_dir)
@@ -271,7 +273,7 @@ def run(args: argparse.Namespace) -> None:
         debug_shapes=bool(args.debug_shapes),
         plane=args.plane,
         binarize_target=bool(args.binarize_target),
-        preprocessed=use_preprocessed_dir,
+        preprocessed=preprocessed_mode,
         skip_resize_in_loader=bool(cfg.data.skip_resize_in_loader),
     )
     val_ds = None
@@ -288,7 +290,7 @@ def run(args: argparse.Namespace) -> None:
             debug_shapes=bool(args.debug_shapes),
             plane=args.plane,
             binarize_target=bool(args.binarize_target),
-            preprocessed=use_preprocessed_dir,
+            preprocessed=preprocessed_mode,
             skip_resize_in_loader=bool(cfg.data.skip_resize_in_loader),
         )
     train_loader, val_loader = make_dataloaders(train_ds, cfg, device, val_ds=val_ds)
