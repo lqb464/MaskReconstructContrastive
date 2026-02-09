@@ -98,6 +98,11 @@ class MaskReconstructionDataset(Dataset):
                 f"[dataset] plane={plane} one_hot={self.plane_one_hot.tolist()} "
                 f"preprocessed={self.preprocessed} skip_resize_in_loader={self.skip_resize_in_loader}"
             )
+        elif self.skip_resize_in_loader:
+            print(
+                "[dataset] skip_resize_in_loader=True: online resize is disabled; "
+                "loader expects already preprocessed image/mask sizes."
+            )
         if bool(debug_pair_alignment) and not _DEBUG_PAIR_ALIGNMENT_ENV:
             log.info("debug_pair_alignment requested but MASK_RECON_DEBUG_PAIR_ALIGNMENT=0, so debug is disabled.")
             

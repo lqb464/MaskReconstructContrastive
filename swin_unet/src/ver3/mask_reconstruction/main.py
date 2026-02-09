@@ -226,6 +226,10 @@ def run(args: argparse.Namespace) -> None:
     use_preprocessed_dir = bool(getattr(args, "preprocessed_dir", ""))
     train_dir = args.preprocessed_dir if use_preprocessed_dir else args.train_dir
     val_dir = args.val_dir
+    print(
+        f"[data] loader_mode: skip_resize_in_loader={bool(cfg.data.skip_resize_in_loader)} "
+        f"use_preprocessed_dir={use_preprocessed_dir}"
+    )
 
     train_meta = _load_preprocess_meta_or_none(train_dir)
     if use_preprocessed_dir and train_meta is None:
