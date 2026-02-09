@@ -100,6 +100,9 @@ class MaskReconstructionDataset(Dataset):
             )
         if bool(debug_pair_alignment) and not _DEBUG_PAIR_ALIGNMENT_ENV:
             log.info("debug_pair_alignment requested but MASK_RECON_DEBUG_PAIR_ALIGNMENT=0, so debug is disabled.")
+            
+        if bool(self.skip_resize_in_loader):
+            log.info("skip_resize_in_loader=True: skipping online resize in dataset __getitem__.")
 
         self.pairs: List[Tuple[Path, Path]] = []
         missing: List[Path] = []
