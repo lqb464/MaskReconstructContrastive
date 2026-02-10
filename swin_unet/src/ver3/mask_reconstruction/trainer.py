@@ -89,8 +89,8 @@ class MaskReconstructionTrainer:
 
         if bool(getattr(cfg.training, "enable_contrastive", False)) or bool(getattr(model, "enable_contrastive", False)):
             raise ValueError("Mask reconstruction trainer is recon-only; enable_contrastive must be False.")
-        if bool(getattr(cfg.mask, "enable_masking", False)):
-            raise ValueError("Mask reconstruction trainer expects masking disabled (cfg.mask.enable_masking=False).")
+        # if bool(getattr(cfg.mask, "enable_masking", False)):
+        #     raise ValueError("Mask reconstruction trainer expects masking disabled (cfg.mask.enable_masking=False).")
 
         self.use_amp = bool(cfg.training.amp) and device.type == "cuda"
         self.scaler = GradScaler(enabled=self.use_amp)
