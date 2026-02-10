@@ -121,8 +121,8 @@ def build_model(cfg: ExperimentConfig) -> SwinUNetDualViewSSL:
     tcfg = cfg.training
     if bool(getattr(tcfg, "enable_contrastive", False)):
         raise ValueError("mask_reconstruction entrypoint forbids contrastive mode.")
-    if bool(getattr(cfg.mask, "enable_masking", False)):
-        raise ValueError("mask_reconstruction entrypoint forbids masking mode.")
+    # if bool(getattr(cfg.mask, "enable_masking", False)):
+    #     raise ValueError("mask_reconstruction entrypoint forbids masking mode.")
     model = SwinUNetDualViewSSL(
         in_ch=mcfg.in_ch,
         image_size=cfg.data.image_size,
