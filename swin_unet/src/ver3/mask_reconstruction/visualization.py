@@ -116,9 +116,10 @@ def save_val_visualization_grid(
 
     prob_orig = torch.sigmoid(logits_orig)
     bin_orig = (prob_orig >= threshold).float()
-    x_flip = torch.flip(x, dims=[-1]) if show_flip else None
-    if show_flip and x_flip is not None and pixel_mask is not None:
-        x_flip = x_flip * (1.0 - pixel_mask)
+    x_flip_raw = torch.flip(x, dims=[-1]) if show_flip else None
+    x_flip_display = x_flip_raw
+    if show_flip and x_flip_display is not None and pixel_mask is not None:
+        x_flip_display = x_flip_display * (1.0 - pixel_mask)
     if show_flip and logits_flip is not None:
         prob_flip = torch.sigmoid(logits_flip)
         bin_flip = (prob_flip >= threshold).float()
@@ -138,7 +139,7 @@ def save_val_visualization_grid(
                 "prob_o": prob_orig[i : i + 1].cpu(),
                 "bin_o": bin_orig[i : i + 1].cpu(),
                 "mask": pixel_mask[i : i + 1].cpu() if pixel_mask is not None else None,
-                "x_flip": x_flip[i : i + 1].cpu() if show_flip else None,
+                "x_flip": x_flip_display[i : i + 1].cpu() if show_flip and x_flip_display is not None else None,
                 "prob_f": prob_flip[i : i + 1].cpu() if show_flip and prob_flip is not None else None,
                 "bin_f": bin_flip[i : i + 1].cpu() if show_flip and bin_flip is not None else None,
                 "dice_o": dice_o,
@@ -241,7 +242,7 @@ def save_val_visualization_grid(
             ann_f = [f"Dice(f)={s['dice_f']:.3f}" for s in items]
 
             tensors += [x_f]
-            titles += ["input_flip"]
+            titles += ["input_flip_masked" if items[0]["mask"] is not None else "input_flip"]
             if not compact_mode:
                 tensors += [prob_f]
                 titles += ["pred_prob_f"]
@@ -287,8 +288,10 @@ def save_val_visualization_grid(
     del samples, x, y, logits_orig, prob_orig, bin_orig
     if show_flip:
         del y_flip
-        if x_flip is not None:
-            del x_flip
+        if x_flip_raw is not None:
+            del x_flip_raw
+        if x_flip_display is not None:
+            del x_flip_display
         if logits_flip is not None:
             del logits_flip
         if prob_flip is not None:
