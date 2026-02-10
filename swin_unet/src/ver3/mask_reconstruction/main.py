@@ -39,6 +39,11 @@ def build_mask_argparser() -> argparse.ArgumentParser:
     grp.add_argument("--binarize-target", action="store_true", help="Binarize target mask with (y > 0).float()")
     grp.add_argument("--preprocessed_dir", dest="preprocessed_dir", type=str, default="", help="Optional preprocessed train folder (offline-resized pairs).")
     grp.add_argument("--skip_resize_in_loader", dest="skip_resize_in_loader", action="store_true", help="Skip resize in dataset loader (use with preprocessed data).")
+    grp.add_argument(
+        "--boundary-aware",
+        action="store_true",
+        help="Enable boundary-aware reconstruction loss/metrics (always on for all epochs when set).",
+    )
 
     # Make base data-root optional by clearing required flag to allow train_dir-only workflows
     for action in parser._actions:
@@ -210,6 +215,7 @@ def run(args: argparse.Namespace) -> None:
     cfg = ExperimentConfig.from_args(args)
     # Hard guardrails for this task-specific entrypoint.
     cfg.training.enable_contrastive = False
+    cfg.training.boundary_aware = bool(getattr(args, "boundary_aware", False))
     # cfg.mask.enable_masking = False
     # if bool(cfg.training.enable_contrastive) or bool(cfg.mask.enable_masking):
     #     raise ValueError("mask_reconstruction/main.py enforces reconstruction-only (no masking, no contrastive).")
@@ -222,6 +228,10 @@ def run(args: argparse.Namespace) -> None:
     print(
         f"[mask] enable_masking={bool(cfg.mask.enable_masking)} "
         f"mask_ratio_side={float(cfg.mask.mask_ratio_side):.4f}"
+    )
+    print(
+        f"[boundary] enabled={bool(cfg.training.boundary_aware)} "
+        "schedule=always_on"
     )
 
     device = get_device(cpu=bool(cfg.training.cpu))
@@ -340,6 +350,7 @@ def run(args: argparse.Namespace) -> None:
         vis_threshold=float(args.vis_threshold),
         disable_tqdm=bool(args.no_tqdm),
         train_step_dice=False,
+        boundary_aware=bool(cfg.training.boundary_aware),
     )
     trainer.fit(train_loader, val_loader, epochs=int(cfg.training.epochs))
     generate_plots(out_dir / "epoch_log.csv", out_dir / "plot")

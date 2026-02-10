@@ -41,6 +41,7 @@ python -m swin_unet.src.ver3.cli train-mask \
   --val_dir /data_preprocessed/mask/valid/axial \
   --image-size 256 \
   --enable-reconstruct --disable-contrastive --disable-masking \
+  --boundary-aware \
   --skip_resize_in_loader \
   --batch-size 16 --epochs 20 \
   --out-dir runs_mask --run-name mask_preprocessed
@@ -51,9 +52,20 @@ Notes:
 - Metadata (`preprocess_meta.json`) is validated against runtime `--image-size`.
 - If metadata contains `mask_suffix`/`image_ext`, loader uses those values automatically.
 
+**Boundary-Aware Mode**
+- Enable with `--boundary-aware`.
+- Behavior is always on for all epochs (no scheduling/warmup toggle).
+- Boundary band is derived from the target mask contour (fixed thin band).
+- Reconstruction uses weighted BCE where boundary pixels are up-weighted.
+- Region-wise metrics are logged for both train and validation:
+  - `dice_boundary`: Dice on boundary foreground band
+  - `dice_interior`: Dice on interior foreground (`foreground - boundary`)
+- Validation loss logs include:
+  - `val_loss_boundary`
+  - `val_loss_interior`
+
 **Sanity Checklist**
 - Folder has paired files with matching stems.
 - Preprocessed `H,W` matches training `--image-size` (square expected by current model).
 - Inputs are grayscale and masks remain integer id maps on disk.
 - If `--binarize-target` is off, target still uses `mask/255.0` to preserve existing training semantics.
-
