@@ -91,6 +91,12 @@ def save_val_visualization_grid(
 
     x = x[:n_items]
     y = y[:n_items]
+    pixel_mask = val_batch.get("pixel_mask")
+    if pixel_mask is not None:
+        pixel_mask = pixel_mask[:n_items].to(device, non_blocking=True)
+
+    # When masking is enabled, display masked inputs in input columns.
+    x_display = x if pixel_mask is None else (x * (1.0 - pixel_mask))
     y_flip = val_batch.get("target_flip")
     if y_flip is not None:
         y_flip = y_flip[:n_items].to(device, non_blocking=True)
@@ -111,6 +117,8 @@ def save_val_visualization_grid(
     prob_orig = torch.sigmoid(logits_orig)
     bin_orig = (prob_orig >= threshold).float()
     x_flip = torch.flip(x, dims=[-1]) if show_flip else None
+    if show_flip and x_flip is not None and pixel_mask is not None:
+        x_flip = x_flip * (1.0 - pixel_mask)
     if show_flip and logits_flip is not None:
         prob_flip = torch.sigmoid(logits_flip)
         bin_flip = (prob_flip >= threshold).float()
@@ -125,9 +133,11 @@ def save_val_visualization_grid(
         samples.append(
             {
                 "x": x[i : i + 1].cpu(),
+                "x_masked": x_display[i : i + 1].cpu(),
                 "y": y[i : i + 1].cpu(),
                 "prob_o": prob_orig[i : i + 1].cpu(),
                 "bin_o": bin_orig[i : i + 1].cpu(),
+                "mask": pixel_mask[i : i + 1].cpu() if pixel_mask is not None else None,
                 "x_flip": x_flip[i : i + 1].cpu() if show_flip else None,
                 "prob_f": prob_flip[i : i + 1].cpu() if show_flip and prob_flip is not None else None,
                 "bin_f": bin_flip[i : i + 1].cpu() if show_flip and bin_flip is not None else None,
@@ -196,14 +206,20 @@ def save_val_visualization_grid(
     def _pack_and_save(items, path: Path):
         if len(items) == 0:
             return
-        x_cat = torch.cat([s["x"] for s in items], dim=0)
+        x_cat = torch.cat([s["x_masked"] for s in items], dim=0)
         y_cat = torch.cat([s["y"] for s in items], dim=0)
         prob_o = torch.cat([s["prob_o"] for s in items], dim=0)
         bin_o = torch.cat([s["bin_o"] for s in items], dim=0)
         ann_o = [f"Dice(o)={s['dice_o']:.3f}" for s in items]
 
-        tensors = [x_cat, y_cat]
-        titles = ["input", "target"]
+        tensors = [x_cat]
+        titles = ["input_masked" if items[0]["mask"] is not None else "input"]
+        if items[0]["mask"] is not None:
+            mask_cat = torch.cat([s["mask"] for s in items], dim=0)
+            tensors += [mask_cat]
+            titles += ["pixel_mask"]
+        tensors += [y_cat]
+        titles += ["target"]
         annotations: dict[int, list[str]] = {}
 
         if not compact_mode:
@@ -257,6 +273,8 @@ def save_val_visualization_grid(
             )
 
         del x_cat, y_cat, prob_o, bin_o, tensors, titles, annotations, ann_o
+        if items[0]["mask"] is not None:
+            del mask_cat
         if prob_f is not None:
             del prob_f
         if bin_f is not None:

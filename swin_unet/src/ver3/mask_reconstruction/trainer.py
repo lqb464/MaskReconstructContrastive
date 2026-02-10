@@ -14,6 +14,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from ..config.experiment import ExperimentConfig
+from ..data.augmentation import sample_masks_anti_mirror
 from ..models.swin_unet_dualview_ssl import SwinUNetDualViewSSL, flip_lr
 from ..training.utils import ensure_dir
 from .ckpt_io import save_checkpoint
@@ -132,6 +133,7 @@ class MaskReconstructionTrainer:
         x: torch.Tensor,
         y: torch.Tensor,
         plane_one_hot: torch.Tensor,
+        pixel_mask: torch.Tensor | None,
         *,
         compute_dice: bool,
         return_vis: bool = False,
@@ -140,9 +142,6 @@ class MaskReconstructionTrainer:
         assert x.shape == y.shape, f"Input/target shape mismatch before loss: {tuple(x.shape)} vs {tuple(y.shape)}"
         assert plane_one_hot.shape[0] == x.shape[0], "plane_one_hot batch dimension must match input batch size"
 
-        # Recon-only task invariant: pixel masking is disabled, so pass None to avoid per-step mask allocation.
-        pixel_mask = None
-        assert pixel_mask is None, "pixel_mask must remain None in mask reconstruction trainer."
         recon1, recon2, _, _ = self.model(x, pixel_mask, plane_one_hot)
         assert recon1.shape == y.shape, f"recon1/target shape mismatch: {tuple(recon1.shape)} vs {tuple(y.shape)}"
         target_view2 = flip_lr(y) if (recon2 is not None and self.align_flip_target) else y
@@ -180,11 +179,18 @@ class MaskReconstructionTrainer:
                 "plane_one_hot": plane_one_hot[:n_vis].detach(),
                 "recon1_logits": recon1[:n_vis].detach(),
             }
+            if pixel_mask is not None:
+                vis_payload["pixel_mask"] = pixel_mask[:n_vis].detach()
             if recon2 is not None:
                 vis_payload["recon2_logits"] = recon2[:n_vis].detach()
                 vis_payload["target_flip"] = target_view2[:n_vis].detach()
 
         return total, dice, vis_payload
+
+    def _sample_pixel_mask(self, x: torch.Tensor) -> torch.Tensor | None:
+        if not bool(getattr(self.cfg.mask, "enable_masking", False)):
+            return None
+        return sample_masks_anti_mirror(x.size(0), self.cfg.mask, x.device)
 
     def train_one_epoch(self, loader: DataLoader) -> Tuple[float, float]:
         self.model.train()
@@ -197,6 +203,7 @@ class MaskReconstructionTrainer:
             x = batch["input"].to(self.device, non_blocking=True)
             y = batch["target"].to(self.device, non_blocking=True)
             plane = batch["plane_one_hot"].to(self.device, non_blocking=True)
+            pixel_mask = self._sample_pixel_mask(x)
 
             self.optimizer.zero_grad(set_to_none=True)
             with autocast(device_type=self.device.type, enabled=self.use_amp):
@@ -204,6 +211,7 @@ class MaskReconstructionTrainer:
                     x,
                     y,
                     plane,
+                    pixel_mask,
                     compute_dice=True,
                 )
 
@@ -238,6 +246,7 @@ class MaskReconstructionTrainer:
             x = batch["input"].to(self.device, non_blocking=True)
             y = batch["target"].to(self.device, non_blocking=True)
             plane = batch["plane_one_hot"].to(self.device, non_blocking=True)
+            pixel_mask = self._sample_pixel_mask(x)
 
             want_vis = False
             n_vis = 0
@@ -250,6 +259,7 @@ class MaskReconstructionTrainer:
                     x,
                     y,
                     plane,
+                    pixel_mask,
                     compute_dice=True,
                     return_vis=want_vis,
                     vis_items=n_vis,

@@ -219,6 +219,10 @@ def run(args: argparse.Namespace) -> None:
     
     print("[config] Loaded experiment configuration:")
     print(cfg)
+    print(
+        f"[mask] enable_masking={bool(cfg.mask.enable_masking)} "
+        f"mask_ratio_side={float(cfg.mask.mask_ratio_side):.4f}"
+    )
 
     device = get_device(cpu=bool(cfg.training.cpu))
     print(f"[device] using {device}")
