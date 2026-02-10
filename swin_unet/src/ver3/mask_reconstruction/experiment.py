@@ -36,11 +36,11 @@ def enforce_recon_only_args(args: argparse.Namespace) -> None:
             "mask_reconstruction/main.py is reconstruction-only. "
             "Disable contrastive with --disable-contrastive (or remove --enable-contrastive)."
         )
-    if bool(getattr(args, "enable_masking", False)):
-        raise ValueError(
-            "mask_reconstruction/main.py requires masking disabled. "
-            "Use --disable-masking for this task."
-        )
+    # if bool(getattr(args, "enable_masking", False)):
+    #     raise ValueError(
+    #         "mask_reconstruction/main.py requires masking disabled. "
+    #         "Use --disable-masking for this task."
+    #     )
 
 
 __all__ = ["ExperimentConfig", "build_argparser", "enforce_recon_only_args", "UNUSED_IN_RECON_ONLY"]
