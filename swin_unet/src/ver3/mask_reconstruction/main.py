@@ -210,7 +210,7 @@ def run(args: argparse.Namespace) -> None:
     cfg = ExperimentConfig.from_args(args)
     # Hard guardrails for this task-specific entrypoint.
     cfg.training.enable_contrastive = False
-    cfg.mask.enable_masking = False
+    # cfg.mask.enable_masking = False
     if bool(cfg.training.enable_contrastive) or bool(cfg.mask.enable_masking):
         raise ValueError("mask_reconstruction/main.py enforces reconstruction-only (no masking, no contrastive).")
     if getattr(args, "preprocessed_dir", ""):
