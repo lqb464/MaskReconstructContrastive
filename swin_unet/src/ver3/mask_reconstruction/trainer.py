@@ -179,7 +179,13 @@ class MaskReconstructionTrainer:
                 "plane_one_hot": plane_one_hot[:n_vis].detach(),
                 "recon1_logits": recon1[:n_vis].detach(),
             }
-            if pixel_mask is not None:
+            if bool(getattr(self.cfg.mask, "enable_masking", False)):
+                if pixel_mask is None:
+                    raise RuntimeError(
+                        "Masking is enabled but pixel_mask is None in visualization payload path."
+                    )
+                vis_payload["pixel_mask"] = pixel_mask[:n_vis].detach()
+            elif pixel_mask is not None:
                 vis_payload["pixel_mask"] = pixel_mask[:n_vis].detach()
             if recon2 is not None:
                 vis_payload["recon2_logits"] = recon2[:n_vis].detach()
@@ -190,7 +196,13 @@ class MaskReconstructionTrainer:
     def _sample_pixel_mask(self, x: torch.Tensor) -> torch.Tensor | None:
         if not bool(getattr(self.cfg.mask, "enable_masking", False)):
             return None
-        return sample_masks_anti_mirror(x.size(0), self.cfg.mask, x.device)
+        pixel_mask = sample_masks_anti_mirror(x.size(0), self.cfg.mask, x.device)
+        if float(pixel_mask.sum().item()) <= 0.0:
+            raise RuntimeError(
+                "Masking is enabled but sampled pixel_mask is empty. "
+                "Check --mask-ratio and mask config."
+            )
+        return pixel_mask
 
     def train_one_epoch(self, loader: DataLoader) -> Tuple[float, float]:
         self.model.train()

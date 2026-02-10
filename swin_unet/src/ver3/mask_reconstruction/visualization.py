@@ -94,6 +94,10 @@ def save_val_visualization_grid(
     pixel_mask = val_batch.get("pixel_mask")
     if pixel_mask is not None:
         pixel_mask = pixel_mask[:n_items].to(device, non_blocking=True)
+        mask_coverage = float(pixel_mask.float().mean().item())
+        print(f"[vis] masking enabled in visualization payload, mask_coverage={mask_coverage:.4f}")
+    else:
+        print("[vis] masking not present in visualization payload.")
 
     # When masking is enabled, display masked inputs in input columns.
     x_display = x if pixel_mask is None else (x * (1.0 - pixel_mask))
