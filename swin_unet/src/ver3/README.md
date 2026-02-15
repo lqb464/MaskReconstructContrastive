@@ -157,7 +157,6 @@ python -m swin_unet.src.ver3.cli train-mask \
 Smoke checks:
 
 ```bash
-python scripts/smoke_ver3_imports.py
 bash scripts/smoke_ver3_cli_help.sh
 ```
 
