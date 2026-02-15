@@ -76,6 +76,7 @@ class MaskReconstructionTrainer:
         disable_tqdm: bool = False,
         train_step_dice: bool = False,
         boundary_aware: bool = False,
+        val_every: int = 1,
     ):
         self.model = model
         self.optimizer = optimizer
@@ -90,6 +91,7 @@ class MaskReconstructionTrainer:
         self.vis_num = max(0, min(4, cfg_vis_num))
         self.vis_threshold = float(vis_threshold)
         self.disable_tqdm = bool(disable_tqdm)
+        self.val_every = max(1, int(val_every))
         self.vis_enabled = self.vis_every > 0 and self.vis_num > 0
         cfg_train_step_dice = bool(getattr(cfg_logging, "train_step_dice", False))
         requested_train_step_dice = bool(train_step_dice) or cfg_train_step_dice
@@ -171,6 +173,10 @@ class MaskReconstructionTrainer:
         if device is None:
             return {k: 0.0 for k in keys}
         return {k: torch.zeros((), device=device) for k in keys}
+
+    @classmethod
+    def _nan_metric_dict(cls) -> dict[str, float]:
+        return {k: float("nan") for k in cls._metric_keys()}
 
     @staticmethod
     def _weighted_mean(values: torch.Tensor, weights: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
@@ -470,10 +476,15 @@ class MaskReconstructionTrainer:
             train_start = time.perf_counter()
             train_stats = self.train_one_epoch(train_loader)
             train_time = time.perf_counter() - train_start
-            capture_vis = self.vis_enabled and (epoch % self.vis_every == 0)
-            val_start = time.perf_counter()
-            val_stats = self.validate(val_loader, capture_vis=capture_vis)
-            val_time = time.perf_counter() - val_start
+            should_validate = (epoch % self.val_every == 0) or (epoch == epochs)
+            capture_vis = should_validate and self.vis_enabled and (epoch % self.vis_every == 0)
+            if should_validate:
+                val_start = time.perf_counter()
+                val_stats = self.validate(val_loader, capture_vis=capture_vis)
+                val_time = time.perf_counter() - val_start
+            else:
+                val_stats = self._nan_metric_dict()
+                val_time = 0.0
             epoch_time = time.perf_counter() - epoch_start
 
             if self.lr_scheduler is not None:
@@ -503,26 +514,40 @@ class MaskReconstructionTrainer:
             if not self.save_best_only:
                 self._save_ckpt(epoch)
 
-            metric = val_stats["dice_total"]
-            if metric > self.best_val:
-                self.best_val = metric
-                self._save_best(epoch)
+            if should_validate:
+                metric = val_stats["dice_total"]
+                if metric > self.best_val:
+                    self.best_val = metric
+                    self._save_best(epoch)
 
-            print(
-                f"Epoch {epoch:03d}/{epochs:03d} | "
-                f"lr={self.optimizer.param_groups[0]['lr']:.2e} | "
-                f"train lt={train_stats['loss_total']:.4f} "
-                f"(b={train_stats['loss_boundary']:.4f}, i={train_stats['loss_interior']:.4f}) "
-                f"da={train_stats['loss_dice_aux']:.4f} "
-                f"d={train_stats['dice_total']:.4f} "
-                f"(b={train_stats['dice_boundary']:.4f}, i={train_stats['dice_interior']:.4f}) | "
-                f"val lt={val_stats['loss_total']:.4f} "
-                f"(b={val_stats['loss_boundary']:.4f}, i={val_stats['loss_interior']:.4f}) "
-                f"da={val_stats['loss_dice_aux']:.4f} "
-                f"d={val_stats['dice_total']:.4f} "
-                f"(b={val_stats['dice_boundary']:.4f}, i={val_stats['dice_interior']:.4f}) | "
-                f"time=train:{train_time:.2f}s,val:{val_time:.2f}s,total:{epoch_time:.2f}s"
-            )
+            if should_validate:
+                print(
+                    f"Epoch {epoch:03d}/{epochs:03d} | "
+                    f"lr={self.optimizer.param_groups[0]['lr']:.2e} | "
+                    f"train lt={train_stats['loss_total']:.4f} "
+                    f"(b={train_stats['loss_boundary']:.4f}, i={train_stats['loss_interior']:.4f}) "
+                    f"da={train_stats['loss_dice_aux']:.4f} "
+                    f"d={train_stats['dice_total']:.4f} "
+                    f"(b={train_stats['dice_boundary']:.4f}, i={train_stats['dice_interior']:.4f}) | "
+                    f"val lt={val_stats['loss_total']:.4f} "
+                    f"(b={val_stats['loss_boundary']:.4f}, i={val_stats['loss_interior']:.4f}) "
+                    f"da={val_stats['loss_dice_aux']:.4f} "
+                    f"d={val_stats['dice_total']:.4f} "
+                    f"(b={val_stats['dice_boundary']:.4f}, i={val_stats['dice_interior']:.4f}) | "
+                    f"time=train:{train_time:.2f}s,val:{val_time:.2f}s,total:{epoch_time:.2f}s"
+                )
+            else:
+                print(
+                    f"Epoch {epoch:03d}/{epochs:03d} | "
+                    f"lr={self.optimizer.param_groups[0]['lr']:.2e} | "
+                    f"train lt={train_stats['loss_total']:.4f} "
+                    f"(b={train_stats['loss_boundary']:.4f}, i={train_stats['loss_interior']:.4f}) "
+                    f"da={train_stats['loss_dice_aux']:.4f} "
+                    f"d={train_stats['dice_total']:.4f} "
+                    f"(b={train_stats['dice_boundary']:.4f}, i={train_stats['dice_interior']:.4f}) | "
+                    f"val skipped (val_every={self.val_every}) | "
+                    f"time=train:{train_time:.2f}s,total:{epoch_time:.2f}s"
+                )
 
             if (
                 capture_vis

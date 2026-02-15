@@ -35,6 +35,7 @@ def build_mask_argparser() -> argparse.ArgumentParser:
         help="Threshold for dice metric/checkpointing (default 0.5 for binary masks).",
     )
     grp.add_argument("--strict_pairs", type=int, default=1, help="1: error on missing mask, 0: skip missing")
+    grp.add_argument("--val-every", type=int, default=1, help="Run validation every N epochs (default 1).")
     grp.add_argument("--vis-num", type=int, default=4, help="Number of validation samples to visualize")
     grp.add_argument("--vis-threshold", type=float, default=0.5, help="Threshold for visualization binarization")
     grp.add_argument("--no-tqdm", type=int, default=0, help="Disable progress bars (default off)")
@@ -246,6 +247,7 @@ def run(args: argparse.Namespace) -> None:
         f"dice_aux_weight={float(getattr(cfg.training, 'dice_loss_weight', 0.0)):.4f} "
         f"dice_mode={str(getattr(cfg.training, 'dice_mode', 'fg'))}"
     )
+    print(f"[schedule] val_every={max(1, int(getattr(args, 'val_every', 1)))}")
 
     device = get_device(cpu=bool(cfg.training.cpu))
     print(f"[device] using {device}")
@@ -364,6 +366,7 @@ def run(args: argparse.Namespace) -> None:
         disable_tqdm=bool(args.no_tqdm),
         train_step_dice=False,
         boundary_aware=bool(cfg.training.boundary_aware),
+        val_every=max(1, int(getattr(args, "val_every", 1))),
     )
     trainer.fit(train_loader, val_loader, epochs=int(cfg.training.epochs))
     generate_plots(out_dir / "epoch_log.csv", out_dir / "plot")
