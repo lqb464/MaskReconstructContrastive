@@ -154,11 +154,6 @@ python -m swin_unet.src.ver3.cli train-mask \
   --run-name mask_recon_preprocessed
 ```
 
-Smoke checks:
-
-```bash
-bash scripts/smoke_ver3_cli_help.sh
-```
 
 ## Important CLI
 

@@ -28,7 +28,12 @@ def build_mask_argparser() -> argparse.ArgumentParser:
     grp.add_argument("--image_ext", type=str, default=".png", help="Image extension for inputs")
     grp.add_argument("--mask_suffix", type=str, default="_mask.npz", help="Suffix appended to image stem to find mask")
     grp.add_argument("--mask_key", type=str, default="", help="Optional key inside NPZ mask file")
-    grp.add_argument("--threshold", type=float, default=None, help="Optional threshold for dice metric")
+    grp.add_argument(
+        "--threshold",
+        type=float,
+        default=0.5,
+        help="Threshold for dice metric/checkpointing (default 0.5 for binary masks).",
+    )
     grp.add_argument("--strict_pairs", type=int, default=1, help="1: error on missing mask, 0: skip missing")
     grp.add_argument("--vis-num", type=int, default=4, help="Number of validation samples to visualize")
     grp.add_argument("--vis-threshold", type=float, default=0.5, help="Threshold for visualization binarization")
@@ -215,6 +220,9 @@ def run(args: argparse.Namespace) -> None:
     cfg = ExperimentConfig.from_args(args)
     # Hard guardrails for this task-specific entrypoint.
     cfg.training.enable_contrastive = False
+    if bool(getattr(args, "enable_masking", False)):
+        raise ValueError("mask_reconstruction/main.py requires masking disabled. Use --disable-masking.")
+    cfg.mask.enable_masking = False
     cfg.training.boundary_aware = bool(getattr(args, "boundary_aware", False))
     # cfg.mask.enable_masking = False
     # if bool(cfg.training.enable_contrastive) or bool(cfg.mask.enable_masking):
@@ -232,6 +240,11 @@ def run(args: argparse.Namespace) -> None:
     print(
         f"[boundary] enabled={bool(cfg.training.boundary_aware)} "
         "schedule=always_on"
+    )
+    print(
+        f"[loss] lambda_recon={float(cfg.training.lambda_recon):.4f} "
+        f"dice_aux_weight={float(getattr(cfg.training, 'dice_loss_weight', 0.0)):.4f} "
+        f"dice_mode={str(getattr(cfg.training, 'dice_mode', 'fg'))}"
     )
 
     device = get_device(cpu=bool(cfg.training.cpu))

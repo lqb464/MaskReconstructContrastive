@@ -106,9 +106,6 @@ class TrainingConfig:
     recon_loss: str = "weighted_bce_logits"  # "weighted_bce_logits" or "l1_sigmoid"
     fg_eps: float = 0.02
     fg_weight: float = 10.0
-    dice_loss_weight: float = 0.2
-    dice_mode: str = "fg"
-    dice_smooth: float = 1e-6
 
     # Data augmentation (contrastive)
     aug_p_noise: float = 0.7
@@ -120,7 +117,7 @@ class TrainingConfig:
 
     # Optional dice auxiliary for supervised segmentation
     dice_loss_weight: float = 0.0
-    dice_mode: str = "total"  # "total" | "fg"
+    dice_mode: str = "fg"  # "total" | "fg"
     dice_smooth: float = 1e-6
 
 

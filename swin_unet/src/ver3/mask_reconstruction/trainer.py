@@ -14,7 +14,6 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from ..config.experiment import ExperimentConfig
-from ..data.augmentation import sample_masks_anti_mirror
 from ..models.swin_unet_dualview_ssl import SwinUNetDualViewSSL, flip_lr
 from ..training.utils import ensure_dir
 from .ckpt_io import save_checkpoint
@@ -32,12 +31,14 @@ class EpochLogger:
         "train_loss_total",
         "train_loss_boundary",
         "train_loss_interior",
+        "train_loss_dice_aux",
         "train_dice",
         "train_dice_boundary",
         "train_dice_interior",
         "val_loss_total",
         "val_loss_boundary",
         "val_loss_interior",
+        "val_loss_dice_aux",
         "val_dice",
         "val_dice_boundary",
         "val_dice_interior",
@@ -99,6 +100,10 @@ class MaskReconstructionTrainer:
 
         if bool(getattr(cfg.training, "enable_contrastive", False)) or bool(getattr(model, "enable_contrastive", False)):
             raise ValueError("Mask reconstruction trainer is recon-only; enable_contrastive must be False.")
+        if bool(getattr(cfg.mask, "enable_masking", False)):
+            raise ValueError(
+                "Mask reconstruction trainer expects masking disabled (cfg.mask.enable_masking=False)."
+            )
 
         cfg_boundary_aware = bool(getattr(cfg.training, "boundary_aware", False))
         self.boundary_aware = bool(boundary_aware) or cfg_boundary_aware
@@ -106,6 +111,12 @@ class MaskReconstructionTrainer:
         self.boundary_weight = 3.0
         self.boundary_thickness = 1
         self.boundary_target_threshold = 0.5
+        self.dice_loss_weight = max(0.0, float(getattr(cfg.training, "dice_loss_weight", 0.0)))
+        self.dice_mode = str(getattr(cfg.training, "dice_mode", "fg")).lower()
+        if self.dice_mode not in {"fg", "total"}:
+            log.warning("Unsupported dice_mode=%s; falling back to 'fg'.", self.dice_mode)
+            self.dice_mode = "fg"
+        self.dice_smooth = float(getattr(cfg.training, "dice_smooth", 1e-6))
 
         self.use_amp = bool(cfg.training.amp) and device.type == "cuda"
         self.scaler = GradScaler(enabled=self.use_amp)
@@ -148,6 +159,7 @@ class MaskReconstructionTrainer:
             "loss_total",
             "loss_boundary",
             "loss_interior",
+            "loss_dice_aux",
             "dice_total",
             "dice_boundary",
             "dice_interior",
@@ -195,9 +207,32 @@ class MaskReconstructionTrainer:
         dice = torch.where(empty, torch.where(pred_sum <= 0, torch.ones_like(dice), torch.zeros_like(dice)), dice)
         return dice.mean()
 
+    def _soft_dice_loss(
+        self,
+        prob: torch.Tensor,
+        target: torch.Tensor,
+        *,
+        region_mask: torch.Tensor | None = None,
+        eps: float = 1e-6,
+    ) -> torch.Tensor:
+        target = target.float()
+        if region_mask is not None:
+            region_mask = region_mask.float()
+            prob = prob * region_mask
+            target = target * region_mask
+
+        pred_sum = prob.flatten(1).sum(dim=1)
+        tgt_sum = target.flatten(1).sum(dim=1)
+        inter = (prob * target).flatten(1).sum(dim=1)
+        dice = (2.0 * inter + eps) / (pred_sum + tgt_sum + eps)
+        empty = tgt_sum <= 0
+        dice = torch.where(empty, torch.where(pred_sum <= 0, torch.ones_like(dice), torch.zeros_like(dice)), dice)
+        return (1.0 - dice).mean()
+
     def _view_metrics(self, logits: torch.Tensor, target: torch.Tensor, *, compute_dice: bool) -> dict[str, torch.Tensor]:
         bce_map = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
         boundary_band, boundary_fg, interior_fg = self._boundary_regions_from_target(target)
+        prob = torch.sigmoid(logits)
 
         if self.boundary_aware:
             pixel_weights = torch.ones_like(bce_map) + (self.boundary_weight - 1.0) * boundary_band
@@ -207,11 +242,24 @@ class MaskReconstructionTrainer:
 
         loss_boundary = self._weighted_mean(bce_map, boundary_fg)
         loss_interior = self._weighted_mean(bce_map, interior_fg)
+        if self.dice_loss_weight > 0.0:
+            if self.dice_mode == "fg":
+                loss_dice_aux = self._soft_dice_loss(
+                    prob,
+                    target,
+                    region_mask=(target > self.boundary_target_threshold).float(),
+                    eps=self.dice_smooth,
+                )
+            else:
+                loss_dice_aux = self._soft_dice_loss(prob, target, region_mask=None, eps=self.dice_smooth)
+        else:
+            loss_dice_aux = torch.zeros((), device=logits.device)
 
         metrics = {
             "loss_total": loss_total,
             "loss_boundary": loss_boundary,
             "loss_interior": loss_interior,
+            "loss_dice_aux": loss_dice_aux,
             "dice_total": torch.zeros((), device=logits.device),
             "dice_boundary": torch.zeros((), device=logits.device),
             "dice_interior": torch.zeros((), device=logits.device),
@@ -219,7 +267,6 @@ class MaskReconstructionTrainer:
 
         if compute_dice:
             with torch.no_grad():
-                prob = torch.sigmoid(logits)
                 metrics["dice_total"] = dice_coefficient(prob, target, threshold=self.threshold)
                 metrics["dice_boundary"] = self._safe_region_dice(prob, target, boundary_fg)
                 metrics["dice_interior"] = self._safe_region_dice(prob, target, interior_fg)
@@ -262,10 +309,12 @@ class MaskReconstructionTrainer:
         metrics = self._merge_metrics(metrics1, metrics2)
 
         lambda_recon = self.cfg.training.lambda_recon if self.cfg.training.lambda_recon > 0 else 1.0
-        total = lambda_recon * metrics["loss_total"]
+        total_recon = metrics["loss_total"] + self.dice_loss_weight * metrics["loss_dice_aux"]
+        total = lambda_recon * total_recon
         metrics["loss_total"] = total
         metrics["loss_boundary"] = lambda_recon * metrics["loss_boundary"]
         metrics["loss_interior"] = lambda_recon * metrics["loss_interior"]
+        metrics["loss_dice_aux"] = lambda_recon * self.dice_loss_weight * metrics["loss_dice_aux"]
 
         vis_payload: dict[str, torch.Tensor] | None = None
         if return_vis and vis_items > 0:
@@ -291,15 +340,10 @@ class MaskReconstructionTrainer:
         return total, metrics, vis_payload
 
     def _sample_pixel_mask(self, x: torch.Tensor) -> torch.Tensor | None:
-        if not bool(getattr(self.cfg.mask, "enable_masking", False)):
-            return None
-        pixel_mask = sample_masks_anti_mirror(x.size(0), self.cfg.mask, x.device)
-        if float(pixel_mask.sum().item()) <= 0.0:
-            raise RuntimeError(
-                "Masking is enabled but sampled pixel_mask is empty. "
-                "Check --mask-ratio and mask config."
-            )
-        return pixel_mask
+        del x
+        if bool(getattr(self.cfg.mask, "enable_masking", False)):
+            raise RuntimeError("pixel_mask path should be unreachable in reconstruction-only trainer.")
+        return None
 
     def train_one_epoch(self, loader: DataLoader) -> Dict[str, float]:
         self.model.train()
@@ -441,12 +485,14 @@ class MaskReconstructionTrainer:
                     "train_loss_total": train_stats["loss_total"],
                     "train_loss_boundary": train_stats["loss_boundary"],
                     "train_loss_interior": train_stats["loss_interior"],
+                    "train_loss_dice_aux": train_stats["loss_dice_aux"],
                     "train_dice": train_stats["dice_total"],
                     "train_dice_boundary": train_stats["dice_boundary"],
                     "train_dice_interior": train_stats["dice_interior"],
                     "val_loss_total": val_stats["loss_total"],
                     "val_loss_boundary": val_stats["loss_boundary"],
                     "val_loss_interior": val_stats["loss_interior"],
+                    "val_loss_dice_aux": val_stats["loss_dice_aux"],
                     "val_dice": val_stats["dice_total"],
                     "val_dice_boundary": val_stats["dice_boundary"],
                     "val_dice_interior": val_stats["dice_interior"],
@@ -467,10 +513,12 @@ class MaskReconstructionTrainer:
                 f"lr={self.optimizer.param_groups[0]['lr']:.2e} | "
                 f"train lt={train_stats['loss_total']:.4f} "
                 f"(b={train_stats['loss_boundary']:.4f}, i={train_stats['loss_interior']:.4f}) "
+                f"da={train_stats['loss_dice_aux']:.4f} "
                 f"d={train_stats['dice_total']:.4f} "
                 f"(b={train_stats['dice_boundary']:.4f}, i={train_stats['dice_interior']:.4f}) | "
                 f"val lt={val_stats['loss_total']:.4f} "
                 f"(b={val_stats['loss_boundary']:.4f}, i={val_stats['loss_interior']:.4f}) "
+                f"da={val_stats['loss_dice_aux']:.4f} "
                 f"d={val_stats['dice_total']:.4f} "
                 f"(b={val_stats['dice_boundary']:.4f}, i={val_stats['dice_interior']:.4f}) | "
                 f"time=train:{train_time:.2f}s,val:{val_time:.2f}s,total:{epoch_time:.2f}s"

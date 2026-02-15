@@ -209,5 +209,6 @@ __marimo__/
 
 unet/outputs/*
 swin_unet/outputs/*
+swin_unet/src/ver3/*.md
 AGENTS.md
 TODO.md

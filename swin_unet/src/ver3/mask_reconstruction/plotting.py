@@ -38,11 +38,19 @@ def generate_plots(csv_path: Path, plot_dir: Path) -> None:
     plot_dir.mkdir(parents=True, exist_ok=True)
 
     _plot_two_lines(df, "epoch", "train_loss_total", "val_loss_total", plot_dir / "loss_total.png", "loss_total")
+    if "train_loss_boundary" in df.columns and "val_loss_boundary" in df.columns:
+        _plot_two_lines(df, "epoch", "train_loss_boundary", "val_loss_boundary", plot_dir / "loss_boundary.png", "loss_boundary")
+    if "train_loss_interior" in df.columns and "val_loss_interior" in df.columns:
+        _plot_two_lines(df, "epoch", "train_loss_interior", "val_loss_interior", plot_dir / "loss_interior.png", "loss_interior")
     if "train_loss_masked" in df.columns and "val_loss_masked" in df.columns:
         _plot_two_lines(df, "epoch", "train_loss_masked", "val_loss_masked", plot_dir / "loss_masked.png", "loss_masked")
     if "train_loss_unmasked" in df.columns and "val_loss_unmasked" in df.columns:
         _plot_two_lines(df, "epoch", "train_loss_unmasked", "val_loss_unmasked", plot_dir / "loss_unmasked.png", "loss_unmasked")
     _plot_two_lines(df, "epoch", "train_dice", "val_dice", plot_dir / "dice.png", "dice")
+    if "train_dice_boundary" in df.columns and "val_dice_boundary" in df.columns:
+        _plot_two_lines(df, "epoch", "train_dice_boundary", "val_dice_boundary", plot_dir / "dice_boundary.png", "dice_boundary")
+    if "train_dice_interior" in df.columns and "val_dice_interior" in df.columns:
+        _plot_two_lines(df, "epoch", "train_dice_interior", "val_dice_interior", plot_dir / "dice_interior.png", "dice_interior")
     if "train_loss_dice_aux" in df.columns and "val_loss_dice_aux" in df.columns:
         _plot_two_lines(df, "epoch", "train_loss_dice_aux", "val_loss_dice_aux", plot_dir / "dice_aux.png", "dice_aux")
     if "train_loss_contrastive" in df.columns and "val_loss_contrastive" in df.columns:
