@@ -222,7 +222,7 @@ def run(args: argparse.Namespace) -> None:
     # Hard guardrails for this task-specific entrypoint.
     cfg.training.enable_contrastive = False
     if bool(getattr(args, "enable_masking", False)):
-        raise ValueError("mask_reconstruction/main.py requires masking disabled. Use --disable-masking.")
+        print("[mask] warning: --enable-masking is ignored in mask_reconstruction (reconstruction-only path).")
     cfg.mask.enable_masking = False
     cfg.training.boundary_aware = bool(getattr(args, "boundary_aware", False))
     # cfg.mask.enable_masking = False

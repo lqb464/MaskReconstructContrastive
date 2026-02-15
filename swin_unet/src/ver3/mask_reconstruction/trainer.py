@@ -103,9 +103,8 @@ class MaskReconstructionTrainer:
         if bool(getattr(cfg.training, "enable_contrastive", False)) or bool(getattr(model, "enable_contrastive", False)):
             raise ValueError("Mask reconstruction trainer is recon-only; enable_contrastive must be False.")
         if bool(getattr(cfg.mask, "enable_masking", False)):
-            raise ValueError(
-                "Mask reconstruction trainer expects masking disabled (cfg.mask.enable_masking=False)."
-            )
+            log.warning("enable_masking=True is ignored in mask reconstruction trainer (reconstruction-only path).")
+            cfg.mask.enable_masking = False
 
         cfg_boundary_aware = bool(getattr(cfg.training, "boundary_aware", False))
         self.boundary_aware = bool(boundary_aware) or cfg_boundary_aware
@@ -333,10 +332,9 @@ class MaskReconstructionTrainer:
             }
             if bool(getattr(self.cfg.mask, "enable_masking", False)):
                 if pixel_mask is None:
-                    raise RuntimeError(
-                        "Masking is enabled but pixel_mask is None in visualization payload path."
-                    )
-                vis_payload["pixel_mask"] = pixel_mask[:n_vis].detach()
+                    log.warning("enable_masking=True is ignored in visualization payload path (pixel_mask is None).")
+                else:
+                    vis_payload["pixel_mask"] = pixel_mask[:n_vis].detach()
             elif pixel_mask is not None:
                 vis_payload["pixel_mask"] = pixel_mask[:n_vis].detach()
             if recon2 is not None:
@@ -347,8 +345,6 @@ class MaskReconstructionTrainer:
 
     def _sample_pixel_mask(self, x: torch.Tensor) -> torch.Tensor | None:
         del x
-        if bool(getattr(self.cfg.mask, "enable_masking", False)):
-            raise RuntimeError("pixel_mask path should be unreachable in reconstruction-only trainer.")
         return None
 
     def train_one_epoch(self, loader: DataLoader) -> Dict[str, float]:
