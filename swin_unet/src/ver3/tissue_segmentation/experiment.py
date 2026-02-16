@@ -179,6 +179,11 @@ def enforce_tissue_args(args: argparse.Namespace) -> None:
             "tissue_segmentation task is supervised segmentation-only. "
             "Disable contrastive with --disable-contrastive."
         )
+    if not bool(getattr(args, "enable_reconstruct", True)):
+        raise ValueError(
+            "tissue_segmentation task requires reconstruction path enabled. "
+            "Remove --disable-reconstruct (or pass --enable-reconstruct)."
+        )
     if int(getattr(args, "label_mode", 0)) not in {1, 2, 3, 4}:
         raise ValueError("--label-mode must be one of {1,2,3,4}")
     if bool(getattr(args, "strict_label_ids", True)) and bool(getattr(args, "allow_unknown_label_ids", False)):
