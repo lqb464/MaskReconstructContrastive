@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import logging
 import math
 import time
@@ -14,7 +15,7 @@ from tqdm import tqdm
 
 from ..config.experiment import ExperimentConfig
 from ..data.augmentation import sample_masks_anti_mirror
-from ..models.swin_unet_dualview_ssl import SwinUNetDualViewSSL, flip_lr
+from ..models.swin_unet_dualview_ssl import SwinUNetDualViewSSL
 from ..training.ckpt_io import save_checkpoint
 from ..training.utils import ensure_dir
 from .dice import (
@@ -83,12 +84,12 @@ class TissueSegmentationTrainer:
         cfg: ExperimentConfig,
         num_classes: int,
         class_names: Optional[Dict[int, str]] = None,
+        enc_to_orig_map: Optional[Dict[int, list[int]]] = None,
         dice_include_bg: bool = False,
         vis_every: int = 0,
         vis_num: int = 4,
         disable_tqdm: bool = False,
         val_every: int = 1,
-        align_flip_target: bool = True,
     ):
         self.model = model
         self.optimizer = optimizer
@@ -96,6 +97,7 @@ class TissueSegmentationTrainer:
         self.cfg = cfg
         self.num_classes = int(num_classes)
         self.class_names = class_names or {}
+        self.enc_to_orig_map = enc_to_orig_map or {}
         self.dice_include_bg = bool(dice_include_bg)
         self.dice_empty_handling = "one" if bool(getattr(cfg.tissue, "dice_empty_as_one", False)) else "exclude"
         self.ignore_index = int(getattr(cfg.tissue, "ignore_index", -100))
@@ -103,12 +105,12 @@ class TissueSegmentationTrainer:
         self.vis_num = max(0, min(4, int(vis_num)))
         self.disable_tqdm = bool(disable_tqdm)
         self.val_every = max(1, int(val_every))
-        self.align_flip_target = bool(align_flip_target)
         self.vis_enabled = self.vis_every > 0 and self.vis_num > 0
 
         self.save_latest_every = max(1, int(getattr(cfg.logging, "save_latest_every", 1)))
         self.save_best_after_epoch = max(0, int(getattr(cfg.logging, "save_best_after_epoch", 0)))
         self.save_best_every = max(1, int(getattr(cfg.logging, "save_best_every", 1)))
+        self.excluded_ids_default = [0] if not self.dice_include_bg else []
 
         self._assert_model_contract()
 
@@ -134,6 +136,8 @@ class TissueSegmentationTrainer:
         self.out_dir = ensure_dir(Path(out_dir))
         self.ckpt_dir = ensure_dir(self.out_dir / "checkpoints")
         self.vis_dir = ensure_dir(self.out_dir / "vis") if self.vis_enabled else None
+        self.reports_dir = ensure_dir(self.out_dir / "reports")
+        self.report_path = self.reports_dir / "epoch_reports.jsonl"
         self.logger = EpochLogger(self.out_dir / "epoch_log.csv")
 
         self.best_macro_dice = float("-inf")
@@ -142,6 +146,14 @@ class TissueSegmentationTrainer:
     def _assert_model_contract(self) -> None:
         if self.num_classes < 2:
             raise ValueError(f"num_classes must be >=2, got {self.num_classes}")
+        cfg_num_classes = getattr(self.cfg.data, "num_classes", None)
+        if cfg_num_classes is None:
+            cfg_num_classes = getattr(self.cfg.model, "num_classes", None)
+        if cfg_num_classes is not None and int(cfg_num_classes) != int(self.num_classes):
+            raise RuntimeError(
+                f"num_classes mismatch: trainer={self.num_classes} cfg={cfg_num_classes}. "
+                "Ensure model/data num_classes are aligned."
+            )
 
         for attr in ("recon_head_v1", "recon_head_v2"):
             head = getattr(self.model, attr, None)
@@ -198,31 +210,22 @@ class TissueSegmentationTrainer:
         target: torch.Tensor,
         plane_one_hot: torch.Tensor,
         pixel_mask: torch.Tensor | None,
-    ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         recon1, recon2, _, _ = self.model(x, pixel_mask, plane_one_hot)
         if recon1 is None:
             raise RuntimeError("Model returned recon1=None in tissue segmentation training.")
+        if recon2 is not None:
+            raise RuntimeError(
+                "Tissue segmentation trainer expects single-view logits (recon2 must be None). "
+                "Check model instantiation with single_view=True."
+            )
         if recon1.ndim != 4 or int(recon1.shape[1]) != self.num_classes:
             raise RuntimeError(
                 f"Unexpected recon1 shape {tuple(recon1.shape)}, expected [B,{self.num_classes},H,W]."
             )
 
-        loss1 = self.criterion(recon1, target)
-        views: list[tuple[torch.Tensor, torch.Tensor]] = [(recon1, target)]
-
-        if recon2 is not None:
-            target2 = flip_lr(target.unsqueeze(1)).squeeze(1) if self.align_flip_target else target
-            if recon2.ndim != 4 or int(recon2.shape[1]) != self.num_classes:
-                raise RuntimeError(
-                    f"Unexpected recon2 shape {tuple(recon2.shape)}, expected [B,{self.num_classes},H,W]."
-                )
-            loss2 = self.criterion(recon2, target2)
-            loss = 0.5 * (loss1 + loss2)
-            views.append((recon2, target2))
-        else:
-            loss = loss1
-
-        return loss, views
+        loss = self.criterion(recon1, target)
+        return loss, recon1
 
     def _run_epoch(
         self,
@@ -256,7 +259,7 @@ class TissueSegmentationTrainer:
                 self.optimizer.zero_grad(set_to_none=True)
 
             with autocast(device_type=self.device.type, enabled=self.use_amp):
-                loss, views = self._forward_views(x, y, plane, pixel_mask)
+                loss, logits = self._forward_views(x, y, plane, pixel_mask)
 
             if not torch.isfinite(loss):
                 raise RuntimeError(f"Non-finite loss detected in {'train' if training else 'eval'} at step {batch_idx}: {loss}")
@@ -276,16 +279,15 @@ class TissueSegmentationTrainer:
             steps += 1
 
             with torch.no_grad():
-                for logits_v, target_v in views:
-                    pred_v = torch.argmax(logits_v, dim=1)
-                    valid = target_v != self.ignore_index
-                    if valid.any():
-                        dice_buf = accumulate_intersection_union(
-                            pred_v[valid],
-                            target_v[valid],
-                            self.num_classes,
-                            buffers=dice_buf,
-                        )
+                pred = torch.argmax(logits, dim=1)
+                valid = y != self.ignore_index
+                if valid.any():
+                    dice_buf = accumulate_intersection_union(
+                        pred[valid],
+                        y[valid],
+                        self.num_classes,
+                        buffers=dice_buf,
+                    )
 
             if (not training) and capture_vis and vis_payload is None and self.vis_enabled:
                 n = min(self.vis_num, x.size(0))
@@ -293,7 +295,7 @@ class TissueSegmentationTrainer:
                     vis_payload = {
                         "input": x[:n].detach(),
                         "target": y[:n].detach(),
-                        "logits": views[0][0][:n].detach(),
+                        "logits": logits[:n].detach(),
                     }
 
         if steps == 0:
@@ -308,8 +310,17 @@ class TissueSegmentationTrainer:
             eps=1e-6,
             empty_handling=self.dice_empty_handling,
         )
+        macro_valid_mask = valid_mask.clone()
+        if not self.dice_include_bg and macro_valid_mask.numel() > 0:
+            macro_valid_mask[0] = False
+        excluded_ids = [int(i) for i in (~macro_valid_mask).nonzero(as_tuple=False).view(-1).tolist()]
+
         macro = macro_dice(per_class_dice, valid_mask, include_bg=self.dice_include_bg)
         summary = dice_summary(per_class_dice, valid_mask, include_bg=self.dice_include_bg)
+        if torch.isfinite(macro):
+            macro_f = float(macro.item())
+            if macro_f < -1e-6 or macro_f > 1.0 + 1e-6:
+                raise RuntimeError(f"{desc} macro dice out of expected [0,1] range: {macro_f}")
 
         return {
             "loss": float(mean_loss),
@@ -319,6 +330,8 @@ class TissueSegmentationTrainer:
             "dice_max": float(summary["dice_max"].item()) if torch.isfinite(summary["dice_max"]) else float("nan"),
             "num_valid_classes": int(summary["num_valid_classes"]),
             "per_class_dice": per_class_dice.detach().cpu(),
+            "macro_valid_mask": macro_valid_mask.detach().cpu(),
+            "excluded_class_ids": excluded_ids,
             "vis_payload": vis_payload,
         }
 
@@ -343,6 +356,68 @@ class TissueSegmentationTrainer:
             scaler=self.scaler,
             cfg=self.cfg,
         )
+
+    def _class_report_row(self, enc_id: int, dice_value: float) -> dict[str, object]:
+        orig_ids = self.enc_to_orig_map.get(int(enc_id), [])
+        if len(orig_ids) == 1:
+            orig_repr: int | list[int] = int(orig_ids[0])
+        else:
+            orig_repr = [int(x) for x in orig_ids]
+        return {
+            "enc_id": int(enc_id),
+            "orig_id": orig_repr,
+            "name": self.class_names.get(int(enc_id), f"class_{int(enc_id)}"),
+            "dice": float(dice_value),
+        }
+
+    def _rank_classes_for_report(self, per_class_dice: torch.Tensor, macro_valid_mask: torch.Tensor) -> dict[str, list[dict[str, object]]]:
+        entries: list[tuple[int, float]] = []
+        for cid in range(int(per_class_dice.numel())):
+            if not bool(macro_valid_mask[cid].item()):
+                continue
+            entries.append((cid, float(per_class_dice[cid].item())))
+
+        if not entries:
+            return {"best": [], "worst": []}
+
+        entries_sorted = sorted(entries, key=lambda x: x[1])
+        worst = [self._class_report_row(cid, score) for cid, score in entries_sorted[:10]]
+        best = [self._class_report_row(cid, score) for cid, score in entries_sorted[-10:][::-1]]
+        return {"best": best, "worst": worst}
+
+    def _write_epoch_report(
+        self,
+        *,
+        epoch: int,
+        train_stats: dict[str, float | torch.Tensor | int | None],
+        eval_stats: dict[str, float | torch.Tensor | int | None],
+        should_eval: bool,
+    ) -> None:
+        ref = eval_stats if should_eval else train_stats
+        ref_dice = ref.get("per_class_dice")
+        ref_mask = ref.get("macro_valid_mask")
+        if not isinstance(ref_dice, torch.Tensor) or not isinstance(ref_mask, torch.Tensor):
+            return
+
+        ranked = self._rank_classes_for_report(ref_dice, ref_mask)
+        excluded_effective_raw = ref.get("excluded_class_ids", [])
+        if isinstance(excluded_effective_raw, list):
+            excluded_effective = [int(x) for x in excluded_effective_raw]
+        else:
+            excluded_effective = []
+        payload = {
+            "epoch": int(epoch),
+            "split_for_ranking": "eval" if should_eval else "train",
+            "train_macro_dice": float(train_stats["macro_dice"]),
+            "eval_macro_dice": float(eval_stats["macro_dice"]),
+            "excluded_ids_default_policy": list(self.excluded_ids_default),
+            "excluded_ids_effective": excluded_effective,
+            "num_valid_classes": int(ref.get("num_valid_classes", 0)),
+            "best_classes_top10": ranked["best"],
+            "worst_classes_top10": ranked["worst"],
+        }
+        with self.report_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=True) + "\n")
 
     def fit(self, train_loader: DataLoader, eval_loader: DataLoader, epochs: int) -> None:
         epochs = int(epochs)
@@ -374,6 +449,8 @@ class TissueSegmentationTrainer:
                     "dice_max": float("nan"),
                     "num_valid_classes": 0,
                     "per_class_dice": None,
+                    "macro_valid_mask": None,
+                    "excluded_class_ids": list(self.excluded_ids_default),
                     "vis_payload": None,
                 }
                 eval_time = 0.0
@@ -413,6 +490,13 @@ class TissueSegmentationTrainer:
                 if allow_best_window and math.isfinite(metric) and metric > self.best_macro_dice:
                     self.best_macro_dice = metric
                     self._save_best(epoch)
+
+            self._write_epoch_report(
+                epoch=epoch,
+                train_stats=train_stats,
+                eval_stats=eval_stats,
+                should_eval=should_eval,
+            )
 
             epoch_time = time.perf_counter() - epoch_start
 

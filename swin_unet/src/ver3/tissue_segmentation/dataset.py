@@ -9,7 +9,13 @@ from torch.utils.data import Dataset
 
 from ..data.dataset import plane_to_one_hot
 from ..mask_reconstruction.pair_transforms import apply_pair_transforms, load_image_pil
-from .io import LabelEncodingInfo, encode_label_array, load_label_array, resolve_scan_tokens_to_images
+from .io import (
+    ImageIndex,
+    LabelEncodingInfo,
+    encode_label_array,
+    load_label_array,
+    resolve_scan_tokens_to_images,
+)
 
 log = logging.getLogger(__name__)
 
@@ -18,11 +24,20 @@ class TissueSegmentationDataset(Dataset):
     """
     Tissue segmentation dataset with separate image and label roots.
 
-    Contract:
-      - input: float32 [1,H,W] in [0,1]
-      - target: int64 [H,W] encoded class ids
-      - path: str image path
-      - plane_one_hot: float32 [2]
+    __getitem__ contract:
+      - "input":
+        dtype: torch.float32
+        shape: [1, H, W]
+        range: [0, 1] (small numerical tolerance allowed)
+      - "target":
+        dtype: torch.int64 (torch.long)
+        shape: [H, W]
+        range: [0, num_classes-1]
+      - "path":
+        dtype: str
+      - "plane_one_hot":
+        dtype: torch.float32
+        shape: [2]
     """
 
     def __init__(
@@ -40,7 +55,10 @@ class TissueSegmentationDataset(Dataset):
         resize_mode: str = "letterbox",
         plane: str = "axial",
         strict_pairs: bool = False,
+        strict_label_ids: bool = True,
+        allow_unknown_label_ids: bool = False,
         debug_shapes: bool = False,
+        image_index: ImageIndex | None = None,
     ):
         self.image_root = Path(image_root).expanduser().resolve()
         self.label_root = Path(label_root).expanduser().resolve()
@@ -57,6 +75,8 @@ class TissueSegmentationDataset(Dataset):
         self.target_size = int(target_size)
         self.resize_mode = resize_mode
         self.strict_pairs = bool(strict_pairs)
+        self.strict_label_ids = bool(strict_label_ids)
+        self.allow_unknown_label_ids = bool(allow_unknown_label_ids)
         self.debug_shapes = bool(debug_shapes)
         self.plane_one_hot = plane_to_one_hot(plane).contiguous()
 
@@ -64,6 +84,7 @@ class TissueSegmentationDataset(Dataset):
             image_root=self.image_root,
             tokens=scan_tokens,
             image_ext=self.image_ext,
+            image_index=image_index,
         )
         if not self.images:
             raise RuntimeError("No image paths resolved from provided scan list.")
@@ -149,8 +170,37 @@ class TissueSegmentationDataset(Dataset):
             resize_mode=self.resize_mode,
         )
 
-        y_enc = encode_label_array(y_ids.squeeze(0).cpu().numpy(), self.encoding_info)
+        y_enc = encode_label_array(
+            y_ids.squeeze(0).cpu().numpy(),
+            self.encoding_info,
+            strict_label_ids=self.strict_label_ids,
+            allow_unknown_label_ids=self.allow_unknown_label_ids,
+            unknown_fallback_id=0,
+        )
         y = torch.from_numpy(y_enc).to(dtype=torch.long)
+
+        # Contract guards.
+        if x.dtype != torch.float32:
+            raise TypeError(f"Dataset contract violation: input dtype must be float32, got {x.dtype}")
+        if x.ndim != 3 or x.shape[0] != 1:
+            raise ValueError(f"Dataset contract violation: input must have shape [1,H,W], got {tuple(x.shape)}")
+        x_min = float(x.min().item()) if x.numel() > 0 else 0.0
+        x_max = float(x.max().item()) if x.numel() > 0 else 0.0
+        tol = 1e-4
+        if x_min < -tol or x_max > 1.0 + tol:
+            raise ValueError(f"Dataset contract violation: input range out of [0,1] with tol={tol}: min={x_min}, max={x_max}")
+
+        if y.dtype != torch.long:
+            raise TypeError(f"Dataset contract violation: target dtype must be torch.long, got {y.dtype}")
+        if y.ndim != 2:
+            raise ValueError(f"Dataset contract violation: target must have shape [H,W], got {tuple(y.shape)}")
+        y_min = int(y.min().item()) if y.numel() > 0 else 0
+        y_max = int(y.max().item()) if y.numel() > 0 else 0
+        if y_min < 0 or y_max >= int(self.encoding_info.num_classes):
+            raise ValueError(
+                f"Dataset contract violation: target ids out of [0,{self.encoding_info.num_classes - 1}] "
+                f"(min={y_min}, max={y_max})"
+            )
 
         if self.debug_shapes and idx < 3:
             print(
@@ -163,6 +213,28 @@ class TissueSegmentationDataset(Dataset):
             "target": y,
             "path": str(img_path),
             "plane_one_hot": self.plane_one_hot,
+        }
+
+    def dataset_summary(self) -> Dict[str, object]:
+        """
+        Deterministic dataset-level metadata for audits/reporting.
+        """
+        merged_to_bg: list[int] = []
+        for src_id, enc_id in self.encoding_info.encode_map.items():
+            if int(enc_id) == 0 and int(src_id) != 0:
+                merged_to_bg.append(int(src_id))
+
+        return {
+            "num_samples": int(len(self.pairs)),
+            "num_classes": int(self.encoding_info.num_classes),
+            "orig_to_enc": dict(self.encoding_info.encode_map),
+            "enc_to_orig": dict(self.encoding_info.decode_map),
+            "unknown_ids": sorted(self.encoding_info.unknown_ids),
+            "non_brain_ids": sorted(self.encoding_info.non_brain_ids),
+            "merged_to_background": sorted(merged_to_bg),
+            "excluded_ids_default_policy": [0],
+            "strict_label_ids": bool(self.strict_label_ids),
+            "allow_unknown_label_ids": bool(self.allow_unknown_label_ids),
         }
 
 

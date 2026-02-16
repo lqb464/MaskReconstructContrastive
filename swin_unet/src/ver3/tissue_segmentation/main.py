@@ -14,6 +14,7 @@ from .dataset import TissueSegmentationDataset
 from .experiment import ExperimentConfig, build_argparser, enforce_tissue_args
 from .io import (
     assert_encoding_deterministic,
+    build_image_index,
     build_label_encoding_info,
     identify_special_ids,
     parse_seg_labels_txt,
@@ -73,7 +74,7 @@ def build_model(cfg: ExperimentConfig, *, num_classes: int) -> SwinUNetDualViewS
         enable_contrastive=False,
         contrastive_loss_type=cfg.contrast_loss.contrastive_loss_type,
         contrastive_position=cfg.contrast_loss.contrastive_position,
-        single_view=tcfg.single_view,
+        single_view=True,
     )
     _replace_recon_head_out_channels(model, num_classes=num_classes)
     return model
@@ -108,11 +109,12 @@ def run(args: argparse.Namespace) -> None:
     enforce_tissue_args(args)
 
     if not getattr(args, "data_root", ""):
-        args.data_root = args.image_root
+        args.data_root = args.train_root
 
     cfg = ExperimentConfig.from_args(args)
     cfg.training.enable_contrastive = False
     cfg.training.enable_reconstruct = True
+    cfg.training.single_view = True
     cfg.mask.enable_masking = False
     cfg.data.train_mod = 1  # fixed-list task: no random/subset train_mod sampling
 
@@ -135,8 +137,11 @@ def run(args: argparse.Namespace) -> None:
         unknown_ids=unknown_ids,
         non_brain_ids=non_brain_ids,
         num_classes_override=cfg.tissue.num_classes,
+        require_special_ids=True,
     )
     assert_encoding_deterministic(encoding_info)
+    cfg.data.num_classes = int(encoding_info.num_classes)
+    cfg.model.num_classes = int(encoding_info.num_classes)
 
     train_tokens = read_scan_list(cfg.tissue.train_list)
     eval_tokens = read_scan_list(cfg.tissue.eval_list)
@@ -145,9 +150,17 @@ def run(args: argparse.Namespace) -> None:
     if not eval_tokens:
         raise RuntimeError(f"Eval list has no usable scan tokens: {cfg.tissue.eval_list}")
 
+    train_image_index = build_image_index(image_root=cfg.tissue.train_root, image_ext=cfg.tissue.image_ext)
+    eval_root_resolved = Path(cfg.tissue.eval_root).expanduser().resolve()
+    train_root_resolved = Path(cfg.tissue.train_root).expanduser().resolve()
+    if eval_root_resolved == train_root_resolved:
+        eval_image_index = train_image_index
+    else:
+        eval_image_index = build_image_index(image_root=cfg.tissue.eval_root, image_ext=cfg.tissue.image_ext)
+
     train_ds = TissueSegmentationDataset(
-        image_root=cfg.tissue.image_root,
-        label_root=cfg.tissue.label_root,
+        image_root=cfg.tissue.train_root,
+        label_root=cfg.tissue.train_label,
         scan_tokens=train_tokens,
         encoding_info=encoding_info,
         image_ext=cfg.tissue.image_ext,
@@ -158,11 +171,14 @@ def run(args: argparse.Namespace) -> None:
         resize_mode=cfg.tissue.resize_mode,
         plane=cfg.data.plane,
         strict_pairs=bool(cfg.tissue.strict_pairs),
+        strict_label_ids=bool(cfg.tissue.strict_label_ids),
+        allow_unknown_label_ids=bool(cfg.tissue.allow_unknown_label_ids),
         debug_shapes=bool(cfg.tissue.debug_shapes),
+        image_index=train_image_index,
     )
     eval_ds = TissueSegmentationDataset(
-        image_root=cfg.tissue.image_root,
-        label_root=cfg.tissue.label_root,
+        image_root=cfg.tissue.eval_root,
+        label_root=cfg.tissue.eval_label,
         scan_tokens=eval_tokens,
         encoding_info=encoding_info,
         image_ext=cfg.tissue.image_ext,
@@ -173,7 +189,10 @@ def run(args: argparse.Namespace) -> None:
         resize_mode=cfg.tissue.resize_mode,
         plane=cfg.data.plane,
         strict_pairs=bool(cfg.tissue.strict_pairs),
+        strict_label_ids=bool(cfg.tissue.strict_label_ids),
+        allow_unknown_label_ids=bool(cfg.tissue.allow_unknown_label_ids),
         debug_shapes=bool(cfg.tissue.debug_shapes),
+        image_index=eval_image_index,
     )
 
     if len(train_ds) == 0:
@@ -189,8 +208,16 @@ def run(args: argparse.Namespace) -> None:
         f"eval_list={cfg.tissue.eval_list}"
     )
     print(
+        f"[roots] train_root={cfg.tissue.train_root} eval_root={cfg.tissue.eval_root} "
+        f"train_label={cfg.tissue.train_label} eval_label={cfg.tissue.eval_label}"
+    )
+    print(
         f"[labels] mode={encoding_info.mode} num_classes={encoding_info.num_classes} "
         f"unknown_ids={sorted(encoding_info.unknown_ids)} non_brain_ids={sorted(encoding_info.non_brain_ids)}"
+    )
+    print(
+        f"[labels] strict_label_ids={bool(cfg.tissue.strict_label_ids)} "
+        f"allow_unknown_label_ids={bool(cfg.tissue.allow_unknown_label_ids)}"
     )
     print(
         f"[dice] include_bg={bool(cfg.tissue.dice_include_bg)} "
@@ -208,6 +235,8 @@ def run(args: argparse.Namespace) -> None:
     if cfg.logging.run_name:
         out_dir = out_dir / cfg.logging.run_name
     out_dir = ensure_dir(out_dir)
+    plot_dir = ensure_dir(out_dir / "plot")
+    ensure_dir(out_dir / "reports")
 
     trainer = TissueSegmentationTrainer(
         model=model,
@@ -217,6 +246,7 @@ def run(args: argparse.Namespace) -> None:
         cfg=cfg,
         num_classes=encoding_info.num_classes,
         class_names=encoding_info.encoded_id_to_name,
+        enc_to_orig_map=encoding_info.decode_map,
         dice_include_bg=bool(cfg.tissue.dice_include_bg),
         vis_every=int(cfg.logging.vis_every),
         vis_num=min(4, int(cfg.tissue.vis_num)),
@@ -225,7 +255,7 @@ def run(args: argparse.Namespace) -> None:
     )
     trainer.fit(train_loader, eval_loader, epochs=int(cfg.training.epochs))
 
-    generate_plots(out_dir / "epoch_log.csv", out_dir / "plot")
+    generate_plots(out_dir / "epoch_log.csv", plot_dir)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> None:

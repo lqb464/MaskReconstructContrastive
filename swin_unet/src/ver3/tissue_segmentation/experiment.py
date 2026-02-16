@@ -10,8 +10,10 @@ from ..config.experiment import build_argparser as _build_argparser
 
 @dataclass
 class TissueTaskConfig:
-    image_root: str = ""
-    label_root: str = ""
+    train_root: str = ""
+    eval_root: str = ""
+    train_label: str = ""
+    eval_label: str = ""
     train_list: str = ""
     eval_list: str = ""
     seg_labels: str = ""
@@ -22,6 +24,8 @@ class TissueTaskConfig:
     num_classes: int = 0
     dice_include_bg: bool = False
     dice_empty_as_one: bool = False
+    strict_label_ids: bool = True
+    allow_unknown_label_ids: bool = False
     ignore_index: int = -100
     ce_class_weights: str = ""
     target_size: int = 0
@@ -42,8 +46,10 @@ class ExperimentConfig(_BaseExperimentConfig):
     def from_args(cls, args: argparse.Namespace) -> "ExperimentConfig":
         base = _BaseExperimentConfig.from_args(args)
         tissue = TissueTaskConfig(
-            image_root=args.image_root,
-            label_root=args.label_root,
+            train_root=args.train_root,
+            eval_root=args.eval_root,
+            train_label=args.train_label,
+            eval_label=args.eval_label,
             train_list=args.train_list,
             eval_list=args.eval_list,
             seg_labels=args.seg_labels,
@@ -54,6 +60,8 @@ class ExperimentConfig(_BaseExperimentConfig):
             num_classes=int(args.num_classes),
             dice_include_bg=bool(args.dice_include_bg),
             dice_empty_as_one=bool(args.dice_empty_as_one),
+            strict_label_ids=bool(getattr(args, "strict_label_ids", True)),
+            allow_unknown_label_ids=bool(getattr(args, "allow_unknown_label_ids", False)),
             ignore_index=int(getattr(args, "ignore_index", -100)),
             ce_class_weights=str(getattr(args, "ce_class_weights", "")),
             target_size=int(args.target_size),
@@ -82,8 +90,10 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.set_defaults(enable_contrastive=False, enable_masking=False, enable_reconstruct=True)
 
     grp = parser.add_argument_group("tissue_segmentation dataset")
-    grp.add_argument("--image-root", type=str, required=True, help="Root folder containing input images.")
-    grp.add_argument("--label-root", type=str, required=True, help="Root folder containing segmentation labels.")
+    grp.add_argument("--train-root", type=str, required=True, help="Root folder containing train input images.")
+    grp.add_argument("--eval-root", type=str, required=True, help="Root folder containing eval input images.")
+    grp.add_argument("--train-label", type=str, required=True, help="Root folder containing train segmentation labels.")
+    grp.add_argument("--eval-label", type=str, required=True, help="Root folder containing eval segmentation labels.")
     grp.add_argument("--train-list", type=str, required=True, help="Path to scans list for train split.")
     grp.add_argument("--eval-list", type=str, required=True, help="Path to scans list for eval/test split.")
     grp.add_argument(
@@ -107,6 +117,18 @@ def build_argparser() -> argparse.ArgumentParser:
         help="When a class has zero denominator for the whole epoch, treat its Dice as 1.0 (instead of excluding).",
     )
     grp.add_argument("--no-dice-empty-as-one", dest="dice_empty_as_one", action="store_false")
+    grp.add_argument(
+        "--strict-label-ids",
+        action="store_true",
+        help="Require every id in label files to exist in seg_labels mapping (default: true).",
+    )
+    grp.add_argument("--no-strict-label-ids", dest="strict_label_ids", action="store_false")
+    grp.add_argument(
+        "--allow-unknown-label-ids",
+        action="store_true",
+        help="When strict id checks are disabled, map unknown ids to class 0.",
+    )
+    grp.add_argument("--no-allow-unknown-label-ids", dest="allow_unknown_label_ids", action="store_false")
     grp.add_argument(
         "--ignore-index",
         type=int,
@@ -134,9 +156,14 @@ def build_argparser() -> argparse.ArgumentParser:
     grp.add_argument("--vis-threshold", type=float, default=0.5, help="Reserved visualization threshold argument.")
     grp.add_argument("--no-tqdm", type=int, default=0, help="Disable progress bars.")
     grp.add_argument("--debug-shapes", type=int, default=0, help="Log sample tensor shapes for debugging.")
-    parser.set_defaults(dice_include_bg=False, dice_empty_as_one=False)
+    parser.set_defaults(
+        dice_include_bg=False,
+        dice_empty_as_one=False,
+        strict_label_ids=True,
+        allow_unknown_label_ids=False,
+    )
 
-    # Keep base parser compatibility: make data-root optional and bind it from image-root in main.
+    # Keep base parser compatibility: make data-root optional and bind it from train-root in main.
     for action in parser._actions:
         if action.dest == "data_root":
             action.required = False
@@ -154,6 +181,11 @@ def enforce_tissue_args(args: argparse.Namespace) -> None:
         )
     if int(getattr(args, "label_mode", 0)) not in {1, 2, 3, 4}:
         raise ValueError("--label-mode must be one of {1,2,3,4}")
+    if bool(getattr(args, "strict_label_ids", True)) and bool(getattr(args, "allow_unknown_label_ids", False)):
+        raise ValueError(
+            "--allow-unknown-label-ids cannot be used while strict label id checking is enabled. "
+            "Use --no-strict-label-ids together with --allow-unknown-label-ids."
+        )
 
 
 __all__ = ["ExperimentConfig", "TissueTaskConfig", "build_argparser", "enforce_tissue_args"]

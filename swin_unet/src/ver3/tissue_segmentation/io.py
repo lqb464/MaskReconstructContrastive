@@ -22,6 +22,22 @@ class LabelEncodingInfo:
     num_classes: int
 
 
+@dataclass(frozen=True)
+class ImageIndex:
+    """
+    Pre-built image lookup tables for scan-token resolution.
+    Built once per image_root/image_ext to avoid repeated scans.
+    """
+
+    root: Path
+    image_ext: str
+    all_images: list[Path]
+    path_set: set[Path]
+    stem_index: Dict[str, list[Path]]
+    basename_index: Dict[str, list[Path]]
+    rel_index: Dict[str, Path]
+
+
 def _first_npz_array(npz: np.lib.npyio.NpzFile) -> np.ndarray:
     if len(npz.files) == 0:
         raise ValueError("NPZ file contains no arrays.")
@@ -110,6 +126,11 @@ def parse_seg_labels_txt(path: str | Path) -> Dict[int, str]:
         if not name_tokens:
             raise ValueError(f"Invalid seg label line {ln}: '{raw_line}'")
         label_name = " ".join(name_tokens).strip()
+        if label_id in id_to_name:
+            raise ValueError(
+                f"Duplicate label id {label_id} found in {p} at line {ln}. "
+                "Each label id must appear once."
+            )
         id_to_name[label_id] = label_name
 
     if not id_to_name:
@@ -175,6 +196,7 @@ def build_label_encoding_info(
     unknown_ids: set[int],
     non_brain_ids: set[int],
     num_classes_override: int = 0,
+    require_special_ids: bool = True,
 ) -> LabelEncodingInfo:
     """
     Build mode-specific encoding metadata.
@@ -198,6 +220,17 @@ def build_label_encoding_info(
 
     all_ids = sorted(id_to_name.keys())
     special_ids = set(unknown_ids) | set(non_brain_ids)
+    if mode in {1, 2} and require_special_ids:
+        if not unknown_ids:
+            raise ValueError(
+                "Label mode requires 'unknown' ids, but none were detected in seg_labels names. "
+                "Fix seg_labels.txt naming or choose a mode that does not merge special ids."
+            )
+        if not non_brain_ids:
+            raise ValueError(
+                "Label mode requires 'non brain' ids, but none were detected in seg_labels names. "
+                "Fix seg_labels.txt naming or choose a mode that does not merge special ids."
+            )
     encode_map: Dict[int, int] = {}
 
     if mode == 1:
@@ -252,7 +285,14 @@ def build_label_encoding_info(
     )
 
 
-def encode_label_array(label_arr: np.ndarray, info: LabelEncodingInfo) -> np.ndarray:
+def encode_label_array(
+    label_arr: np.ndarray,
+    info: LabelEncodingInfo,
+    *,
+    strict_label_ids: bool = True,
+    allow_unknown_label_ids: bool = False,
+    unknown_fallback_id: int = 0,
+) -> np.ndarray:
     """
     Encode label ids according to LabelEncodingInfo.
     Raises if unseen label ids exist in input.
@@ -261,15 +301,26 @@ def encode_label_array(label_arr: np.ndarray, info: LabelEncodingInfo) -> np.nda
     uniq = np.unique(src)
     missing = [int(x) for x in uniq.tolist() if int(x) not in info.encode_map]
     if missing:
-        raise ValueError(
-            f"Label array has ids absent from seg_labels mapping: {sorted(missing)}. "
-            "Update seg_labels.txt or fix input labels."
-        )
+        if strict_label_ids:
+            raise ValueError(
+                f"Label array has ids absent from seg_labels mapping: {sorted(missing)}. "
+                "Update seg_labels.txt or disable strict checks explicitly."
+            )
+        if not allow_unknown_label_ids:
+            raise ValueError(
+                f"Unknown label ids found: {sorted(missing)}. "
+                "Use --allow-unknown-label-ids to map unknown ids to class 0."
+            )
+        if int(unknown_fallback_id) < 0 or int(unknown_fallback_id) >= int(info.num_classes):
+            raise ValueError(
+                f"unknown_fallback_id={unknown_fallback_id} is out of [0, {info.num_classes - 1}]"
+            )
 
     out = np.empty(src.shape, dtype=np.int64)
     for sid in uniq.tolist():
         sid_int = int(sid)
-        out[src == sid_int] = int(info.encode_map[sid_int])
+        mapped = info.encode_map.get(sid_int, int(unknown_fallback_id))
+        out[src == sid_int] = int(mapped)
 
     vmin = int(out.min()) if out.size > 0 else 0
     vmax = int(out.max()) if out.size > 0 else 0
@@ -319,21 +370,7 @@ def _path_has_sep(token: str) -> bool:
     return ("/" in token) or ("\\" in token)
 
 
-def resolve_scan_tokens_to_images(
-    *,
-    image_root: str | Path,
-    tokens: Iterable[str],
-    image_ext: str,
-) -> list[Path]:
-    """
-    Resolve scan tokens to concrete image paths.
-
-    Resolution policy:
-    1) If token looks like a path (contains / or \\), treat as relative to image_root
-       (or absolute path if already absolute), with optional image_ext completion.
-    2) Otherwise treat token as basename stem; use indexed stem matches under image_root.
-       If multiple matches exist, keep deterministic first path in sorted order.
-    """
+def build_image_index(*, image_root: str | Path, image_ext: str) -> ImageIndex:
     root = Path(image_root).expanduser().resolve()
     if not root.exists():
         raise FileNotFoundError(f"image_root not found: {root}")
@@ -344,7 +381,6 @@ def resolve_scan_tokens_to_images(
         raise RuntimeError(f"No images with extension {ext} found under {root}")
 
     path_set = {p.resolve() for p in all_images}
-
     stem_index: Dict[str, list[Path]] = {}
     basename_index: Dict[str, list[Path]] = {}
     rel_index: Dict[str, Path] = {}
@@ -357,6 +393,41 @@ def resolve_scan_tokens_to_images(
         stem_index[key] = sorted(stem_index[key])
     for key in basename_index:
         basename_index[key] = sorted(basename_index[key])
+
+    return ImageIndex(
+        root=root,
+        image_ext=ext,
+        all_images=all_images,
+        path_set=path_set,
+        stem_index=stem_index,
+        basename_index=basename_index,
+        rel_index=rel_index,
+    )
+
+
+def resolve_scan_tokens_to_images(
+    *,
+    image_root: str | Path,
+    tokens: Iterable[str],
+    image_ext: str,
+    image_index: ImageIndex | None = None,
+) -> list[Path]:
+    """
+    Resolve scan tokens to concrete image paths.
+
+    Resolution policy:
+    1) If token looks like a path (contains / or \\), treat as relative to image_root
+       (or absolute path if already absolute), with optional image_ext completion.
+    2) Otherwise treat token as basename stem; use indexed stem matches under image_root.
+       If multiple matches exist, keep deterministic first path in sorted order.
+    """
+    idx = image_index if image_index is not None else build_image_index(image_root=image_root, image_ext=image_ext)
+    root = idx.root
+    ext = idx.image_ext
+    path_set = idx.path_set
+    stem_index = idx.stem_index
+    basename_index = idx.basename_index
+    rel_index = idx.rel_index
 
     resolved: list[Path] = []
     for token_raw in tokens:
@@ -417,6 +488,7 @@ def resolve_scan_tokens_to_images(
 
 
 __all__ = [
+    "ImageIndex",
     "LabelEncodingInfo",
     "load_label_array",
     "parse_seg_labels_txt",
@@ -425,5 +497,6 @@ __all__ = [
     "encode_label_array",
     "assert_encoding_deterministic",
     "read_scan_list",
+    "build_image_index",
     "resolve_scan_tokens_to_images",
 ]
