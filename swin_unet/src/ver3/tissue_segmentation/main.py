@@ -223,6 +223,7 @@ def run(args: argparse.Namespace) -> None:
         f"[roots] train_root={cfg.tissue.train_root} eval_root={cfg.tissue.eval_root} "
         f"train_label={cfg.tissue.train_label} eval_label={cfg.tissue.eval_label}"
     )
+    print(f"[plane] mode={cfg.data.plane} (auto infers from image path tokens: axial/coronal)")
     print(
         f"[labels] mode={encoding_info.mode} num_classes={encoding_info.num_classes} "
         f"unknown_ids={sorted(encoding_info.unknown_ids)} non_brain_ids={sorted(encoding_info.non_brain_ids)}"

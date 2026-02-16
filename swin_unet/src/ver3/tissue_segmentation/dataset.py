@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Tuple
 import torch
 from torch.utils.data import Dataset
 
-from ..data.dataset import plane_to_one_hot
+from ..data.dataset import infer_plane_from_path, plane_to_one_hot
 from ..mask_reconstruction.pair_transforms import apply_pair_transforms, load_image_pil
 from .io import (
     ImageIndex,
@@ -78,7 +78,14 @@ class TissueSegmentationDataset(Dataset):
         self.strict_label_ids = bool(strict_label_ids)
         self.allow_unknown_label_ids = bool(allow_unknown_label_ids)
         self.debug_shapes = bool(debug_shapes)
-        self.plane_one_hot = plane_to_one_hot(plane).contiguous()
+        self._plane_one_hot_lut = {
+            "axial": plane_to_one_hot("axial").contiguous(),
+            "coronal": plane_to_one_hot("coronal").contiguous(),
+        }
+        self.plane_mode = str(plane).lower().strip()
+        if self.plane_mode not in {"axial", "coronal", "auto"}:
+            raise ValueError(f"Unknown plane='{plane}'. Expected one of: axial, coronal, auto")
+        self._fixed_plane_one_hot = self._plane_one_hot_lut.get(self.plane_mode, None)
 
         self.images = resolve_scan_tokens_to_images(
             image_root=self.image_root,
@@ -155,6 +162,12 @@ class TissueSegmentationDataset(Dataset):
     def __len__(self) -> int:
         return len(self.pairs)
 
+    def _plane_one_hot_for_path(self, image_path: Path) -> torch.Tensor:
+        if self._fixed_plane_one_hot is not None:
+            return self._fixed_plane_one_hot
+        inferred = infer_plane_from_path(image_path, default_plane="axial")
+        return self._plane_one_hot_lut.get(inferred, self._plane_one_hot_lut["axial"])
+
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor | str]:
         img_path, lbl_path = self.pairs[idx]
 
@@ -219,7 +232,7 @@ class TissueSegmentationDataset(Dataset):
             "input": x,
             "target": y,
             "path": str(img_path),
-            "plane_one_hot": self.plane_one_hot,
+            "plane_one_hot": self._plane_one_hot_for_path(img_path),
         }
 
     def dataset_summary(self) -> Dict[str, object]:
@@ -245,6 +258,7 @@ class TissueSegmentationDataset(Dataset):
             "excluded_ids_default_policy": [0],
             "strict_label_ids": bool(self.strict_label_ids),
             "allow_unknown_label_ids": bool(self.allow_unknown_label_ids),
+            "plane_mode": self.plane_mode,
         }
 
 

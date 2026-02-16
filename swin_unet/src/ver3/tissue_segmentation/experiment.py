@@ -87,7 +87,7 @@ class ExperimentConfig(_BaseExperimentConfig):
 def build_argparser() -> argparse.ArgumentParser:
     parser = _build_argparser()
 
-    parser.set_defaults(enable_contrastive=False, enable_masking=False, enable_reconstruct=True)
+    parser.set_defaults(enable_contrastive=False, enable_masking=False, enable_reconstruct=True, plane="auto")
 
     grp = parser.add_argument_group("tissue_segmentation dataset")
     grp.add_argument("--train-root", type=str, required=True, help="Root folder containing train input images.")

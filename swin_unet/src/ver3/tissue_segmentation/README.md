@@ -86,7 +86,7 @@ python -m swin_unet.src.ver3.cli tissue ...
 | `--image-size` | `int` | `192` | Inherited resize size. |
 | `--target-size` | `int` | `0` | Task-specific square resize override (`0` uses `--image-size`). |
 | `--resize-mode` | `str` | `letterbox` | Pair resize strategy: `letterbox` or `direct`. |
-| `--plane` | `str` | `axial` | Plane metadata: `axial`, `coronal`, `auto`. |
+| `--plane` | `str` | `auto` | `axial`/`coronal` fixed plane, or `auto` to infer from file path/name tokens (matches `axial` / `coronal`). |
 | `--strict-pairs` | `int` | `0` | `1`: error on missing label. `0`: filter unlabeled samples. |
 | `--preprocessed-dir` | `str` | `""` | Inherited field (accepted). |
 | `--skip-resize-in-loader` / `--no-skip-resize-in-loader` | bool toggle | off | Inherited loader resize toggle (accepted). |
