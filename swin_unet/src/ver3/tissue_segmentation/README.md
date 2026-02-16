@@ -56,6 +56,8 @@ python -m swin_unet.src.ver3.cli tissue ...
 
 ## Metrics
 - Per-class Dice is computed from `argmax(logits, dim=1)`.
+- Class IDs considered for Dice are restricted to encoded IDs derived from `seg_labels.txt` mapping.
+  - This avoids sparse keep-id gaps (for example, missing ids between `0..max_id`) affecting macro Dice.
 - Macro Dice is computed from per-class Dice:
   - default excludes background class `0`
   - include background with `--dice-include-bg`

@@ -111,6 +111,10 @@ class TissueSegmentationTrainer:
         self.save_best_after_epoch = max(0, int(getattr(cfg.logging, "save_best_after_epoch", 0)))
         self.save_best_every = max(1, int(getattr(cfg.logging, "save_best_every", 1)))
         self.excluded_ids_default = [0] if not self.dice_include_bg else []
+        self.class_valid_mask_cpu = self._build_class_valid_mask()
+        self.class_valid_mask = self.class_valid_mask_cpu.to(self.device)
+        mapped_n = int(self.class_valid_mask_cpu.sum().item())
+        print(f"[dice] class mapping coverage: {mapped_n}/{self.num_classes} encoded classes from seg_labels")
 
         self._assert_model_contract()
 
@@ -142,6 +146,25 @@ class TissueSegmentationTrainer:
 
         self.best_macro_dice = float("-inf")
         self._val_vis_batch: Optional[dict[str, torch.Tensor]] = None
+
+    def _build_class_valid_mask(self) -> torch.Tensor:
+        """
+        Build [C] boolean mask for encoded class ids present in seg_labels-derived mapping.
+        This prevents sparse-id gaps from affecting macro dice reduction.
+        """
+        mask = torch.zeros((self.num_classes,), dtype=torch.bool)
+
+        key_sources = [self.enc_to_orig_map.keys(), self.class_names.keys()]
+        for source in key_sources:
+            for raw_cid in source:
+                cid = int(raw_cid)
+                if 0 <= cid < self.num_classes:
+                    mask[cid] = True
+
+        if not bool(mask.any().item()):
+            # Fallback: keep legacy behavior if mapping metadata is unexpectedly empty.
+            mask[:] = True
+        return mask
 
     def _assert_model_contract(self) -> None:
         if self.num_classes < 2:
@@ -310,13 +333,23 @@ class TissueSegmentationTrainer:
             eps=1e-6,
             empty_handling=self.dice_empty_handling,
         )
-        macro_valid_mask = valid_mask.clone()
+        macro_valid_mask = valid_mask & self.class_valid_mask
         if not self.dice_include_bg and macro_valid_mask.numel() > 0:
             macro_valid_mask[0] = False
         excluded_ids = [int(i) for i in (~macro_valid_mask).nonzero(as_tuple=False).view(-1).tolist()]
 
-        macro = macro_dice(per_class_dice, valid_mask, include_bg=self.dice_include_bg)
-        summary = dice_summary(per_class_dice, valid_mask, include_bg=self.dice_include_bg)
+        macro = macro_dice(
+            per_class_dice,
+            valid_mask,
+            include_bg=self.dice_include_bg,
+            class_valid_mask=self.class_valid_mask,
+        )
+        summary = dice_summary(
+            per_class_dice,
+            valid_mask,
+            include_bg=self.dice_include_bg,
+            class_valid_mask=self.class_valid_mask,
+        )
         if torch.isfinite(macro):
             macro_f = float(macro.item())
             if macro_f < -1e-6 or macro_f > 1.0 + 1e-6:
@@ -520,13 +553,22 @@ class TissueSegmentationTrainer:
                 )
             )
 
-            preview_ids = range(min(self.num_classes, 16))
-            train_cls_line = format_class_dice_line(train_stats["per_class_dice"], class_ids=preview_ids)
-            train_suffix = " (preview first 16 classes)" if self.num_classes > 16 else ""
+            mapped_ids = [i for i in range(self.num_classes) if bool(self.class_valid_mask_cpu[i].item())]
+            preview_ids = mapped_ids[:16]
+            train_cls_line = format_class_dice_line(
+                train_stats["per_class_dice"],
+                class_ids=preview_ids,
+                class_names=self.class_names,
+            )
+            train_suffix = " (preview first 16 mapped classes)" if len(mapped_ids) > 16 else ""
             print(f"[dice/train] {train_cls_line}{train_suffix}")
             if should_eval and eval_stats["per_class_dice"] is not None:
-                eval_cls_line = format_class_dice_line(eval_stats["per_class_dice"], class_ids=preview_ids)
-                eval_suffix = " (preview first 16 classes)" if self.num_classes > 16 else ""
+                eval_cls_line = format_class_dice_line(
+                    eval_stats["per_class_dice"],
+                    class_ids=preview_ids,
+                    class_names=self.class_names,
+                )
+                eval_suffix = " (preview first 16 mapped classes)" if len(mapped_ids) > 16 else ""
                 print(f"[dice/eval] {eval_cls_line}{eval_suffix}")
 
             if capture_vis and self.vis_dir is not None and self._val_vis_batch is not None:

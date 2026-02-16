@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Optional
+from typing import Dict, Iterable, Optional
 
 import torch
 
@@ -20,6 +20,22 @@ class DiceBuffers:
 def _validate_empty_handling(empty_handling: str) -> None:
     if empty_handling not in _EMPTY_HANDLING_VALUES:
         raise ValueError(f"empty_handling must be one of {_EMPTY_HANDLING_VALUES}, got {empty_handling}")
+
+
+def _apply_class_valid_mask(
+    valid_mask: torch.Tensor,
+    class_valid_mask: torch.Tensor | None,
+) -> torch.Tensor:
+    out = valid_mask.clone()
+    if class_valid_mask is None:
+        return out
+    if class_valid_mask.ndim != 1:
+        raise ValueError("class_valid_mask must be rank-1")
+    if class_valid_mask.numel() != out.numel():
+        raise ValueError(
+            f"class_valid_mask length mismatch: expected {out.numel()}, got {class_valid_mask.numel()}"
+        )
+    return out & class_valid_mask.to(device=out.device, dtype=torch.bool)
 
 
 def _ensure_label_map(pred_or_logits: torch.Tensor) -> torch.Tensor:
@@ -115,6 +131,7 @@ def dice_per_class_from_logits(
     num_classes: int,
     *,
     include_bg: bool = False,
+    class_valid_mask: torch.Tensor | None = None,
     empty_handling: str = "exclude",
     eps: float = 1e-6,
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -123,6 +140,7 @@ def dice_per_class_from_logits(
     """
     buffers = accumulate_intersection_union(logits, target, num_classes)
     dice, valid_mask = finalize_dice(buffers, eps=eps, empty_handling=empty_handling)
+    valid_mask = _apply_class_valid_mask(valid_mask, class_valid_mask)
     if not include_bg and dice.numel() > 0:
         valid_mask = valid_mask.clone()
         valid_mask[0] = False
@@ -134,6 +152,7 @@ def macro_dice(
     valid_mask: torch.Tensor,
     *,
     include_bg: bool = False,
+    class_valid_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """
     Macro Dice over valid classes.
@@ -144,7 +163,7 @@ def macro_dice(
     if dice_tensor.numel() != valid_mask.numel():
         raise ValueError("dice_tensor and valid_mask must have identical length")
 
-    mask = valid_mask.clone()
+    mask = _apply_class_valid_mask(valid_mask, class_valid_mask)
     if not include_bg and mask.numel() > 0:
         mask[0] = False
 
@@ -159,11 +178,12 @@ def dice_summary(
     valid_mask: torch.Tensor,
     *,
     include_bg: bool = False,
+    class_valid_mask: torch.Tensor | None = None,
 ) -> dict[str, torch.Tensor | int]:
     """
     Return min/mean/max and number of valid classes for logging.
     """
-    mask = valid_mask.clone()
+    mask = _apply_class_valid_mask(valid_mask, class_valid_mask)
     if not include_bg and mask.numel() > 0:
         mask[0] = False
 
@@ -189,6 +209,7 @@ def format_class_dice_line(
     per_class_dice: torch.Tensor | dict[int, float | torch.Tensor],
     *,
     class_ids: Iterable[int] | None = None,
+    class_names: Dict[int, str] | None = None,
 ) -> str:
     """Compact formatter for per-class Dice preview lines."""
     chunks = []
@@ -198,7 +219,10 @@ def format_class_dice_line(
         for cid in ids:
             v = per_class_dice[int(cid)]
             fv = float(v.item()) if isinstance(v, torch.Tensor) else float(v)
-            chunks.append(f"c{int(cid)}={fv:.4f}")
+            if class_names is not None and int(cid) in class_names:
+                chunks.append(f"c{int(cid)}:{class_names[int(cid)]}={fv:.4f}")
+            else:
+                chunks.append(f"c{int(cid)}={fv:.4f}")
         return " ".join(chunks)
 
     if per_class_dice.ndim != 1:
@@ -207,7 +231,10 @@ def format_class_dice_line(
     ids = list(range(per_class_dice.numel())) if class_ids is None else list(class_ids)
     for cid in ids:
         fv = float(per_class_dice[int(cid)].item())
-        chunks.append(f"c{int(cid)}={fv:.4f}")
+        if class_names is not None and int(cid) in class_names:
+            chunks.append(f"c{int(cid)}:{class_names[int(cid)]}={fv:.4f}")
+        else:
+            chunks.append(f"c{int(cid)}={fv:.4f}")
     return " ".join(chunks)
 
 
