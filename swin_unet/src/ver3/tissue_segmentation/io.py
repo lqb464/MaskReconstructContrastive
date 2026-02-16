@@ -36,6 +36,7 @@ class ImageIndex:
     stem_index: Dict[str, list[Path]]
     basename_index: Dict[str, list[Path]]
     rel_index: Dict[str, Path]
+    token_prefix_index: Dict[str, list[Path]]
 
 
 def _first_npz_array(npz: np.lib.npyio.NpzFile) -> np.ndarray:
@@ -384,15 +385,27 @@ def build_image_index(*, image_root: str | Path, image_ext: str) -> ImageIndex:
     stem_index: Dict[str, list[Path]] = {}
     basename_index: Dict[str, list[Path]] = {}
     rel_index: Dict[str, Path] = {}
+    token_prefix_index: Dict[str, list[Path]] = {}
     for p in all_images:
-        stem_index.setdefault(p.stem.lower(), []).append(p)
+        stem_l = p.stem.lower()
+        stem_index.setdefault(stem_l, []).append(p)
         basename_index.setdefault(p.name.lower(), []).append(p)
         rel_index[str(p.relative_to(root)).replace("\\", "/").lower()] = p
+
+        # Prefix index for scan tokens like "asl_epi_101" against stems like
+        # "asl_epi_101_axial_000". Build deterministic token -> image list once.
+        parts = [x for x in stem_l.split("_") if x]
+        if parts:
+            for i in range(1, len(parts) + 1):
+                key = "_".join(parts[:i])
+                token_prefix_index.setdefault(key, []).append(p)
 
     for key in stem_index:
         stem_index[key] = sorted(stem_index[key])
     for key in basename_index:
         basename_index[key] = sorted(basename_index[key])
+    for key in token_prefix_index:
+        token_prefix_index[key] = sorted(token_prefix_index[key])
 
     return ImageIndex(
         root=root,
@@ -402,6 +415,7 @@ def build_image_index(*, image_root: str | Path, image_ext: str) -> ImageIndex:
         stem_index=stem_index,
         basename_index=basename_index,
         rel_index=rel_index,
+        token_prefix_index=token_prefix_index,
     )
 
 
@@ -428,6 +442,7 @@ def resolve_scan_tokens_to_images(
     stem_index = idx.stem_index
     basename_index = idx.basename_index
     rel_index = idx.rel_index
+    token_prefix_index = idx.token_prefix_index
 
     resolved: list[Path] = []
     for token_raw in tokens:
@@ -471,6 +486,9 @@ def resolve_scan_tokens_to_images(
                 matched = stem_index[key][0]
             elif f"{key}{ext}" in basename_index:
                 matched = basename_index[f"{key}{ext}"][0]
+            elif key in token_prefix_index:
+                resolved.extend(token_prefix_index[key])
+                continue
 
         if matched is not None:
             resolved.append(matched)

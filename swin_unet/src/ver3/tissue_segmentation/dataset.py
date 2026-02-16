@@ -87,7 +87,11 @@ class TissueSegmentationDataset(Dataset):
             image_index=image_index,
         )
         if not self.images:
-            raise RuntimeError("No image paths resolved from provided scan list.")
+            sample_tokens = ", ".join(scan_tokens[:5]) if scan_tokens else "<empty>"
+            raise RuntimeError(
+                "No image paths resolved from provided scan list. "
+                f"image_root={self.image_root} image_ext={self.image_ext} sample_tokens=[{sample_tokens}]"
+            )
         self.num_images_resolved = int(len(self.images))
 
         # Fallback index by basename stem for labels: <stem>_label.npz
