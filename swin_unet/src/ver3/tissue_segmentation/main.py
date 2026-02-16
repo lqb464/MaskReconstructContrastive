@@ -204,6 +204,18 @@ def run(args: argparse.Namespace) -> None:
 
     print(f"[data] train_pairs={len(train_ds)} eval_pairs={len(eval_ds)}")
     print(
+        "[data/train] "
+        f"resolved_images={train_ds.num_images_resolved} "
+        f"labeled_samples={train_ds.num_labeled_samples} "
+        f"filtered_missing_labels={train_ds.num_missing_labels}"
+    )
+    print(
+        "[data/eval] "
+        f"resolved_images={eval_ds.num_images_resolved} "
+        f"labeled_samples={eval_ds.num_labeled_samples} "
+        f"filtered_missing_labels={eval_ds.num_missing_labels}"
+    )
+    print(
         f"[split] fixed lists (no random split): train_list={cfg.tissue.train_list} "
         f"eval_list={cfg.tissue.eval_list}"
     )

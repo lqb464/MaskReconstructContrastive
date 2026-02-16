@@ -88,6 +88,7 @@ class TissueSegmentationDataset(Dataset):
         )
         if not self.images:
             raise RuntimeError("No image paths resolved from provided scan list.")
+        self.num_images_resolved = int(len(self.images))
 
         # Fallback index by basename stem for labels: <stem>_label.npz
         self._label_stem_index = self._build_label_stem_index()
@@ -100,6 +101,8 @@ class TissueSegmentationDataset(Dataset):
                 missing_labels.append(img_path)
                 continue
             self.pairs.append((img_path, lbl_path))
+        self.num_missing_labels = int(len(missing_labels))
+        self.num_labeled_samples = int(len(self.pairs))
 
         if missing_labels:
             sample = ", ".join(x.name for x in missing_labels[:5])
@@ -226,6 +229,9 @@ class TissueSegmentationDataset(Dataset):
 
         return {
             "num_samples": int(len(self.pairs)),
+            "num_images_resolved": int(self.num_images_resolved),
+            "num_labeled_samples": int(self.num_labeled_samples),
+            "num_missing_labels": int(self.num_missing_labels),
             "num_classes": int(self.encoding_info.num_classes),
             "orig_to_enc": dict(self.encoding_info.encode_map),
             "enc_to_orig": dict(self.encoding_info.decode_map),
