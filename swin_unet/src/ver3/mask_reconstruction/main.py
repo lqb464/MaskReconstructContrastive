@@ -221,9 +221,6 @@ def run(args: argparse.Namespace) -> None:
     cfg = ExperimentConfig.from_args(args)
     # Hard guardrails for this task-specific entrypoint.
     cfg.training.enable_contrastive = False
-    if bool(getattr(args, "enable_masking", False)):
-        print("[mask] warning: --enable-masking is ignored in mask_reconstruction (reconstruction-only path).")
-    cfg.mask.enable_masking = False
     cfg.training.boundary_aware = bool(getattr(args, "boundary_aware", False))
     # cfg.mask.enable_masking = False
     # if bool(cfg.training.enable_contrastive) or bool(cfg.mask.enable_masking):

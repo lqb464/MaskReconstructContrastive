@@ -14,6 +14,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from ..config.experiment import ExperimentConfig
+from ..data.augmentation import sample_masks_anti_mirror
 from ..models.swin_unet_dualview_ssl import SwinUNetDualViewSSL, flip_lr
 from ..training.utils import ensure_dir
 from .ckpt_io import save_checkpoint
@@ -102,9 +103,6 @@ class MaskReconstructionTrainer:
 
         if bool(getattr(cfg.training, "enable_contrastive", False)) or bool(getattr(model, "enable_contrastive", False)):
             raise ValueError("Mask reconstruction trainer is recon-only; enable_contrastive must be False.")
-        if bool(getattr(cfg.mask, "enable_masking", False)):
-            log.warning("enable_masking=True is ignored in mask reconstruction trainer (reconstruction-only path).")
-            cfg.mask.enable_masking = False
 
         cfg_boundary_aware = bool(getattr(cfg.training, "boundary_aware", False))
         self.boundary_aware = bool(boundary_aware) or cfg_boundary_aware
@@ -344,8 +342,9 @@ class MaskReconstructionTrainer:
         return total, metrics, vis_payload
 
     def _sample_pixel_mask(self, x: torch.Tensor) -> torch.Tensor | None:
-        del x
-        return None
+        if not bool(getattr(self.cfg.mask, "enable_masking", False)):
+            return None
+        return sample_masks_anti_mirror(x.size(0), self.cfg.mask, x.device)
 
     def train_one_epoch(self, loader: DataLoader) -> Dict[str, float]:
         self.model.train()
