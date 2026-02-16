@@ -31,11 +31,18 @@ def _train_mask(argv: Sequence[str]) -> object:
     return mask_train_entry.main(argv)
 
 
+def _train_tissue(argv: Sequence[str]) -> object:
+    from .tissue_segmentation import main as tissue_train_entry
+
+    return tissue_train_entry.main(argv)
+
+
 COMMAND_HANDLERS: Dict[str, Callable[[Sequence[str]], object]] = {
     "train-ssl": _train_ssl,
     "eval-ssl": _eval_ssl,
     "train-cls": _train_cls,
     "train-mask": _train_mask,
+    "train-tissue": _train_tissue,
 }
 
 COMPAT_ALIASES: Dict[str, str] = {
@@ -43,6 +50,7 @@ COMPAT_ALIASES: Dict[str, str] = {
     "eval": "eval-ssl",
     "cls": "train-cls",
     "mask": "train-mask",
+    "tissue": "train-tissue",
 }
 
 
@@ -54,7 +62,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument(
         "command",
         nargs="?",
-        help="Subcommand: train-ssl | eval-ssl | train-cls | train-mask",
+        help="Subcommand: train-ssl | eval-ssl | train-cls | train-mask | train-tissue",
     )
     parser.add_argument("command_args", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
     return parser
@@ -71,6 +79,7 @@ def main(argv: Optional[Sequence[str]] = None) -> object:
         print("  eval  -> eval-ssl")
         print("  cls   -> train-cls")
         print("  mask  -> train-mask")
+        print("  tissue -> train-tissue")
         return None
 
     cmd = COMPAT_ALIASES.get(raw_argv[0], raw_argv[0])
