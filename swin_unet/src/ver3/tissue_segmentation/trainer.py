@@ -47,17 +47,32 @@ class EpochLogger:
         "eval_dice_max",
         "eval_num_valid_classes",
         "lr",
+        "train_num_excluded_classes",
+        "eval_num_excluded_classes",
+        "eval_ran",
+        "best_updated",
+        "best_eval_macro_dice",
+        "train_time_s",
+        "eval_time_s",
+        "epoch_time_s",
     ]
 
     def __init__(self, path: Path):
         self.path = path
+        self.headers = list(self.HEADERS)
         if not self.path.exists():
             with self.path.open("w", newline="", encoding="utf-8") as f:
-                csv.writer(f).writerow(self.HEADERS)
+                csv.writer(f).writerow(self.headers)
+        else:
+            with self.path.open("r", newline="", encoding="utf-8") as f:
+                reader = csv.reader(f)
+                existing_header = next(reader, None)
+            if existing_header:
+                self.headers = existing_header
 
     def append(self, row: Dict) -> None:
         with self.path.open("a", newline="", encoding="utf-8") as f:
-            csv.writer(f).writerow([row[h] for h in self.HEADERS])
+            csv.writer(f).writerow([row.get(h, "") for h in self.headers])
 
 
 def _parse_ce_class_weights(spec: str, num_classes: int) -> torch.Tensor | None:
@@ -71,6 +86,21 @@ def _parse_ce_class_weights(spec: str, num_classes: int) -> torch.Tensor | None:
             f"--ce-class-weights expects {num_classes} values, got {len(vals)}: {parts}"
         )
     return torch.tensor(vals, dtype=torch.float32)
+
+
+def _fmt_float(x: float, digits: int = 4) -> str:
+    if isinstance(x, float) and math.isfinite(x):
+        return f"{x:.{digits}f}"
+    return "nan"
+
+
+def _fmt_id_preview(ids: list[int], *, max_items: int = 10) -> str:
+    if not ids:
+        return "[]"
+    if len(ids) <= max_items:
+        return "[" + ",".join(str(int(i)) for i in ids) + "]"
+    head = ",".join(str(int(i)) for i in ids[:max_items])
+    return f"[{head},...](n={len(ids)})"
 
 
 class TissueSegmentationTrainer:
@@ -390,6 +420,60 @@ class TissueSegmentationTrainer:
             cfg=self.cfg,
         )
 
+    def _print_epoch_summary(
+        self,
+        *,
+        epoch: int,
+        epochs: int,
+        train_stats: dict[str, float | torch.Tensor | int | None],
+        eval_stats: dict[str, float | torch.Tensor | int | None],
+        should_eval: bool,
+        best_updated: bool,
+        allow_best_window: bool,
+        train_time: float,
+        eval_time: float,
+        epoch_time: float,
+    ) -> None:
+        lr = float(self.optimizer.param_groups[0]["lr"])
+        train_excluded = train_stats.get("excluded_class_ids", [])
+        if not isinstance(train_excluded, list):
+            train_excluded = []
+        eval_excluded = eval_stats.get("excluded_class_ids", [])
+        if not isinstance(eval_excluded, list):
+            eval_excluded = []
+
+        print(f"[epoch {epoch:03d}/{epochs:03d}] lr={lr:.2e}")
+        print(
+            "  train: "
+            f"loss={_fmt_float(float(train_stats['loss']))} "
+            f"macro={_fmt_float(float(train_stats['macro_dice']))} "
+            f"dice[min/mean/max]={_fmt_float(float(train_stats['dice_min']))}/"
+            f"{_fmt_float(float(train_stats['dice_mean']))}/"
+            f"{_fmt_float(float(train_stats['dice_max']))} "
+            f"valid={int(train_stats['num_valid_classes'])} "
+            f"excluded={_fmt_id_preview([int(x) for x in train_excluded])}"
+        )
+        if should_eval:
+            print(
+                "  eval : "
+                f"loss={_fmt_float(float(eval_stats['loss']))} "
+                f"macro={_fmt_float(float(eval_stats['macro_dice']))} "
+                f"dice[min/mean/max]={_fmt_float(float(eval_stats['dice_min']))}/"
+                f"{_fmt_float(float(eval_stats['dice_mean']))}/"
+                f"{_fmt_float(float(eval_stats['dice_max']))} "
+                f"valid={int(eval_stats['num_valid_classes'])} "
+                f"excluded={_fmt_id_preview([int(x) for x in eval_excluded])}"
+            )
+            print(
+                "  ckpt: "
+                f"best_updated={'yes' if best_updated else 'no'} "
+                f"window_open={'yes' if allow_best_window else 'no'} "
+                f"best_eval_macro={_fmt_float(float(self.best_macro_dice))}"
+            )
+        else:
+            print(f"  eval : skipped (val_every={self.val_every})")
+        print(f"  time : train={train_time:.2f}s eval={eval_time:.2f}s total={epoch_time:.2f}s")
+
     def _class_report_row(self, enc_id: int, dice_value: float) -> dict[str, object]:
         orig_ids = self.enc_to_orig_map.get(int(enc_id), [])
         if len(orig_ids) == 1:
@@ -492,6 +576,42 @@ class TissueSegmentationTrainer:
             if self.lr_scheduler is not None:
                 self.lr_scheduler.step()
 
+            if (epoch % self.save_latest_every == 0) or (epoch == epochs):
+                self._save_latest(epoch)
+
+            best_updated = False
+            allow_best_window = False
+            if should_eval:
+                metric = float(eval_stats["macro_dice"])
+                allow_best_window = (
+                    epoch >= self.save_best_after_epoch
+                    and ((epoch % self.save_best_every) == 0)
+                )
+                if allow_best_window and math.isfinite(metric) and metric > self.best_macro_dice:
+                    self.best_macro_dice = metric
+                    self._save_best(epoch)
+                    best_updated = True
+
+            self._write_epoch_report(
+                epoch=epoch,
+                train_stats=train_stats,
+                eval_stats=eval_stats,
+                should_eval=should_eval,
+            )
+
+            epoch_time = time.perf_counter() - epoch_start
+            train_excluded = train_stats.get("excluded_class_ids", [])
+            if not isinstance(train_excluded, list):
+                train_excluded = []
+            eval_excluded = eval_stats.get("excluded_class_ids", [])
+            if not isinstance(eval_excluded, list):
+                eval_excluded = []
+            best_macro_value = float(self.best_macro_dice)
+            if math.isfinite(best_macro_value):
+                best_macro_for_csv = best_macro_value
+            else:
+                best_macro_for_csv = float("nan")
+
             self.logger.append(
                 {
                     "epoch": epoch,
@@ -508,49 +628,27 @@ class TissueSegmentationTrainer:
                     "eval_dice_max": eval_stats["dice_max"],
                     "eval_num_valid_classes": eval_stats["num_valid_classes"],
                     "lr": self.optimizer.param_groups[0]["lr"],
+                    "train_num_excluded_classes": len(train_excluded),
+                    "eval_num_excluded_classes": len(eval_excluded),
+                    "eval_ran": int(should_eval),
+                    "best_updated": int(best_updated),
+                    "best_eval_macro_dice": best_macro_for_csv,
+                    "train_time_s": float(train_time),
+                    "eval_time_s": float(eval_time),
+                    "epoch_time_s": float(epoch_time),
                 }
             )
-
-            if (epoch % self.save_latest_every == 0) or (epoch == epochs):
-                self._save_latest(epoch)
-
-            if should_eval:
-                metric = float(eval_stats["macro_dice"])
-                allow_best_window = (
-                    epoch >= self.save_best_after_epoch
-                    and ((epoch % self.save_best_every) == 0)
-                )
-                if allow_best_window and math.isfinite(metric) and metric > self.best_macro_dice:
-                    self.best_macro_dice = metric
-                    self._save_best(epoch)
-
-            self._write_epoch_report(
+            self._print_epoch_summary(
                 epoch=epoch,
+                epochs=epochs,
                 train_stats=train_stats,
                 eval_stats=eval_stats,
                 should_eval=should_eval,
-            )
-
-            epoch_time = time.perf_counter() - epoch_start
-
-            print(
-                f"Epoch {epoch:03d}/{epochs:03d} | "
-                f"lr={self.optimizer.param_groups[0]['lr']:.2e} | "
-                f"train loss={float(train_stats['loss']):.4f} "
-                f"macro={float(train_stats['macro_dice']):.4f} "
-                f"(min={float(train_stats['dice_min']):.4f}, mean={float(train_stats['dice_mean']):.4f}, "
-                f"max={float(train_stats['dice_max']):.4f}, n={int(train_stats['num_valid_classes'])}) | "
-                + (
-                    (
-                        f"eval loss={float(eval_stats['loss']):.4f} "
-                        f"macro={float(eval_stats['macro_dice']):.4f} "
-                        f"(min={float(eval_stats['dice_min']):.4f}, mean={float(eval_stats['dice_mean']):.4f}, "
-                        f"max={float(eval_stats['dice_max']):.4f}, n={int(eval_stats['num_valid_classes'])}) | "
-                        f"time=train:{train_time:.2f}s,eval:{eval_time:.2f}s,total:{epoch_time:.2f}s"
-                    )
-                    if should_eval
-                    else f"eval skipped (val_every={self.val_every}) | time=train:{train_time:.2f}s,total:{epoch_time:.2f}s"
-                )
+                best_updated=best_updated,
+                allow_best_window=allow_best_window,
+                train_time=train_time,
+                eval_time=eval_time,
+                epoch_time=epoch_time,
             )
 
             mapped_ids = [i for i in range(self.num_classes) if bool(self.class_valid_mask_cpu[i].item())]

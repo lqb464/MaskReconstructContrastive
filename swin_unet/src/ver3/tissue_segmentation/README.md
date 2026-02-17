@@ -139,6 +139,10 @@ python -m swin_unet.src.ver3.cli tissue ...
 | `--save-best-after-epoch` | `int` | `0` | Earliest epoch eligible for best-checkpoint updates. |
 | `--save-best-every` | `int` | `1` | Best-checkpoint comparison cadence. |
 
+`epoch_log.csv` includes core train/eval Dice/loss columns plus context fields:
+`train_num_excluded_classes`, `eval_num_excluded_classes`, `eval_ran`,
+`best_updated`, `best_eval_macro_dice`, `train_time_s`, `eval_time_s`, `epoch_time_s`.
+
 ### Metrics
 | Flag | Type | Default | Description |
 |---|---|---|---|
