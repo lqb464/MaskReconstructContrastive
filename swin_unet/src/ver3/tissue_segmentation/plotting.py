@@ -7,6 +7,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 
@@ -71,6 +72,187 @@ def _plot_per_class_eval_dice(
     plt.close()
 
 
+def _plot_per_class_dice_heatmap(
+    df_long: pd.DataFrame,
+    *,
+    split: str,
+    out_path: Path,
+    class_name_map: dict[int, str],
+) -> None:
+    required = {"epoch", "split", "class_id", "dice"}
+    if not required.issubset(set(df_long.columns)):
+        return
+
+    df = df_long[df_long["split"] == split].copy()
+    if df.empty:
+        return
+
+    df["epoch"] = pd.to_numeric(df["epoch"], errors="coerce")
+    df["class_id"] = pd.to_numeric(df["class_id"], errors="coerce")
+    df["dice"] = pd.to_numeric(df["dice"], errors="coerce")
+    df = df.dropna(subset=["epoch", "class_id", "dice"])
+    if df.empty:
+        return
+
+    pivot = (
+        df.pivot_table(index="class_id", columns="epoch", values="dice", aggfunc="mean")
+        .sort_index(axis=0)
+        .sort_index(axis=1)
+    )
+    if pivot.empty:
+        return
+
+    data = pivot.values
+    fig_h = max(6, min(20, 0.25 * data.shape[0] + 2))
+    fig_w = max(8, min(24, 0.35 * data.shape[1] + 4))
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+
+    im = ax.imshow(data, aspect="auto", interpolation="nearest", cmap="viridis", vmin=0.0, vmax=1.0)
+    cbar = fig.colorbar(im, ax=ax, fraction=0.02, pad=0.02)
+    cbar.set_label("dice", rotation=90)
+
+    epoch_vals = list(pivot.columns.astype(int))
+    class_ids = list(pivot.index.astype(int))
+    y_labels = [f"{cid}: {class_name_map.get(cid, f'class_{cid}')}" for cid in class_ids]
+
+    x_step = max(1, len(epoch_vals) // 20)
+    y_step = max(1, len(class_ids) // 40)
+    ax.set_xticks(np.arange(0, len(epoch_vals), x_step))
+    ax.set_xticklabels([str(epoch_vals[i]) for i in range(0, len(epoch_vals), x_step)], rotation=45, ha="right")
+    ax.set_yticks(np.arange(0, len(class_ids), y_step))
+    ax.set_yticklabels([y_labels[i] for i in range(0, len(class_ids), y_step)], fontsize=7)
+
+    ax.set_xlabel("epoch")
+    ax.set_ylabel("class")
+    ax.set_title(f"Per-class {split.capitalize()} Dice Heatmap (All Labels)")
+    ax.grid(False)
+    plt.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(out_path, dpi=170)
+    plt.close()
+
+
+def _plot_per_label_dice_heatmap_ranked(
+    df_labels: pd.DataFrame,
+    *,
+    split: str,
+    out_path: Path,
+) -> None:
+    required = {"epoch", "split", "enc_id", "label_name", "dice"}
+    if not required.issubset(set(df_labels.columns)):
+        return
+
+    df = df_labels[df_labels["split"] == split].copy()
+    if df.empty:
+        return
+
+    df["epoch"] = pd.to_numeric(df["epoch"], errors="coerce")
+    df["enc_id"] = pd.to_numeric(df["enc_id"], errors="coerce")
+    df["dice"] = pd.to_numeric(df["dice"], errors="coerce")
+    df = df.dropna(subset=["epoch", "enc_id", "dice"])
+    if df.empty:
+        return
+
+    name_map: dict[int, str] = {}
+    for _, row in df.iterrows():
+        try:
+            cid = int(row["enc_id"])
+        except Exception:
+            continue
+        if cid not in name_map:
+            name_map[cid] = str(row.get("label_name", f"class_{cid}"))
+
+    pivot = (
+        df.pivot_table(index="enc_id", columns="epoch", values="dice", aggfunc="mean")
+        .sort_index(axis=1)
+    )
+    if pivot.empty:
+        return
+
+    latest_scores = pivot.iloc[:, -1].fillna(-1.0)
+    ranked_ids = list(latest_scores.sort_values(ascending=False).index.astype(int))
+    pivot = pivot.loc[ranked_ids]
+
+    data = pivot.values
+    fig_h = max(6, min(24, 0.28 * data.shape[0] + 2))
+    fig_w = max(9, min(24, 0.35 * data.shape[1] + 4))
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+
+    cmap = plt.get_cmap("YlGnBu").copy()
+    cmap.set_bad(color="#ececec")
+    im = ax.imshow(np.ma.masked_invalid(data), aspect="auto", interpolation="nearest", cmap=cmap, vmin=0.0, vmax=1.0)
+    cbar = fig.colorbar(im, ax=ax, fraction=0.02, pad=0.02)
+    cbar.set_label("dice", rotation=90)
+
+    epoch_vals = list(pivot.columns.astype(int))
+    y_labels = [f"{cid}: {name_map.get(cid, f'class_{cid}')}" for cid in ranked_ids]
+
+    x_step = max(1, len(epoch_vals) // 20)
+    y_step = max(1, len(ranked_ids) // 40)
+    ax.set_xticks(np.arange(0, len(epoch_vals), x_step))
+    ax.set_xticklabels([str(epoch_vals[i]) for i in range(0, len(epoch_vals), x_step)], rotation=45, ha="right")
+    ax.set_yticks(np.arange(0, len(ranked_ids), y_step))
+    ax.set_yticklabels([y_labels[i] for i in range(0, len(ranked_ids), y_step)], fontsize=7)
+
+    ax.set_xlabel("epoch")
+    ax.set_ylabel("label (ranked by latest dice)")
+    ax.set_title(f"Per-label {split.capitalize()} Dice (Ranked Heatmap)")
+    ax.grid(False)
+    plt.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(out_path, dpi=170)
+    plt.close()
+
+
+def _plot_per_label_latest_ranking(
+    df_labels: pd.DataFrame,
+    *,
+    split: str,
+    out_path: Path,
+) -> None:
+    required = {"epoch", "split", "enc_id", "label_name", "dice"}
+    if not required.issubset(set(df_labels.columns)):
+        return
+
+    df = df_labels[df_labels["split"] == split].copy()
+    if df.empty:
+        return
+
+    df["epoch"] = pd.to_numeric(df["epoch"], errors="coerce")
+    df["enc_id"] = pd.to_numeric(df["enc_id"], errors="coerce")
+    df["dice"] = pd.to_numeric(df["dice"], errors="coerce")
+    df = df.dropna(subset=["epoch", "enc_id", "dice"])
+    if df.empty:
+        return
+
+    latest_epoch = int(df["epoch"].max())
+    latest = df[df["epoch"] == latest_epoch].copy()
+    if latest.empty:
+        return
+
+    latest = latest.sort_values("dice", ascending=False)
+    y_labels = [f"{int(r.enc_id)}: {str(r.label_name)}" for r in latest.itertuples()]
+    y_pos = np.arange(len(latest))
+    x_vals = latest["dice"].to_numpy(dtype=float)
+
+    fig_h = max(6, min(24, 0.28 * len(latest) + 2))
+    fig, ax = plt.subplots(figsize=(10, fig_h))
+    ax.hlines(y=y_pos, xmin=0.0, xmax=x_vals, color="#4c78a8", linewidth=1.5, alpha=0.9)
+    ax.plot(x_vals, y_pos, "o", color="#f58518", markersize=4)
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(y_labels, fontsize=7)
+    ax.set_xlim(0.0, 1.0)
+    ax.set_xlabel("dice")
+    ax.set_ylabel("label")
+    ax.set_title(f"Latest {split.capitalize()} Dice Ranking (epoch={latest_epoch})")
+    ax.grid(axis="x", alpha=0.25)
+    ax.invert_yaxis()
+    plt.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(out_path, dpi=170)
+    plt.close()
+
+
 def _read_class_name_map(path: Path) -> dict[int, str]:
     if not path.exists():
         return {}
@@ -116,6 +298,47 @@ def generate_plots(csv_path: Path, plot_dir: Path) -> None:
             per_class_df,
             plot_dir / "per_class_eval_dice_all_labels.png",
             class_name_map,
+        )
+
+    per_class_long_csv = csv_path.parent / "per_class_dice_by_split.csv"
+    if per_class_long_csv.exists():
+        df_long = pd.read_csv(per_class_long_csv)
+        class_name_map = _read_class_name_map(csv_path.parent / "reports" / "class_id_to_name.json")
+        _plot_per_class_dice_heatmap(
+            df_long,
+            split="eval",
+            out_path=plot_dir / "per_class_eval_dice_heatmap_all_labels.png",
+            class_name_map=class_name_map,
+        )
+        _plot_per_class_dice_heatmap(
+            df_long,
+            split="train",
+            out_path=plot_dir / "per_class_train_dice_heatmap_all_labels.png",
+            class_name_map=class_name_map,
+        )
+
+    per_label_csv = csv_path.parent / "per_label_dice.csv"
+    if per_label_csv.exists():
+        df_labels = pd.read_csv(per_label_csv)
+        _plot_per_label_dice_heatmap_ranked(
+            df_labels,
+            split="eval",
+            out_path=plot_dir / "per_label_eval_dice_ranked_heatmap.png",
+        )
+        _plot_per_label_dice_heatmap_ranked(
+            df_labels,
+            split="train",
+            out_path=plot_dir / "per_label_train_dice_ranked_heatmap.png",
+        )
+        _plot_per_label_latest_ranking(
+            df_labels,
+            split="eval",
+            out_path=plot_dir / "per_label_eval_dice_latest_ranking.png",
+        )
+        _plot_per_label_latest_ranking(
+            df_labels,
+            split="train",
+            out_path=plot_dir / "per_label_train_dice_latest_ranking.png",
         )
 
 

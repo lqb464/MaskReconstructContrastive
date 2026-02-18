@@ -94,6 +94,106 @@ class PerClassDiceLogger:
             csv.writer(f).writerow(row)
 
 
+class PerClassDiceLongLogger:
+    HEADERS = ["epoch", "split", "class_id", "class_name", "dice", "valid", "excluded"]
+
+    def __init__(self, path: Path):
+        self.path = path
+        if not self.path.exists():
+            with self.path.open("w", newline="", encoding="utf-8") as f:
+                csv.writer(f).writerow(self.HEADERS)
+
+    def append_split(
+        self,
+        *,
+        epoch: int,
+        split: str,
+        per_class_dice: list[float],
+        valid_mask: list[bool],
+        class_names: dict[int, str],
+    ) -> None:
+        if len(per_class_dice) != len(valid_mask):
+            raise ValueError(
+                f"per_class_dice and valid_mask length mismatch: {len(per_class_dice)} vs {len(valid_mask)}"
+            )
+        rows = []
+        for cid, (dice_val, valid_flag) in enumerate(zip(per_class_dice, valid_mask)):
+            rows.append(
+                [
+                    int(epoch),
+                    str(split),
+                    int(cid),
+                    str(class_names.get(int(cid), f"class_{int(cid)}")),
+                    float(dice_val),
+                    int(bool(valid_flag)),
+                    int(not bool(valid_flag)),
+                ]
+            )
+        with self.path.open("a", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerows(rows)
+
+
+class PerLabelDiceLogger:
+    HEADERS = [
+        "epoch",
+        "split",
+        "enc_id",
+        "orig_ids",
+        "label_name",
+        "dice",
+        "macro_included",
+    ]
+
+    def __init__(self, path: Path):
+        self.path = path
+        if not self.path.exists():
+            with self.path.open("w", newline="", encoding="utf-8") as f:
+                csv.writer(f).writerow(self.HEADERS)
+
+    @staticmethod
+    def _orig_ids_repr(enc_to_orig_map: dict[int, list[int]], enc_id: int) -> str:
+        orig_ids = enc_to_orig_map.get(int(enc_id), [])
+        if not orig_ids:
+            return ""
+        return "|".join(str(int(x)) for x in orig_ids)
+
+    def append_split(
+        self,
+        *,
+        epoch: int,
+        split: str,
+        per_class_dice: list[float],
+        macro_valid_mask: list[bool],
+        mapped_mask: list[bool],
+        class_names: dict[int, str],
+        enc_to_orig_map: dict[int, list[int]],
+    ) -> None:
+        if not (len(per_class_dice) == len(macro_valid_mask) == len(mapped_mask)):
+            raise ValueError(
+                "PerLabelDiceLogger expects equal lengths for per_class_dice, "
+                f"macro_valid_mask and mapped_mask. Got {len(per_class_dice)}, "
+                f"{len(macro_valid_mask)}, {len(mapped_mask)}."
+            )
+
+        rows = []
+        for cid, (dice_val, in_macro, mapped) in enumerate(zip(per_class_dice, macro_valid_mask, mapped_mask)):
+            if not bool(mapped):
+                continue
+            rows.append(
+                [
+                    int(epoch),
+                    str(split),
+                    int(cid),
+                    self._orig_ids_repr(enc_to_orig_map, int(cid)),
+                    str(class_names.get(int(cid), f"class_{int(cid)}")),
+                    float(dice_val),
+                    int(bool(in_macro)),
+                ]
+            )
+        with self.path.open("a", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerows(rows)
+
+
 def _parse_ce_class_weights(spec: str, num_classes: int) -> torch.Tensor | None:
     s = (spec or "").strip()
     if not s:
@@ -193,6 +293,8 @@ class TissueSegmentationTrainer:
         self.report_path = self.reports_dir / "epoch_reports.jsonl"
         self.logger = EpochLogger(self.out_dir / "epoch_log.csv")
         self.per_class_eval_logger = PerClassDiceLogger(self.out_dir / "per_class_dice_eval.csv", self.num_classes)
+        self.per_class_long_logger = PerClassDiceLongLogger(self.out_dir / "per_class_dice_by_split.csv")
+        self.per_label_logger = PerLabelDiceLogger(self.out_dir / "per_label_dice.csv")
         class_name_payload = {str(i): self.class_names.get(i, f"class_{i}") for i in range(self.num_classes)}
         with (self.reports_dir / "class_id_to_name.json").open("w", encoding="utf-8") as f:
             json.dump(class_name_payload, f, ensure_ascii=True, indent=2)
@@ -667,6 +769,55 @@ class TissueSegmentationTrainer:
             else:
                 eval_dice_values = [float("nan")] * self.num_classes
             self.per_class_eval_logger.append(epoch, eval_dice_values)
+
+            train_dice_tensor = train_stats.get("per_class_dice")
+            train_mask_tensor = train_stats.get("macro_valid_mask")
+            if isinstance(train_dice_tensor, torch.Tensor) and isinstance(train_mask_tensor, torch.Tensor):
+                train_dice_values = [float(v) for v in train_dice_tensor.tolist()]
+                train_valid_values = [bool(v) for v in train_mask_tensor.tolist()]
+            else:
+                train_dice_values = [float("nan")] * self.num_classes
+                train_valid_values = [False] * self.num_classes
+            self.per_class_long_logger.append_split(
+                epoch=epoch,
+                split="train",
+                per_class_dice=train_dice_values,
+                valid_mask=train_valid_values,
+                class_names=self.class_names,
+            )
+
+            mapped_values = [bool(v) for v in self.class_valid_mask_cpu.tolist()]
+            self.per_label_logger.append_split(
+                epoch=epoch,
+                split="train",
+                per_class_dice=train_dice_values,
+                macro_valid_mask=train_valid_values,
+                mapped_mask=mapped_values,
+                class_names=self.class_names,
+                enc_to_orig_map=self.enc_to_orig_map,
+            )
+
+            eval_mask_tensor = eval_stats.get("macro_valid_mask")
+            if should_eval and isinstance(eval_mask_tensor, torch.Tensor):
+                eval_valid_values = [bool(v) for v in eval_mask_tensor.tolist()]
+            else:
+                eval_valid_values = [False] * self.num_classes
+            self.per_class_long_logger.append_split(
+                epoch=epoch,
+                split="eval",
+                per_class_dice=eval_dice_values,
+                valid_mask=eval_valid_values,
+                class_names=self.class_names,
+            )
+            self.per_label_logger.append_split(
+                epoch=epoch,
+                split="eval",
+                per_class_dice=eval_dice_values,
+                macro_valid_mask=eval_valid_values,
+                mapped_mask=mapped_values,
+                class_names=self.class_names,
+                enc_to_orig_map=self.enc_to_orig_map,
+            )
             self._print_epoch_summary(
                 epoch=epoch,
                 epochs=epochs,
