@@ -58,6 +58,74 @@ def init_dice_buffers(*, num_classes: int, device: torch.device) -> DiceBuffers:
     )
 
 
+def init_class_presence_mask(*, num_classes: int, device: torch.device) -> torch.Tensor:
+    c = int(num_classes)
+    if c < 2:
+        raise ValueError(f"num_classes must be >= 2, got {c}")
+    return torch.zeros((c,), dtype=torch.bool, device=device)
+
+
+def update_class_presence_from_target(
+    target: torch.Tensor,
+    num_classes: int,
+    *,
+    presence_mask: torch.Tensor | None = None,
+    ignore_index: int | None = None,
+) -> torch.Tensor:
+    if target.ndim < 1:
+        raise ValueError("target must have at least one dimension")
+
+    c = int(num_classes)
+    if c < 2:
+        raise ValueError(f"num_classes must be >= 2, got {c}")
+
+    out = (
+        init_class_presence_mask(num_classes=c, device=target.device)
+        if presence_mask is None
+        else presence_mask.clone().to(device=target.device, dtype=torch.bool)
+    )
+    if out.numel() != c:
+        raise ValueError(f"presence_mask length mismatch: expected {c}, got {out.numel()}")
+
+    tgt = target.reshape(-1)
+    if ignore_index is not None:
+        tgt = tgt[tgt != int(ignore_index)]
+    if tgt.numel() == 0:
+        return out
+
+    if tgt.dtype != torch.long:
+        tgt = tgt.to(dtype=torch.long)
+
+    valid = (tgt >= 0) & (tgt < c)
+    if valid.any():
+        counts = torch.bincount(tgt[valid], minlength=c)
+        out = out | (counts > 0)
+    return out
+
+
+def apply_presence_policy(
+    valid_mask: torch.Tensor,
+    presence_mask: torch.Tensor,
+    *,
+    presence_policy: str = "target_present",
+    aggregation_level: str = "scan",
+) -> torch.Tensor:
+    if valid_mask.ndim != 1 or presence_mask.ndim != 1:
+        raise ValueError("valid_mask and presence_mask must be rank-1")
+    if valid_mask.numel() != presence_mask.numel():
+        raise ValueError("valid_mask and presence_mask must have identical length")
+
+    if aggregation_level not in {"scan", "epoch"}:
+        raise ValueError(f"aggregation_level must be one of {{scan,epoch}}, got {aggregation_level}")
+
+    if presence_policy == "all":
+        return valid_mask.clone()
+    if presence_policy == "target_present":
+        return valid_mask & presence_mask.to(device=valid_mask.device, dtype=torch.bool)
+
+    raise ValueError(f"presence_policy must be one of {{target_present,all}}, got {presence_policy}")
+
+
 def accumulate_intersection_union(
     pred_or_logits: torch.Tensor,
     target: torch.Tensor,
@@ -241,6 +309,9 @@ def format_class_dice_line(
 __all__ = [
     "DiceBuffers",
     "init_dice_buffers",
+    "init_class_presence_mask",
+    "update_class_presence_from_target",
+    "apply_presence_policy",
     "accumulate_intersection_union",
     "finalize_dice",
     "dice_per_class_from_logits",

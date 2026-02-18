@@ -1,4 +1,4 @@
-# Tissue Segmentation (ver3)
+﻿# Tissue Segmentation (ver3)
 
 Multi-class tissue segmentation task on the ver3 Swin-UNet stack.
 This task predicts categorical logits and trains with `CrossEntropyLoss`.
@@ -65,7 +65,7 @@ python -m swin_unet.src.ver3.cli tissue ...
   - default excludes those classes from macro
   - use `--dice-empty-as-one` to treat them as Dice = `1.0`
 - Current CLI has no `--dice-exclude-ids` flag.
-- Best checkpoint criterion: maximize `eval_macro_dice`.
+- Default best checkpoint criterion: maximize `eval_pc_macro_dice` (presence-conditional macro Dice). Override with `--primary-metric macro_dice` if needed.
 
 ## CLI reference
 
@@ -314,3 +314,12 @@ python -m swin_unet.src.ver3.cli train-tissue \
   --out-dir runs_ssl_swinunet \
   --run-name tissue_relaxed_ids
 ```
+
+
+### Primary metric policy flags
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--primary-metric` | `str` | `pc_macro_dice` | Primary metric used for checkpoint selection (`pc_macro_dice` or `macro_dice`). |
+| `--presence-policy` | `str` | `target_present` | Presence policy for PC macro reduction (`target_present` or `all`). |
+| `--aggregation-level` | `str` | `scan` | Presence aggregation level option (`scan` or `epoch`). |
+

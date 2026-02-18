@@ -20,11 +20,13 @@ from ..training.ckpt_io import save_checkpoint
 from ..training.utils import ensure_dir
 from .dice import (
     accumulate_intersection_union,
+    apply_presence_policy,
     dice_summary,
     finalize_dice,
-    format_class_dice_line,
+    init_class_presence_mask,
     init_dice_buffers,
     macro_dice,
+    update_class_presence_from_target,
 )
 from .visualization import save_val_visualization_grid
 
@@ -55,6 +57,10 @@ class EpochLogger:
         "train_time_s",
         "eval_time_s",
         "epoch_time_s",
+        "train_pc_macro_dice",
+        "eval_pc_macro_dice",
+        "train_num_present_classes",
+        "eval_num_present_classes",
     ]
 
     def __init__(self, path: Path):
@@ -250,6 +256,16 @@ class TissueSegmentationTrainer:
         self.dice_include_bg = bool(dice_include_bg)
         self.dice_empty_handling = "one" if bool(getattr(cfg.tissue, "dice_empty_as_one", False)) else "exclude"
         self.ignore_index = int(getattr(cfg.tissue, "ignore_index", -100))
+        self.primary_metric = str(getattr(cfg.tissue, "primary_metric", "pc_macro_dice"))
+        self.presence_policy = str(getattr(cfg.tissue, "presence_policy", "target_present"))
+        self.aggregation_level = str(getattr(cfg.tissue, "aggregation_level", "scan"))
+        if self.primary_metric not in {"pc_macro_dice", "macro_dice"}:
+            raise ValueError(f"Unsupported primary_metric={self.primary_metric}")
+        self.primary_metric_key = "pc_macro_dice" if self.primary_metric == "pc_macro_dice" else "macro_dice"
+        if self.presence_policy not in {"target_present", "all"}:
+            raise ValueError(f"Unsupported presence_policy={self.presence_policy}")
+        if self.aggregation_level not in {"scan", "epoch"}:
+            raise ValueError(f"Unsupported aggregation_level={self.aggregation_level}")
         self.vis_every = int(vis_every)
         self.vis_num = max(0, min(4, int(vis_num)))
         self.disable_tqdm = bool(disable_tqdm)
@@ -274,6 +290,10 @@ class TissueSegmentationTrainer:
         print(
             f"[loss] CrossEntropyLoss(ignore_index={self.ignore_index}, "
             f"class_weights={'on' if ce_w is not None else 'off'})"
+        )
+        print(
+            f"[metrics] primary={self.primary_metric} "
+            f"presence_policy={self.presence_policy} aggregation={self.aggregation_level}"
         )
 
         self.use_amp = bool(cfg.training.amp) and device.type == "cuda"
@@ -436,6 +456,7 @@ class TissueSegmentationTrainer:
         loss_sum = 0.0
         steps = 0
         dice_buf = init_dice_buffers(num_classes=self.num_classes, device=self.device)
+        presence_mask = init_class_presence_mask(num_classes=self.num_classes, device=self.device)
         vis_payload: dict[str, torch.Tensor] | None = None
 
         progress = loader if self.disable_tqdm else tqdm(loader, desc=desc, leave=False, dynamic_ncols=True)
@@ -446,6 +467,12 @@ class TissueSegmentationTrainer:
             pixel_mask = self._sample_pixel_mask(x)
 
             self._validate_targets(y)
+            presence_mask = update_class_presence_from_target(
+                y,
+                self.num_classes,
+                presence_mask=presence_mask,
+                ignore_index=self.ignore_index,
+            )
 
             if training:
                 self.optimizer.zero_grad(set_to_none=True)
@@ -502,35 +529,56 @@ class TissueSegmentationTrainer:
             eps=1e-6,
             empty_handling=self.dice_empty_handling,
         )
-        macro_valid_mask = valid_mask & self.class_valid_mask
+
+        # Legacy macro behavior kept for transition (existing CSV fields).
+        legacy_macro = macro_dice(
+            per_class_dice,
+            valid_mask,
+            include_bg=self.dice_include_bg,
+            class_valid_mask=self.class_valid_mask,
+        )
+        legacy_summary = dice_summary(
+            per_class_dice,
+            valid_mask,
+            include_bg=self.dice_include_bg,
+            class_valid_mask=self.class_valid_mask,
+        )
+
+        presence_valid_mask = apply_presence_policy(
+            valid_mask,
+            presence_mask,
+            presence_policy=self.presence_policy,
+            aggregation_level=self.aggregation_level,
+        )
+        macro_valid_mask = presence_valid_mask & self.class_valid_mask
         if not self.dice_include_bg and macro_valid_mask.numel() > 0:
+            macro_valid_mask = macro_valid_mask.clone()
             macro_valid_mask[0] = False
+
+        pc_class_valid_mask = self.class_valid_mask & presence_mask
+        pc_macro = macro_dice(
+            per_class_dice,
+            valid_mask,
+            include_bg=self.dice_include_bg,
+            class_valid_mask=pc_class_valid_mask,
+        )
+        num_present_classes = int(macro_valid_mask.sum().item())
         excluded_ids = [int(i) for i in (~macro_valid_mask).nonzero(as_tuple=False).view(-1).tolist()]
 
-        macro = macro_dice(
-            per_class_dice,
-            valid_mask,
-            include_bg=self.dice_include_bg,
-            class_valid_mask=self.class_valid_mask,
-        )
-        summary = dice_summary(
-            per_class_dice,
-            valid_mask,
-            include_bg=self.dice_include_bg,
-            class_valid_mask=self.class_valid_mask,
-        )
-        if torch.isfinite(macro):
-            macro_f = float(macro.item())
-            if macro_f < -1e-6 or macro_f > 1.0 + 1e-6:
-                raise RuntimeError(f"{desc} macro dice out of expected [0,1] range: {macro_f}")
+        if torch.isfinite(pc_macro):
+            pc_macro_f = float(pc_macro.item())
+            if pc_macro_f < -1e-6 or pc_macro_f > 1.0 + 1e-6:
+                raise RuntimeError(f"{desc} pc macro dice out of expected [0,1] range: {pc_macro_f}")
 
         return {
             "loss": float(mean_loss),
-            "macro_dice": float(macro.item()) if torch.isfinite(macro) else float("nan"),
-            "dice_min": float(summary["dice_min"].item()) if torch.isfinite(summary["dice_min"]) else float("nan"),
-            "dice_mean": float(summary["dice_mean"].item()) if torch.isfinite(summary["dice_mean"]) else float("nan"),
-            "dice_max": float(summary["dice_max"].item()) if torch.isfinite(summary["dice_max"]) else float("nan"),
-            "num_valid_classes": int(summary["num_valid_classes"]),
+            "macro_dice": float(legacy_macro.item()) if torch.isfinite(legacy_macro) else float("nan"),
+            "pc_macro_dice": float(pc_macro.item()) if torch.isfinite(pc_macro) else float("nan"),
+            "dice_min": float(legacy_summary["dice_min"].item()) if torch.isfinite(legacy_summary["dice_min"]) else float("nan"),
+            "dice_mean": float(legacy_summary["dice_mean"].item()) if torch.isfinite(legacy_summary["dice_mean"]) else float("nan"),
+            "dice_max": float(legacy_summary["dice_max"].item()) if torch.isfinite(legacy_summary["dice_max"]) else float("nan"),
+            "num_valid_classes": int(legacy_summary["num_valid_classes"]),
+            "num_present_classes": int(num_present_classes),
             "per_class_dice": per_class_dice.detach().cpu(),
             "macro_valid_mask": macro_valid_mask.detach().cpu(),
             "excluded_class_ids": excluded_ids,
@@ -581,37 +629,37 @@ class TissueSegmentationTrainer:
         if not isinstance(eval_excluded, list):
             eval_excluded = []
 
-        print(f"[epoch {epoch:03d}/{epochs:03d}] lr={lr:.2e}")
+        print(f"[epoch] {epoch:03d}/{epochs:03d} lr={lr:.2e}")
         print(
-            "  train: "
+            "[train] "
             f"loss={_fmt_float(float(train_stats['loss']))} "
-            f"macro={_fmt_float(float(train_stats['macro_dice']))} "
-            f"dice[min/mean/max]={_fmt_float(float(train_stats['dice_min']))}/"
-            f"{_fmt_float(float(train_stats['dice_mean']))}/"
-            f"{_fmt_float(float(train_stats['dice_max']))} "
+            f"primary={_fmt_float(float(train_stats.get(self.primary_metric_key, float('nan'))))} "
+            f"pc_macro={_fmt_float(float(train_stats['pc_macro_dice']))} "
+            f"legacy_macro={_fmt_float(float(train_stats['macro_dice']))} "
+            f"present={int(train_stats.get('num_present_classes', 0))} "
             f"valid={int(train_stats['num_valid_classes'])} "
             f"excluded={_fmt_id_preview([int(x) for x in train_excluded])}"
         )
         if should_eval:
             print(
-                "  eval : "
+                "[eval] "
                 f"loss={_fmt_float(float(eval_stats['loss']))} "
-                f"macro={_fmt_float(float(eval_stats['macro_dice']))} "
-                f"dice[min/mean/max]={_fmt_float(float(eval_stats['dice_min']))}/"
-                f"{_fmt_float(float(eval_stats['dice_mean']))}/"
-                f"{_fmt_float(float(eval_stats['dice_max']))} "
+                f"primary={_fmt_float(float(eval_stats.get(self.primary_metric_key, float('nan'))))} "
+                f"pc_macro={_fmt_float(float(eval_stats['pc_macro_dice']))} "
+                f"legacy_macro={_fmt_float(float(eval_stats['macro_dice']))} "
+                f"present={int(eval_stats.get('num_present_classes', 0))} "
                 f"valid={int(eval_stats['num_valid_classes'])} "
                 f"excluded={_fmt_id_preview([int(x) for x in eval_excluded])}"
             )
             print(
-                "  ckpt: "
+                "[ckpt] "
                 f"best_updated={'yes' if best_updated else 'no'} "
                 f"window_open={'yes' if allow_best_window else 'no'} "
-                f"best_eval_macro={_fmt_float(float(self.best_macro_dice))}"
+                f"best_primary={_fmt_float(float(self.best_macro_dice))}"
             )
         else:
-            print(f"  eval : skipped (val_every={self.val_every})")
-        print(f"  time : train={train_time:.2f}s eval={eval_time:.2f}s total={epoch_time:.2f}s")
+            print(f"[eval] skipped (val_every={self.val_every})")
+        print(f"[time] train={train_time:.2f}s eval={eval_time:.2f}s total={epoch_time:.2f}s")
 
     def _class_report_row(self, enc_id: int, dice_value: float) -> dict[str, object]:
         orig_ids = self.enc_to_orig_map.get(int(enc_id), [])
@@ -666,6 +714,8 @@ class TissueSegmentationTrainer:
             "split_for_ranking": "eval" if should_eval else "train",
             "train_macro_dice": float(train_stats["macro_dice"]),
             "eval_macro_dice": float(eval_stats["macro_dice"]),
+            "train_pc_macro_dice": float(train_stats.get("pc_macro_dice", float("nan"))),
+            "eval_pc_macro_dice": float(eval_stats.get("pc_macro_dice", float("nan"))),
             "excluded_ids_default_policy": list(self.excluded_ids_default),
             "excluded_ids_effective": excluded_effective,
             "num_valid_classes": int(ref.get("num_valid_classes", 0)),
@@ -700,10 +750,12 @@ class TissueSegmentationTrainer:
                 eval_stats = {
                     "loss": float("nan"),
                     "macro_dice": float("nan"),
+                    "pc_macro_dice": float("nan"),
                     "dice_min": float("nan"),
                     "dice_mean": float("nan"),
                     "dice_max": float("nan"),
                     "num_valid_classes": 0,
+                    "num_present_classes": 0,
                     "per_class_dice": None,
                     "macro_valid_mask": None,
                     "excluded_class_ids": list(self.excluded_ids_default),
@@ -721,7 +773,7 @@ class TissueSegmentationTrainer:
             best_updated = False
             allow_best_window = False
             if should_eval:
-                metric = float(eval_stats["macro_dice"])
+                metric = float(eval_stats[self.primary_metric_key])
                 allow_best_window = (
                     epoch >= self.save_best_after_epoch
                     and ((epoch % self.save_best_every) == 0)
@@ -775,6 +827,10 @@ class TissueSegmentationTrainer:
                     "train_time_s": float(train_time),
                     "eval_time_s": float(eval_time),
                     "epoch_time_s": float(epoch_time),
+                    "train_pc_macro_dice": train_stats.get("pc_macro_dice", float("nan")),
+                    "eval_pc_macro_dice": eval_stats.get("pc_macro_dice", float("nan")),
+                    "train_num_present_classes": train_stats.get("num_present_classes", 0),
+                    "eval_num_present_classes": eval_stats.get("num_present_classes", 0),
                 }
             )
             eval_dice_tensor = eval_stats.get("per_class_dice")
@@ -844,24 +900,6 @@ class TissueSegmentationTrainer:
                 eval_time=eval_time,
                 epoch_time=epoch_time,
             )
-
-            mapped_ids = [i for i in range(self.num_classes) if bool(self.class_valid_mask_cpu[i].item())]
-            preview_ids = mapped_ids[:16]
-            train_cls_line = format_class_dice_line(
-                train_stats["per_class_dice"],
-                class_ids=preview_ids,
-                class_names=self.class_names,
-            )
-            train_suffix = " (preview first 16 mapped classes)" if len(mapped_ids) > 16 else ""
-            print(f"[dice/train] {train_cls_line}{train_suffix}")
-            if should_eval and eval_stats["per_class_dice"] is not None:
-                eval_cls_line = format_class_dice_line(
-                    eval_stats["per_class_dice"],
-                    class_ids=preview_ids,
-                    class_names=self.class_names,
-                )
-                eval_suffix = " (preview first 16 mapped classes)" if len(mapped_ids) > 16 else ""
-                print(f"[dice/eval] {eval_cls_line}{eval_suffix}")
 
             if capture_vis and self.vis_dir is not None and self._val_vis_batch is not None:
                 vis_path = self.vis_dir / f"eval_vis_epoch_{epoch:04d}.png"

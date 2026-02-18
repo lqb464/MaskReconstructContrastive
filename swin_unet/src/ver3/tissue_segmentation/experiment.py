@@ -36,6 +36,9 @@ class TissueTaskConfig:
     vis_threshold: float = 0.5
     no_tqdm: bool = False
     debug_shapes: bool = False
+    primary_metric: str = "pc_macro_dice"
+    presence_policy: str = "target_present"
+    aggregation_level: str = "scan"
 
 
 @dataclass
@@ -72,6 +75,9 @@ class ExperimentConfig(_BaseExperimentConfig):
             vis_threshold=float(args.vis_threshold),
             no_tqdm=bool(args.no_tqdm),
             debug_shapes=bool(args.debug_shapes),
+            primary_metric=str(getattr(args, "primary_metric", "pc_macro_dice")),
+            presence_policy=str(getattr(args, "presence_policy", "target_present")),
+            aggregation_level=str(getattr(args, "aggregation_level", "scan")),
         )
         return cls(
             model=base.model,
@@ -156,6 +162,27 @@ def build_argparser() -> argparse.ArgumentParser:
     grp.add_argument("--vis-threshold", type=float, default=0.5, help="Reserved visualization threshold argument.")
     grp.add_argument("--no-tqdm", type=int, default=0, help="Disable progress bars.")
     grp.add_argument("--debug-shapes", type=int, default=0, help="Log sample tensor shapes for debugging.")
+    grp.add_argument(
+        "--primary-metric",
+        type=str,
+        default="pc_macro_dice",
+        choices=["pc_macro_dice", "macro_dice"],
+        help="Primary metric used for checkpoint selection and summary logging.",
+    )
+    grp.add_argument(
+        "--presence-policy",
+        type=str,
+        default="target_present",
+        choices=["target_present", "all"],
+        help="Class presence policy for PC-MDice reduction.",
+    )
+    grp.add_argument(
+        "--aggregation-level",
+        type=str,
+        default="scan",
+        choices=["scan", "epoch"],
+        help="Presence aggregation level (currently target-presence reduction scope).",
+    )
     parser.set_defaults(
         dice_include_bg=False,
         dice_empty_as_one=False,
@@ -191,6 +218,12 @@ def enforce_tissue_args(args: argparse.Namespace) -> None:
             "--allow-unknown-label-ids cannot be used while strict label id checking is enabled. "
             "Use --no-strict-label-ids together with --allow-unknown-label-ids."
         )
+    if str(getattr(args, "primary_metric", "pc_macro_dice")) not in {"pc_macro_dice", "macro_dice"}:
+        raise ValueError("--primary-metric must be one of {pc_macro_dice,macro_dice}")
+    if str(getattr(args, "presence_policy", "target_present")) not in {"target_present", "all"}:
+        raise ValueError("--presence-policy must be one of {target_present,all}")
+    if str(getattr(args, "aggregation_level", "scan")) not in {"scan", "epoch"}:
+        raise ValueError("--aggregation-level must be one of {scan,epoch}")
 
 
 __all__ = ["ExperimentConfig", "TissueTaskConfig", "build_argparser", "enforce_tissue_args"]

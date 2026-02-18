@@ -210,5 +210,6 @@ __marimo__/
 unet/outputs/*
 swin_unet/outputs/*
 swin_unet/src/ver3/*.md
+swin_unet/src/ver3/tissue_segmentation/tests/*
 AGENTS.md
 TODO.md
