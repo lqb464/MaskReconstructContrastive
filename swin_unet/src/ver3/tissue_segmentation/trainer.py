@@ -75,6 +75,25 @@ class EpochLogger:
             csv.writer(f).writerow([row.get(h, "") for h in self.headers])
 
 
+class PerClassDiceLogger:
+    def __init__(self, path: Path, num_classes: int):
+        self.path = path
+        self.num_classes = int(num_classes)
+        self.headers = ["epoch"] + [f"class_{i}" for i in range(self.num_classes)]
+        if not self.path.exists():
+            with self.path.open("w", newline="", encoding="utf-8") as f:
+                csv.writer(f).writerow(self.headers)
+
+    def append(self, epoch: int, dice_values: list[float]) -> None:
+        if len(dice_values) != self.num_classes:
+            raise ValueError(
+                f"PerClassDiceLogger expects {self.num_classes} values, got {len(dice_values)}"
+            )
+        row = [int(epoch)] + [float(v) for v in dice_values]
+        with self.path.open("a", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow(row)
+
+
 def _parse_ce_class_weights(spec: str, num_classes: int) -> torch.Tensor | None:
     s = (spec or "").strip()
     if not s:
@@ -173,6 +192,10 @@ class TissueSegmentationTrainer:
         self.reports_dir = ensure_dir(self.out_dir / "reports")
         self.report_path = self.reports_dir / "epoch_reports.jsonl"
         self.logger = EpochLogger(self.out_dir / "epoch_log.csv")
+        self.per_class_eval_logger = PerClassDiceLogger(self.out_dir / "per_class_dice_eval.csv", self.num_classes)
+        class_name_payload = {str(i): self.class_names.get(i, f"class_{i}") for i in range(self.num_classes)}
+        with (self.reports_dir / "class_id_to_name.json").open("w", encoding="utf-8") as f:
+            json.dump(class_name_payload, f, ensure_ascii=True, indent=2)
 
         self.best_macro_dice = float("-inf")
         self._val_vis_batch: Optional[dict[str, torch.Tensor]] = None
@@ -638,6 +661,12 @@ class TissueSegmentationTrainer:
                     "epoch_time_s": float(epoch_time),
                 }
             )
+            eval_dice_tensor = eval_stats.get("per_class_dice")
+            if should_eval and isinstance(eval_dice_tensor, torch.Tensor):
+                eval_dice_values = [float(v) for v in eval_dice_tensor.tolist()]
+            else:
+                eval_dice_values = [float("nan")] * self.num_classes
+            self.per_class_eval_logger.append(epoch, eval_dice_values)
             self._print_epoch_summary(
                 epoch=epoch,
                 epochs=epochs,
