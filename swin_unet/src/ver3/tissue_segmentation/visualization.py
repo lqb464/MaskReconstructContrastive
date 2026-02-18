@@ -192,7 +192,8 @@ def save_val_visualization_grid(
     create_segmentation_legend(legend_ax, legend_ids, indexed_names, cmap)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    plt.tight_layout(rect=[0.0, 0.0, 0.82, 1.0])
+    # Avoid tight_layout with manually-added Axes (legend_ax), which triggers warnings.
+    fig.subplots_adjust(left=0.03, right=0.81, top=0.96, bottom=0.04, wspace=0.08, hspace=0.22)
     plt.savefig(out_path, dpi=150)
     plt.close(fig)
 
