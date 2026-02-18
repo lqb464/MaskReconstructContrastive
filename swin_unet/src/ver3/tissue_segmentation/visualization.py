@@ -1,30 +1,101 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Sequence
 
 import matplotlib
 import torch
+import matplotlib.patches as mpatches
 from matplotlib.colors import BoundaryNorm, ListedColormap
-from matplotlib.patches import Patch
+import numpy as np
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 
-def _build_discrete_cmap(num_classes: int) -> tuple[ListedColormap, BoundaryNorm]:
-    c = max(2, int(num_classes))
-    base = plt.get_cmap("tab20").colors
-    colors = [base[i % len(base)] for i in range(c)]
-    cmap = ListedColormap(colors, name="tissue_classes")
-    norm = BoundaryNorm(boundaries=[i - 0.5 for i in range(c + 1)], ncolors=c)
-    return cmap, norm
+DEFAULT_CLASS_NAMES = [
+    "Background",
+    "Gray Matter",
+    "White Matter",
+    "CSF",
+    "Skull",
+    "Other",
+]
+
+# Fixed categorical colors aligned by class index.
+DEFAULT_CLASS_COLORS = [
+    "#000000",  # Background
+    "#d62728",  # Gray Matter
+    "#1f77b4",  # White Matter
+    "#17becf",  # CSF
+    "#ff7f0e",  # Skull
+    "#2ca02c",  # Other
+]
 
 
-def _present_class_ids(target: torch.Tensor, pred: torch.Tensor, num_classes: int) -> list[int]:
+def _resolve_class_names(
+    class_names: Optional[Dict[int, str] | Sequence[str]],
+    num_classes: int,
+) -> list[str]:
+    c = int(num_classes)
+    if c <= 0:
+        raise ValueError(f"num_classes must be > 0, got {c}")
+
+    if class_names is None:
+        names = list(DEFAULT_CLASS_NAMES)
+    elif isinstance(class_names, dict):
+        names = [str(class_names.get(i, f"class_{i}")) for i in range(c)]
+    else:
+        names = [str(x) for x in class_names]
+
+    if len(names) < c:
+        names = names + [f"class_{i}" for i in range(len(names), c)]
+    elif len(names) > c:
+        names = names[:c]
+    return names
+
+
+def _build_segmentation_colormap(num_classes: int) -> ListedColormap:
+    c = int(num_classes)
+    if c <= 0:
+        raise ValueError(f"num_classes must be > 0, got {c}")
+
+    if c <= len(DEFAULT_CLASS_COLORS):
+        colors = DEFAULT_CLASS_COLORS[:c]
+    else:
+        # Keep first six fixed, extend deterministically for larger class counts.
+        extra = c - len(DEFAULT_CLASS_COLORS)
+        tab = plt.get_cmap("tab20").colors
+        colors = list(DEFAULT_CLASS_COLORS) + [tab[i % len(tab)] for i in range(extra)]
+    return ListedColormap(colors, name="tissue_classes")
+
+
+def create_segmentation_legend(
+    ax: plt.Axes,
+    class_names: Sequence[str],
+    colormap: ListedColormap,
+) -> None:
+    handles = [
+        mpatches.Patch(facecolor=colormap(i), edgecolor="black", label=str(class_names[i]))
+        for i in range(len(class_names))
+    ]
+    ax.legend(
+        handles=handles,
+        loc="upper left",
+        bbox_to_anchor=(0.0, 1.0),
+        frameon=True,
+        title="Classes",
+        fontsize=8,
+        title_fontsize=9,
+        borderaxespad=0.0,
+    )
+    ax.axis("off")
+
+
+def _present_class_ids(target: torch.Tensor, pred: torch.Tensor) -> list[int]:
     ids = set(int(v) for v in torch.unique(target).tolist())
     ids.update(int(v) for v in torch.unique(pred).tolist())
-    return [cid for cid in sorted(ids) if 0 <= cid < int(num_classes)]
+    return [cid for cid in sorted(ids) if cid >= 0]
 
 
 def save_val_visualization_grid(
@@ -32,7 +103,7 @@ def save_val_visualization_grid(
     val_batch: dict[str, torch.Tensor],
     out_path: Path,
     num_classes: int,
-    class_names: Optional[Dict[int, str]] = None,
+    class_names: Optional[Dict[int, str] | Sequence[str]] = None,
     max_items: int = 4,
 ) -> None:
     """
@@ -55,7 +126,22 @@ def save_val_visualization_grid(
     y = y[:n].detach().cpu()
     pred = torch.argmax(logits[:n].detach().cpu(), dim=1)
 
-    cmap, norm = _build_discrete_cmap(num_classes)
+    names = _resolve_class_names(class_names, num_classes)
+    cmap = _build_segmentation_colormap(num_classes)
+    norm = BoundaryNorm(np.arange(-0.5, int(num_classes) + 0.5, 1.0), cmap.N)
+
+    present_ids = _present_class_ids(y, pred)
+    if present_ids:
+        observed_max = int(max(present_ids))
+        if observed_max >= int(num_classes):
+            raise ValueError(
+                f"Found label id {observed_max} >= num_classes ({num_classes}) in visualization payload."
+            )
+        if observed_max >= len(names):
+            raise ValueError(
+                f"Found label id {observed_max} but class_names has length {len(names)}."
+            )
+
     fig, axes = plt.subplots(nrows=n, ncols=3, figsize=(11, 3 * n), squeeze=False)
     for i in range(n):
         ax0, ax1, ax2 = axes[i]
@@ -71,37 +157,15 @@ def save_val_visualization_grid(
         ax2.set_title("pred")
         ax2.axis("off")
 
-    present_ids = _present_class_ids(y, pred, num_classes)
-    if present_ids:
-        max_legend_items = 18
-        legend_ids = present_ids[:max_legend_items]
-        legend_handles = []
-        for cid in legend_ids:
-            name = class_names.get(cid, f"class_{cid}") if class_names else f"class_{cid}"
-            legend_handles.append(Patch(facecolor=cmap(cid), edgecolor="black", label=f"{cid}: {name}"))
-        fig.legend(
-            handles=legend_handles,
-            loc="center left",
-            bbox_to_anchor=(0.98, 0.5),
-            frameon=True,
-            fontsize=8,
-            title="Classes (in view)",
-            title_fontsize=9,
-        )
-        if len(present_ids) > max_legend_items:
-            fig.text(
-                0.98,
-                0.05,
-                f"... and {len(present_ids) - max_legend_items} more classes",
-                ha="left",
-                va="bottom",
-                fontsize=8,
-            )
+    # Single legend for the whole figure, outside the image grid.
+    legend_ax = fig.add_axes([0.83, 0.12, 0.16, 0.76])
+    indexed_names = [f"{i}: {names[i]}" for i in range(len(names))]
+    create_segmentation_legend(legend_ax, indexed_names, cmap)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    plt.tight_layout(rect=[0.0, 0.0, 0.96, 1.0])
+    plt.tight_layout(rect=[0.0, 0.0, 0.82, 1.0])
     plt.savefig(out_path, dpi=150)
     plt.close(fig)
 
 
-__all__ = ["save_val_visualization_grid"]
+__all__ = ["create_segmentation_legend", "save_val_visualization_grid"]
