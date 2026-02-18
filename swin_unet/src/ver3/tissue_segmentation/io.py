@@ -93,6 +93,7 @@ def _normalize_name(name: str) -> str:
 def parse_seg_labels_txt(path: str | Path) -> Dict[int, str]:
     """
     Parse seg_labels.txt into {id: label_name}.
+    Only rows with trailing RGBA integer columns are considered valid labels.
     Accepts lines in forms like:
       100 Non-Brain-1 92 75 81 0
       0   Unknown
@@ -117,13 +118,15 @@ def parse_seg_labels_txt(path: str | Path) -> Dict[int, str]:
         except ValueError:
             continue
 
-        # If trailing RGBA ints exist, strip them from name parsing.
+        # Require trailing RGBA ints. Rows without RGBA are ignored.
         trailing_rgba = False
         if len(parts) >= 6:
             tail = parts[-4:]
             trailing_rgba = all(re.fullmatch(r"-?\d+", t) is not None for t in tail)
+        if not trailing_rgba:
+            continue
 
-        name_tokens = parts[1:-4] if trailing_rgba else parts[1:]
+        name_tokens = parts[1:-4]
         if not name_tokens:
             raise ValueError(f"Invalid seg label line {ln}: '{raw_line}'")
         label_name = " ".join(name_tokens).strip()

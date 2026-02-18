@@ -24,8 +24,8 @@ class TissueTaskConfig:
     num_classes: int = 0
     dice_include_bg: bool = False
     dice_empty_as_one: bool = False
-    strict_label_ids: bool = True
-    allow_unknown_label_ids: bool = False
+    strict_label_ids: bool = False
+    allow_unknown_label_ids: bool = True
     ignore_index: int = -100
     ce_class_weights: str = ""
     target_size: int = 0
@@ -60,8 +60,8 @@ class ExperimentConfig(_BaseExperimentConfig):
             num_classes=int(args.num_classes),
             dice_include_bg=bool(args.dice_include_bg),
             dice_empty_as_one=bool(args.dice_empty_as_one),
-            strict_label_ids=bool(getattr(args, "strict_label_ids", True)),
-            allow_unknown_label_ids=bool(getattr(args, "allow_unknown_label_ids", False)),
+            strict_label_ids=bool(getattr(args, "strict_label_ids", False)),
+            allow_unknown_label_ids=bool(getattr(args, "allow_unknown_label_ids", True)),
             ignore_index=int(getattr(args, "ignore_index", -100)),
             ce_class_weights=str(getattr(args, "ce_class_weights", "")),
             target_size=int(args.target_size),
@@ -159,8 +159,8 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.set_defaults(
         dice_include_bg=False,
         dice_empty_as_one=False,
-        strict_label_ids=True,
-        allow_unknown_label_ids=False,
+        strict_label_ids=False,
+        allow_unknown_label_ids=True,
     )
 
     # Keep base parser compatibility: make data-root optional and bind it from train-root in main.
@@ -186,7 +186,7 @@ def enforce_tissue_args(args: argparse.Namespace) -> None:
         )
     if int(getattr(args, "label_mode", 0)) not in {1, 2, 3, 4}:
         raise ValueError("--label-mode must be one of {1,2,3,4}")
-    if bool(getattr(args, "strict_label_ids", True)) and bool(getattr(args, "allow_unknown_label_ids", False)):
+    if bool(getattr(args, "strict_label_ids", False)) and bool(getattr(args, "allow_unknown_label_ids", True)):
         raise ValueError(
             "--allow-unknown-label-ids cannot be used while strict label id checking is enabled. "
             "Use --no-strict-label-ids together with --allow-unknown-label-ids."

@@ -78,7 +78,7 @@ python -m swin_unet.src.ver3.cli tissue ...
 | `--eval-label` | `str` | required | Root directory of eval segmentation labels. |
 | `--train-list` | `str` | required | Train scan list path (`scans_test.txt`). |
 | `--eval-list` | `str` | required | Eval scan list path (`scans_valid.txt`). |
-| `--seg-labels` | `str` | `swin_unet/src/ver3/tissue_segmentation/txt/seg_labels.txt` | Path to `seg_labels.txt`. |
+| `--seg-labels` | `str` | `swin_unet/src/ver3/tissue_segmentation/txt/seg_labels.txt` | Path to `seg_labels.txt` (only rows with trailing RGBA columns are used). |
 | `--image-ext` | `str` | `.png` | Image extension used for indexing. |
 | `--label-suffix` | `str` | `_label.npz` | Label filename suffix. |
 | `--label-key` | `str` | `""` | Optional NPZ key for label array. |
@@ -99,8 +99,8 @@ python -m swin_unet.src.ver3.cli tissue ...
 |---|---|---|---|
 | `--label-mode` | `int` | `1` | Encoding mode (`1`, `2`, `3`, `4`). |
 | `--num-classes` | `int` | `0` | Output classes override (`0` means infer from mapping). |
-| `--strict-label-ids` / `--no-strict-label-ids` | bool toggle | strict on | Require all label ids in files to exist in `seg_labels`. |
-| `--allow-unknown-label-ids` / `--no-allow-unknown-label-ids` | bool toggle | off | Only valid with non-strict ids; maps unknown ids to class `0`. |
+| `--strict-label-ids` / `--no-strict-label-ids` | bool toggle | strict off | Require all label ids in files to exist in parsed `seg_labels`. |
+| `--allow-unknown-label-ids` / `--no-allow-unknown-label-ids` | bool toggle | on | With non-strict ids, maps unknown ids to class `0`. |
 | `--ignore-index` | `int` | `-100` | `CrossEntropyLoss(ignore_index=...)`. |
 
 ### Training
