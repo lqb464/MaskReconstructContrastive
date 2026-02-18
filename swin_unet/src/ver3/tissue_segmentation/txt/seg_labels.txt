@@ -33,7 +33,6 @@
 54  Right-Amygdala                          103 255 255 0
 58  Right-Accumbens-area                    255 165 0   0
 60  Right-VentralDC                         165 42  42  0
-
 100 Non-Brain-1                             92  75  81  0
 101 Non-Brain-2                             140 190 178 0
 102 Non-Brain-3                             242 235 191 0
