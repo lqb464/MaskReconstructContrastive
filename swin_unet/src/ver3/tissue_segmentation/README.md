@@ -127,7 +127,7 @@ python -m swin_unet.src.ver3.cli tissue ...
 | `--reset-proj-head` / `--no-reset-proj-head` | bool toggle | on | Inherited projection-head reset toggle (accepted). |
 | `--enable-reconstruct` / `--disable-reconstruct` | bool toggle | on | Accepted; tissue main enforces reconstruct path on. |
 | `--enable-contrastive` / `--disable-contrastive` | bool toggle | off (tissue default) | Accepted; tissue run enforces contrastive off. |
-| `--single-view` / `--dual-view` | bool toggle | base parser default is dual-view | Accepted; tissue run enforces single-view. |
+| `--single-view` / `--dual-view` | bool toggle | base parser default is dual-view | Tissue task enforces dual-view and rejects `--single-view`. |
 
 ### Logging/outputs
 | Flag | Type | Default | Description |

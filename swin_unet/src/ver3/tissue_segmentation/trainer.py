@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 from ..config.experiment import ExperimentConfig
 from ..data.augmentation import sample_masks_anti_mirror
-from ..models.swin_unet_dualview_ssl import SwinUNetDualViewSSL
+from ..models.swin_unet_dualview_ssl import SwinUNetDualViewSSL, flip_lr
 from ..training.ckpt_io import save_checkpoint
 from ..training.utils import ensure_dir
 from .dice import (
@@ -396,18 +396,28 @@ class TissueSegmentationTrainer:
         recon1, recon2, _, _ = self.model(x, pixel_mask, plane_one_hot)
         if recon1 is None:
             raise RuntimeError("Model returned recon1=None in tissue segmentation training.")
-        if recon2 is not None:
+        if recon2 is None:
             raise RuntimeError(
-                "Tissue segmentation trainer expects single-view logits (recon2 must be None). "
-                "Check model instantiation with single_view=True."
+                "Tissue segmentation requires dual-view logits (recon2 must be present). "
+                "Check model instantiation with single_view=False."
             )
-        if recon1.ndim != 4 or int(recon1.shape[1]) != self.num_classes:
+        if recon1.ndim != 4 or int(recon1.shape[1]) != self.num_classes or recon2.ndim != 4 or int(recon2.shape[1]) != self.num_classes:
             raise RuntimeError(
-                f"Unexpected recon1 shape {tuple(recon1.shape)}, expected [B,{self.num_classes},H,W]."
+                "Unexpected reconstruction head shapes: "
+                f"recon1={tuple(recon1.shape)} recon2={tuple(recon2.shape)} "
+                f"(expected [B,{self.num_classes},H,W] for both)."
             )
 
-        loss = self.criterion(recon1, target)
-        return loss, recon1
+        # View-2 branch receives a flipped input, so its supervision target is flipped.
+        target_v2 = torch.flip(target, dims=[-1])
+        loss_v1 = self.criterion(recon1, target)
+        loss_v2 = self.criterion(recon2, target_v2)
+        loss = 0.5 * (loss_v1 + loss_v2)
+
+        # Align view-2 logits back to original orientation for metric computation and visualization.
+        recon2_aligned = flip_lr(recon2)
+        logits = 0.5 * (recon1 + recon2_aligned)
+        return loss, logits
 
     def _run_epoch(
         self,

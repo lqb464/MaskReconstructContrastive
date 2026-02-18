@@ -74,7 +74,7 @@ def build_model(cfg: ExperimentConfig, *, num_classes: int) -> SwinUNetDualViewS
         enable_contrastive=False,
         contrastive_loss_type=cfg.contrast_loss.contrastive_loss_type,
         contrastive_position=cfg.contrast_loss.contrastive_position,
-        single_view=True,
+        single_view=False,
     )
     _replace_recon_head_out_channels(model, num_classes=num_classes)
     return model
@@ -114,7 +114,7 @@ def run(args: argparse.Namespace) -> None:
     cfg = ExperimentConfig.from_args(args)
     cfg.training.enable_contrastive = False
     cfg.training.enable_reconstruct = True
-    cfg.training.single_view = True
+    cfg.training.single_view = False
     cfg.mask.enable_masking = False
     cfg.data.train_mod = 1  # fixed-list task: no random/subset train_mod sampling
 
