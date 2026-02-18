@@ -43,6 +43,9 @@ def _plot_per_class_eval_dice(
             cid = int(col.split("_", 1)[1])
         except Exception:
             continue
+        if class_name_map and cid not in class_name_map:
+            # Skip non-identified / unmapped classes so plot aligns with seg_labels.
+            continue
         y = pd.to_numeric(df[col], errors="coerce")
         if y.notna().sum() == 0:
             continue

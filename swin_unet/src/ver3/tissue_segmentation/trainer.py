@@ -295,7 +295,11 @@ class TissueSegmentationTrainer:
         self.per_class_eval_logger = PerClassDiceLogger(self.out_dir / "per_class_dice_eval.csv", self.num_classes)
         self.per_class_long_logger = PerClassDiceLongLogger(self.out_dir / "per_class_dice_by_split.csv")
         self.per_label_logger = PerLabelDiceLogger(self.out_dir / "per_label_dice.csv")
-        class_name_payload = {str(i): self.class_names.get(i, f"class_{i}") for i in range(self.num_classes)}
+        class_name_payload = {
+            str(i): str(self.class_names[i])
+            for i in range(self.num_classes)
+            if bool(self.class_valid_mask_cpu[i].item()) and (i in self.class_names)
+        }
         with (self.reports_dir / "class_id_to_name.json").open("w", encoding="utf-8") as f:
             json.dump(class_name_payload, f, ensure_ascii=True, indent=2)
 
