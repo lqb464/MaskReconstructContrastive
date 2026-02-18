@@ -72,12 +72,13 @@ def _build_segmentation_colormap(num_classes: int) -> ListedColormap:
 
 def create_segmentation_legend(
     ax: plt.Axes,
+    class_ids: Sequence[int],
     class_names: Sequence[str],
     colormap: ListedColormap,
 ) -> None:
     handles = [
-        mpatches.Patch(facecolor=colormap(i), edgecolor="black", label=str(class_names[i]))
-        for i in range(len(class_names))
+        mpatches.Patch(facecolor=colormap(int(cid)), edgecolor="black", label=str(class_names[int(cid)]))
+        for cid in class_ids
     ]
     ax.legend(
         handles=handles,
@@ -96,6 +97,26 @@ def _present_class_ids(target: torch.Tensor, pred: torch.Tensor) -> list[int]:
     ids = set(int(v) for v in torch.unique(target).tolist())
     ids.update(int(v) for v in torch.unique(pred).tolist())
     return [cid for cid in sorted(ids) if cid >= 0]
+
+
+def _identified_class_ids(
+    class_names: Optional[Dict[int, str] | Sequence[str]],
+    num_classes: int,
+) -> list[int]:
+    c = int(num_classes)
+    if c <= 0:
+        return []
+    if isinstance(class_names, dict):
+        ids: set[int] = set()
+        for raw_k in class_names.keys():
+            try:
+                cid = int(raw_k)
+            except Exception:
+                continue
+            if 0 <= cid < c:
+                ids.add(cid)
+        return sorted(ids)
+    return list(range(c))
 
 
 def save_val_visualization_grid(
@@ -158,9 +179,17 @@ def save_val_visualization_grid(
         ax2.axis("off")
 
     # Single legend for the whole figure, outside the image grid.
+    identified_ids = _identified_class_ids(class_names, num_classes)
+    identified_set = set(identified_ids)
+    legend_ids = [cid for cid in present_ids if cid in identified_set]
+    if not legend_ids:
+        legend_ids = identified_ids
+    if not legend_ids:
+        legend_ids = list(range(int(num_classes)))
+
     legend_ax = fig.add_axes([0.83, 0.12, 0.16, 0.76])
     indexed_names = [f"{i}: {names[i]}" for i in range(len(names))]
-    create_segmentation_legend(legend_ax, indexed_names, cmap)
+    create_segmentation_legend(legend_ax, legend_ids, indexed_names, cmap)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     plt.tight_layout(rect=[0.0, 0.0, 0.82, 1.0])
