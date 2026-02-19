@@ -903,6 +903,7 @@ class TissueSegmentationTrainer:
 
             if capture_vis and self.vis_dir is not None and self._val_vis_batch is not None:
                 vis_path = self.vis_dir / f"eval_vis_epoch_{epoch:04d}.png"
+                vis_flip_path = self.vis_dir / f"eval_vis_epoch_{epoch:04d}_flip.png"
                 save_val_visualization_grid(
                     val_batch=self._val_vis_batch,
                     out_path=vis_path,
@@ -910,7 +911,15 @@ class TissueSegmentationTrainer:
                     class_names=self.class_names,
                     max_items=self.vis_num,
                 )
-                print(f"[vis] Saved eval visualization: {vis_path}")
+                save_val_visualization_grid(
+                    val_batch=self._val_vis_batch,
+                    out_path=vis_flip_path,
+                    num_classes=self.num_classes,
+                    class_names=self.class_names,
+                    max_items=self.vis_num,
+                    flip_horizontal=True,
+                )
+                print(f"[vis] Saved eval visualizations: {vis_path} | {vis_flip_path}")
 
 
 __all__ = ["TissueSegmentationTrainer"]

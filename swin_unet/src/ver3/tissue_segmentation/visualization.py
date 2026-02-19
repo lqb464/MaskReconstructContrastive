@@ -126,6 +126,7 @@ def save_val_visualization_grid(
     num_classes: int,
     class_names: Optional[Dict[int, str] | Sequence[str]] = None,
     max_items: int = 4,
+    flip_horizontal: bool = False,
 ) -> None:
     """
     Save a compact grid with columns: input | target | pred.
@@ -146,6 +147,10 @@ def save_val_visualization_grid(
     x = x[:n].detach().cpu()
     y = y[:n].detach().cpu()
     pred = torch.argmax(logits[:n].detach().cpu(), dim=1)
+    if flip_horizontal:
+        x = torch.flip(x, dims=[-1])
+        y = torch.flip(y, dims=[-1])
+        pred = torch.flip(pred, dims=[-1])
 
     names = _resolve_class_names(class_names, num_classes)
     cmap = _build_segmentation_colormap(num_classes)
@@ -167,15 +172,15 @@ def save_val_visualization_grid(
     for i in range(n):
         ax0, ax1, ax2 = axes[i]
         ax0.imshow(x[i, 0].numpy(), cmap="gray", vmin=0.0, vmax=1.0)
-        ax0.set_title("input")
+        ax0.set_title("input (flip)" if flip_horizontal else "input")
         ax0.axis("off")
 
         ax1.imshow(y[i].numpy(), cmap=cmap, norm=norm, interpolation="nearest")
-        ax1.set_title("target")
+        ax1.set_title("target (flip)" if flip_horizontal else "target")
         ax1.axis("off")
 
         ax2.imshow(pred[i].numpy(), cmap=cmap, norm=norm, interpolation="nearest")
-        ax2.set_title("pred")
+        ax2.set_title("pred (flip)" if flip_horizontal else "pred")
         ax2.axis("off")
 
     # Single legend for the whole figure, outside the image grid.
