@@ -61,6 +61,9 @@ class EpochLogger:
         "eval_pc_macro_dice",
         "train_num_present_classes",
         "eval_num_present_classes",
+        "primary_metric_name",
+        "train_primary_metric",
+        "eval_primary_metric",
     ]
 
     def __init__(self, path: Path):
@@ -831,6 +834,9 @@ class TissueSegmentationTrainer:
                     "eval_pc_macro_dice": eval_stats.get("pc_macro_dice", float("nan")),
                     "train_num_present_classes": train_stats.get("num_present_classes", 0),
                     "eval_num_present_classes": eval_stats.get("num_present_classes", 0),
+                    "primary_metric_name": self.primary_metric,
+                    "train_primary_metric": train_stats.get(self.primary_metric_key, float("nan")),
+                    "eval_primary_metric": eval_stats.get(self.primary_metric_key, float("nan")),
                 }
             )
             eval_dice_tensor = eval_stats.get("per_class_dice")

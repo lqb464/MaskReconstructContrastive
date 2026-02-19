@@ -27,6 +27,47 @@ def _plot_two_lines(df: pd.DataFrame, x: str, y1: str, y2: str, out_path: Path, 
     plt.close()
 
 
+def _plot_primary_metric(df: pd.DataFrame, plot_dir: Path) -> None:
+    # Preferred path: explicit primary-metric columns logged by trainer.
+    if {"train_primary_metric", "eval_primary_metric"}.issubset(set(df.columns)):
+        metric_name = "primary_metric"
+        if "primary_metric_name" in df.columns:
+            names = [str(v) for v in df["primary_metric_name"].dropna().unique().tolist() if str(v)]
+            if names:
+                metric_name = names[-1]
+        _plot_two_lines(
+            df,
+            "epoch",
+            "train_primary_metric",
+            "eval_primary_metric",
+            plot_dir / "primary_metric.png",
+            metric_name,
+        )
+        return
+
+    # Backward-compatible fallback for older logs.
+    if {"train_pc_macro_dice", "eval_pc_macro_dice"}.issubset(set(df.columns)):
+        _plot_two_lines(
+            df,
+            "epoch",
+            "train_pc_macro_dice",
+            "eval_pc_macro_dice",
+            plot_dir / "primary_metric.png",
+            "pc_macro_dice",
+        )
+        return
+
+    if {"train_macro_dice", "eval_macro_dice"}.issubset(set(df.columns)):
+        _plot_two_lines(
+            df,
+            "epoch",
+            "train_macro_dice",
+            "eval_macro_dice",
+            plot_dir / "primary_metric.png",
+            "macro_dice",
+        )
+
+
 def _plot_per_class_eval_dice(
     df: pd.DataFrame,
     out_path: Path,
@@ -280,6 +321,7 @@ def generate_plots(csv_path: Path, plot_dir: Path) -> None:
     plot_dir.mkdir(parents=True, exist_ok=True)
 
     _plot_two_lines(df, "epoch", "train_loss", "eval_loss", plot_dir / "loss.png", "loss")
+    _plot_primary_metric(df, plot_dir)
     _plot_two_lines(df, "epoch", "train_macro_dice", "eval_macro_dice", plot_dir / "macro_dice.png", "macro_dice")
     _plot_two_lines(df, "epoch", "train_dice_min", "eval_dice_min", plot_dir / "dice_min.png", "dice_min")
     _plot_two_lines(df, "epoch", "train_dice_mean", "eval_dice_mean", plot_dir / "dice_mean.png", "dice_mean")
