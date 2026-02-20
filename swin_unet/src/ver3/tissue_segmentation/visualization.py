@@ -119,6 +119,32 @@ def _identified_class_ids(
     return list(range(c))
 
 
+def _per_class_dice_for_display(
+    target: torch.Tensor,
+    pred: torch.Tensor,
+    class_ids: Sequence[int],
+    *,
+    eps: float = 1e-6,
+) -> dict[int, float | None]:
+    """
+    Compute per-class Dice on visualization tensors.
+    Returns None for classes with zero denominator (absent in both pred and target).
+    """
+    out: dict[int, float | None] = {}
+    for cid in class_ids:
+        tgt_c = (target == int(cid))
+        pred_c = (pred == int(cid))
+        tgt_sum = int(tgt_c.sum().item())
+        pred_sum = int(pred_c.sum().item())
+        denom = tgt_sum + pred_sum
+        if denom == 0:
+            out[int(cid)] = None
+            continue
+        inter = int((tgt_c & pred_c).sum().item())
+        out[int(cid)] = float((2.0 * inter + eps) / (denom + eps))
+    return out
+
+
 def save_val_visualization_grid(
     *,
     val_batch: dict[str, torch.Tensor],
@@ -186,14 +212,20 @@ def save_val_visualization_grid(
     # Single legend for the whole figure, outside the image grid.
     identified_ids = _identified_class_ids(class_names, num_classes)
     identified_set = set(identified_ids)
-    legend_ids = [cid for cid in present_ids if cid in identified_set]
-    if not legend_ids:
-        legend_ids = identified_ids
+    legend_ids = identified_ids
     if not legend_ids:
         legend_ids = list(range(int(num_classes)))
 
+    dice_map = _per_class_dice_for_display(y, pred, legend_ids)
+
     legend_ax = fig.add_axes([0.83, 0.12, 0.16, 0.76])
-    indexed_names = [f"{i}: {names[i]}" for i in range(len(names))]
+    indexed_names = [f"{cid}: {names[cid]}" for cid in range(len(names))]
+    for cid in legend_ids:
+        d = dice_map.get(int(cid), None)
+        if d is None:
+            indexed_names[int(cid)] = f"{int(cid)}: {names[int(cid)]} (dice=NA)"
+        else:
+            indexed_names[int(cid)] = f"{int(cid)}: {names[int(cid)]} (dice={d:.3f})"
     create_segmentation_legend(legend_ax, legend_ids, indexed_names, cmap)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
