@@ -208,7 +208,7 @@ def _resolve_dataset_file_pattern(
 def run(args: argparse.Namespace) -> None:
     import torch
 
-    from ..training.utils import ensure_dir, get_device
+    from ..training.utils import ensure_dir, extract_dataset_paths, get_device, write_path_list
     from .dataset import MaskReconstructionDataset
     from .plotting import generate_plots
     from .trainer import MaskReconstructionTrainer
@@ -332,6 +332,21 @@ def run(args: argparse.Namespace) -> None:
         )
     )
 
+    out_dir = Path(cfg.logging.out_dir)
+    if cfg.logging.run_name:
+        out_dir = out_dir / cfg.logging.run_name
+    out_dir = ensure_dir(out_dir)
+
+    if bool(getattr(args, "dump_val_paths", False)) or bool(getattr(args, "dump_val_paths_only", False)):
+        val_paths = extract_dataset_paths(val_loader.dataset)
+        val_path_file = write_path_list(val_paths, out_dir / "val_paths_mask_reconstruction.txt")
+        print(f"[val_paths] task=mask_reconstruction count={len(val_paths)} file={val_path_file}")
+        for p in val_paths:
+            print(p)
+        if bool(getattr(args, "dump_val_paths_only", False)):
+            print("[val_paths] dump_val_paths_only=1; exiting before training.")
+            return
+
     model = build_model(cfg).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=float(cfg.training.lr), weight_decay=float(cfg.training.weight_decay))
     # Smoke snippet (manual quick check):
@@ -341,10 +356,6 @@ def run(args: argparse.Namespace) -> None:
     # r1, r2, _, _ = model(dummy_x, None, dummy_plane)  # dual view path
     # assert r1.shape == dummy_y.shape and (r2 is None or r2.shape == dummy_y.shape)
 
-    out_dir = Path(cfg.logging.out_dir)
-    if cfg.logging.run_name:
-        out_dir = out_dir / cfg.logging.run_name
-    out_dir = ensure_dir(out_dir)
     if cfg.logging.vis_every > 0:
         ensure_dir(out_dir / "vis")
 

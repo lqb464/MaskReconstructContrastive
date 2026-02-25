@@ -452,6 +452,16 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--save-latest-every", type=int, default=1, help='Save "latest" checkpoint every N epochs')
     p.add_argument("--save-best-after-epoch", type=int, default=0, help='Start saving "best" checkpoints from this epoch')
     p.add_argument("--save-best-every", type=int, default=1, help="Only evaluate best saving every N epochs")
+    p.add_argument(
+        "--dump-val-paths",
+        action="store_true",
+        help="Print and save all validation/eval image paths after split/list resolution.",
+    )
+    p.add_argument(
+        "--dump-val-paths-only",
+        action="store_true",
+        help="Dump validation/eval image paths then exit before training.",
+    )
     
     # Contrast Loss options
     p.add_argument("--contrastive_loss_type", type=str, default="infonce", choices=["infonce", "vicreg"])

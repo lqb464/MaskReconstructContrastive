@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 
 from ..common.cli_utils import run_entrypoint
 from ..models.swin_unet_dualview_ssl import SwinUNetDualViewSSL
-from ..training.utils import ensure_dir, get_device
+from ..training.utils import ensure_dir, extract_dataset_paths, get_device, write_path_list
 from .dataset import TissueSegmentationDataset
 from .experiment import ExperimentConfig, build_argparser, enforce_tissue_args
 from .io import (
@@ -237,6 +237,21 @@ def run(args: argparse.Namespace) -> None:
         f"empty_handling={'one' if bool(cfg.tissue.dice_empty_as_one) else 'exclude'}"
     )
 
+    out_dir = Path(cfg.logging.out_dir)
+    if cfg.logging.run_name:
+        out_dir = out_dir / cfg.logging.run_name
+    out_dir = ensure_dir(out_dir)
+
+    if bool(getattr(args, "dump_val_paths", False)) or bool(getattr(args, "dump_val_paths_only", False)):
+        eval_paths = extract_dataset_paths(eval_loader.dataset)
+        eval_path_file = write_path_list(eval_paths, out_dir / "val_paths_tissue_segmentation.txt")
+        print(f"[val_paths] task=tissue_segmentation count={len(eval_paths)} file={eval_path_file}")
+        for p in eval_paths:
+            print(p)
+        if bool(getattr(args, "dump_val_paths_only", False)):
+            print("[val_paths] dump_val_paths_only=1; exiting before training.")
+            return
+
     model = build_model(cfg, num_classes=encoding_info.num_classes).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -244,10 +259,6 @@ def run(args: argparse.Namespace) -> None:
         weight_decay=float(cfg.training.weight_decay),
     )
 
-    out_dir = Path(cfg.logging.out_dir)
-    if cfg.logging.run_name:
-        out_dir = out_dir / cfg.logging.run_name
-    out_dir = ensure_dir(out_dir)
     plot_dir = ensure_dir(out_dir / "plot")
     ensure_dir(out_dir / "reports")
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional, Sequence
 
 from .common.cli_utils import run_entrypoint
@@ -9,7 +10,13 @@ from .config.experiment import ExperimentConfig, build_argparser
 def run(args) -> None:
     from .data.dataset import create_dataloaders_from_folder
     from .trainer import Trainer
-    from .training.utils import get_device, set_seed
+    from .training.utils import (
+        ensure_dir,
+        extract_dataset_paths,
+        get_device,
+        set_seed,
+        write_path_list,
+    )
 
     cfg = ExperimentConfig.from_args(args)
     
@@ -62,6 +69,22 @@ def run(args) -> None:
     )
 
     print(f"Train batches: {len(train_loader)} | Val batches: {len(val_loader)}")
+
+    if bool(getattr(args, "dump_val_paths", False)) or bool(getattr(args, "dump_val_paths_only", False)):
+        out_dir = Path(cfg.logging.out_dir)
+        if cfg.logging.run_name:
+            out_dir = out_dir / cfg.logging.run_name
+        out_dir = ensure_dir(out_dir)
+
+        val_paths = extract_dataset_paths(val_loader.dataset)
+        val_path_file = write_path_list(val_paths, out_dir / "val_paths_ssl.txt")
+        print(f"[val_paths] task=ssl count={len(val_paths)} file={val_path_file}")
+        for p in val_paths:
+            print(p)
+
+        if bool(getattr(args, "dump_val_paths_only", False)):
+            print("[val_paths] dump_val_paths_only=1; exiting before training.")
+            return
 
     trainer = Trainer(cfg, device)
     trainer.fit(train_loader, val_loader)
