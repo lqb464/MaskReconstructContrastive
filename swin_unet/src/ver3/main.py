@@ -11,6 +11,7 @@ def run(args) -> None:
     from .data.dataset import create_dataloaders_from_folder
     from .trainer import Trainer
     from .training.utils import (
+        copy_images_to_dir,
         ensure_dir,
         extract_dataset_paths,
         get_device,
@@ -78,7 +79,9 @@ def run(args) -> None:
 
         val_paths = extract_dataset_paths(val_loader.dataset)
         val_path_file = write_path_list(val_paths, out_dir / "val_paths_ssl.txt")
+        copied_n = copy_images_to_dir(val_paths, out_dir / "val_images_ssl")
         print(f"[val_paths] task=ssl count={len(val_paths)} file={val_path_file}")
+        print(f"[val_paths] copied_images={copied_n} dir={out_dir / 'val_images_ssl'}")
         for p in val_paths:
             print(p)
 

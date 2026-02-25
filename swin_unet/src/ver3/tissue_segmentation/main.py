@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 
 from ..common.cli_utils import run_entrypoint
 from ..models.swin_unet_dualview_ssl import SwinUNetDualViewSSL
-from ..training.utils import ensure_dir, extract_dataset_paths, get_device, write_path_list
+from ..training.utils import copy_images_to_dir, ensure_dir, extract_dataset_paths, get_device, write_path_list
 from .dataset import TissueSegmentationDataset
 from .experiment import ExperimentConfig, build_argparser, enforce_tissue_args
 from .io import (
@@ -245,7 +245,12 @@ def run(args: argparse.Namespace) -> None:
     if bool(getattr(args, "dump_val_paths", False)) or bool(getattr(args, "dump_val_paths_only", False)):
         eval_paths = extract_dataset_paths(eval_loader.dataset)
         eval_path_file = write_path_list(eval_paths, out_dir / "val_paths_tissue_segmentation.txt")
+        copied_n = copy_images_to_dir(eval_paths, out_dir / "val_images_tissue_segmentation")
         print(f"[val_paths] task=tissue_segmentation count={len(eval_paths)} file={eval_path_file}")
+        print(
+            f"[val_paths] copied_images={copied_n} "
+            f"dir={out_dir / 'val_images_tissue_segmentation'}"
+        )
         for p in eval_paths:
             print(p)
         if bool(getattr(args, "dump_val_paths_only", False)):

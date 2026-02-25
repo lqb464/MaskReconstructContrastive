@@ -208,7 +208,7 @@ def _resolve_dataset_file_pattern(
 def run(args: argparse.Namespace) -> None:
     import torch
 
-    from ..training.utils import ensure_dir, extract_dataset_paths, get_device, write_path_list
+    from ..training.utils import copy_images_to_dir, ensure_dir, extract_dataset_paths, get_device, write_path_list
     from .dataset import MaskReconstructionDataset
     from .plotting import generate_plots
     from .trainer import MaskReconstructionTrainer
@@ -340,7 +340,12 @@ def run(args: argparse.Namespace) -> None:
     if bool(getattr(args, "dump_val_paths", False)) or bool(getattr(args, "dump_val_paths_only", False)):
         val_paths = extract_dataset_paths(val_loader.dataset)
         val_path_file = write_path_list(val_paths, out_dir / "val_paths_mask_reconstruction.txt")
+        copied_n = copy_images_to_dir(val_paths, out_dir / "val_images_mask_reconstruction")
         print(f"[val_paths] task=mask_reconstruction count={len(val_paths)} file={val_path_file}")
+        print(
+            f"[val_paths] copied_images={copied_n} "
+            f"dir={out_dir / 'val_images_mask_reconstruction'}"
+        )
         for p in val_paths:
             print(p)
         if bool(getattr(args, "dump_val_paths_only", False)):

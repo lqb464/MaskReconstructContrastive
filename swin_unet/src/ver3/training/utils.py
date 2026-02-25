@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Dict
+import shutil
 
 import numpy as np
 import torch
@@ -93,3 +94,21 @@ def write_path_list(paths: list[str], out_path: Path) -> Path:
         text += "\n"
     out_path.write_text(text, encoding="utf-8")
     return out_path
+
+
+def copy_images_to_dir(paths: list[str], out_dir: Path) -> int:
+    """
+    Copy image files to out_dir and return number of copied files.
+    Files are prefixed with zero-padded index to avoid name collisions.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    for i, p in enumerate(paths):
+        src = Path(p)
+        if not src.exists() or (not src.is_file()):
+            continue
+        dst_name = f"{i:06d}_{src.name}"
+        dst = out_dir / dst_name
+        shutil.copy2(src, dst)
+        copied += 1
+    return copied
