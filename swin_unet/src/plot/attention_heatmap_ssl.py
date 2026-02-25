@@ -4,9 +4,8 @@ import argparse
 import json
 import math
 import types
-from dataclasses import fields, is_dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional, Sequence, Union, get_args, get_origin, get_type_hints
+from typing import Any, Dict, Iterable, Optional, Sequence
 
 import matplotlib
 
@@ -17,7 +16,10 @@ from PIL import Image  # noqa: E402
 import torch  # noqa: E402
 import torch.nn.functional as F  # noqa: E402
 
-from swin_unet.src.ver3.config.experiment import ExperimentConfig
+from swin_unet.src.ver3.config.experiment import (
+    ExperimentConfig,
+    build_argparser as build_ssl_argparser,
+)
 from swin_unet.src.ver3.data.dataset import plane_to_one_hot
 from swin_unet.src.ver3.models.swin_unet_dualview_ssl import (
     SwinUNetDualViewSSL,
@@ -29,41 +31,6 @@ from swin_unet.src.ver3.training.ckpt_io import (
     load_checkpoint_weights_filtered,
 )
 from swin_unet.src.ver3.training.utils import get_device
-
-
-def _dataclass_from_dict(dc_type, raw: dict):
-    if not is_dataclass(dc_type):
-        raise TypeError(f"{dc_type} is not a dataclass")
-
-    type_hints = get_type_hints(dc_type)
-    kwargs = {}
-    for f in fields(dc_type):
-        if f.name not in raw:
-            continue
-        val = raw[f.name]
-        ftype = type_hints.get(f.name, f.type)
-        if is_dataclass(ftype) and isinstance(val, dict):
-            kwargs[f.name] = _dataclass_from_dict(ftype, val)
-            continue
-        origin = get_origin(ftype)
-        args = get_args(ftype)
-        if origin is Union and isinstance(val, dict):
-            dc_candidates = [a for a in args if is_dataclass(a)]
-            if dc_candidates:
-                kwargs[f.name] = _dataclass_from_dict(dc_candidates[0], val)
-                continue
-        kwargs[f.name] = val
-    return dc_type(**kwargs)
-
-
-def _cfg_from_checkpoint(ckpt_path: Path) -> ExperimentConfig:
-    obj = torch.load(ckpt_path, map_location="cpu")
-    if not isinstance(obj, dict):
-        raise ValueError(f"Invalid checkpoint object in {ckpt_path}")
-    raw_cfg = obj.get("cfg", None)
-    if not isinstance(raw_cfg, dict):
-        raise ValueError(f"Checkpoint {ckpt_path} has no cfg dictionary")
-    return _dataclass_from_dict(ExperimentConfig, raw_cfg)
 
 
 def _build_model(cfg: ExperimentConfig, device: torch.device) -> SwinUNetDualViewSSL:
@@ -98,54 +65,17 @@ def _load_weights(
     ckpt_path: Path,
     ckpt_load_mode: str,
     device: torch.device,
-    allow_partial_load_fallback: bool,
 ) -> None:
-    def _load_matching_keys_from_ckpt() -> None:
-        obj = torch.load(ckpt_path, map_location=device)
-        state = obj.get("model", None)
-        if not isinstance(state, dict):
-            raise ValueError(f"Checkpoint {ckpt_path} has no valid 'model' state_dict.")
-
-        model_state = model.state_dict()
-        matched: dict[str, torch.Tensor] = {}
-        skipped_missing = 0
-        skipped_shape = 0
-        for k, v in state.items():
-            if k not in model_state:
-                skipped_missing += 1
-                continue
-            if tuple(model_state[k].shape) != tuple(v.shape):
-                skipped_shape += 1
-                continue
-            matched[k] = v
-
-        msg = model.load_state_dict(matched, strict=False)
-        print(
-            "[ckpt] partial load fallback applied: "
-            f"matched={len(matched)} "
-            f"skipped_missing={skipped_missing} "
-            f"skipped_shape={skipped_shape} "
-            f"missing_after_load={len(msg.missing_keys)} "
-            f"unexpected_after_load={len(msg.unexpected_keys)}"
-        )
-
     mode = str(ckpt_load_mode).strip().lower()
     if mode == "none":
         return
     if mode == "full":
-        try:
-            load_checkpoint_weights(
-                ckpt_path=ckpt_path,
-                device=device,
-                model=model,
-                strict=True,
-            )
-        except RuntimeError as exc:
-            if not bool(allow_partial_load_fallback):
-                raise
-            print(f"[ckpt] strict full load failed: {exc}")
-            print("[ckpt] fallback to partial matched-key load (name+shape match).")
-            _load_matching_keys_from_ckpt()
+        load_checkpoint_weights(
+            ckpt_path=ckpt_path,
+            device=device,
+            model=model,
+            strict=True,
+        )
         return
     if mode == "encoder_only":
         load_checkpoint_weights_filtered(
@@ -370,19 +300,28 @@ def _saca_position(module_name: str) -> str:
 
 
 def run(args: argparse.Namespace) -> None:
-    ckpt_path = Path(args.resume_ckpt).expanduser().resolve()
+    cfg = ExperimentConfig.from_args(args)
+    if not str(cfg.training.resume_ckpt).strip():
+        raise ValueError("Missing --resume-ckpt. Provide a checkpoint path to visualize attention.")
+    ckpt_path = Path(cfg.training.resume_ckpt).expanduser().resolve()
     if not ckpt_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
     image_path = Path(args.input_image).expanduser().resolve()
     if not image_path.exists():
         raise FileNotFoundError(f"Input image not found: {image_path}")
 
-    out_dir = Path(args.out_dir).expanduser().resolve()
+    if str(args.plot_out_dir).strip():
+        out_dir = Path(args.plot_out_dir).expanduser().resolve()
+    else:
+        out_dir = Path(cfg.logging.out_dir)
+        if cfg.logging.run_name:
+            out_dir = out_dir / cfg.logging.run_name
+        out_dir = out_dir / "attention_heatmap"
+        out_dir = out_dir.expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "per_module").mkdir(parents=True, exist_ok=True)
 
     device = get_device(cpu=bool(args.cpu))
-    cfg = _cfg_from_checkpoint(ckpt_path)
     if int(args.image_size) > 0:
         cfg.data.image_size = int(args.image_size)
 
@@ -390,9 +329,8 @@ def run(args: argparse.Namespace) -> None:
     _load_weights(
         model=model,
         ckpt_path=ckpt_path,
-        ckpt_load_mode=args.ckpt_load_mode,
+        ckpt_load_mode=cfg.training.ckpt_load_mode,
         device=device,
-        allow_partial_load_fallback=bool(args.allow_partial_load_fallback),
     )
 
     # Force reconstruction-only + dual-view for visualization run.
@@ -444,7 +382,7 @@ def run(args: argparse.Namespace) -> None:
         "input_image": str(image_path),
         "plane": plane_name,
         "image_size": int(cfg.data.image_size),
-        "ckpt_load_mode": str(args.ckpt_load_mode),
+        "ckpt_load_mode": str(cfg.training.ckpt_load_mode),
         "num_records": int(len(module_maps)),
         "records": [],
         "saca_positions": sorted(set(_saca_position(x["name"]) for x in saca_maps)),
@@ -518,31 +456,15 @@ def run(args: argparse.Namespace) -> None:
 
 
 def build_argparser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser("Visualize Swin/SACA attention heatmaps from SSL checkpoint")
-    p.add_argument("--resume-ckpt", type=str, required=True, help="Path to SSL checkpoint (.pt)")
-    p.add_argument(
-        "--ckpt-load-mode",
-        type=str,
-        default="full",
-        choices=["none", "full", "encoder_only"],
-        help="Checkpoint loading mode (same semantics as ver3 experiment.py)",
-    )
-    p.add_argument(
-        "--allow-partial-load-fallback",
-        action="store_true",
-        help="If strict full load fails (legacy arch mismatch), load only matching keys by name+shape.",
-    )
-    p.add_argument(
-        "--no-allow-partial-load-fallback",
-        dest="allow_partial_load_fallback",
-        action="store_false",
-    )
-    p.set_defaults(allow_partial_load_fallback=True)
+    p = build_ssl_argparser()
+    p.description = "Visualize Swin/SACA attention heatmaps from SSL checkpoint"
     p.add_argument("--input-image", type=str, required=True, help="Path to single grayscale image")
-    p.add_argument("--out-dir", type=str, default="swin_unet/outputs/attention_heatmap_ssl")
-    p.add_argument("--plane", type=str, default="auto", choices=["axial", "coronal", "auto"])
-    p.add_argument("--image-size", type=int, default=0, help="Override image size (0 uses checkpoint cfg)")
-    p.add_argument("--cpu", action="store_true")
+    p.add_argument(
+        "--plot-out-dir",
+        type=str,
+        default="",
+        help="Optional output dir for plots; default=<out-dir>/<run-name>/attention_heatmap",
+    )
     p.add_argument("--save-npy", action="store_true", help="Also save raw heatmap arrays as .npy")
     return p
 
