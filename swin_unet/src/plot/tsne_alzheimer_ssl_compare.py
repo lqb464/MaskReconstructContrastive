@@ -409,9 +409,22 @@ def _set_not_required(parser: argparse.ArgumentParser, dest: str) -> None:
             action.required = False
 
 
+def _has_option(parser: argparse.ArgumentParser, option: str) -> bool:
+    return option in parser._option_string_actions
+
+
 def build_argparser() -> argparse.ArgumentParser:
     p = build_ssl_argparser()
     _set_not_required(p, "data_root")
+    # Keep tsne script defaults while inheriting full ver3 CLI.
+    p.set_defaults(
+        out_dir="swin_unet/outputs/alzheimer_tsne",
+        image_size=256,
+        batch_size=32,
+        num_workers=2,
+        seed=42,
+        cpu=False,
+    )
 
     g = p.add_argument_group("tsne_compare")
     g.add_argument("--mode", type=str, default="single", choices=["single", "compare"], help="single: run one model and export info+plots. compare: use two info files and render both.")
@@ -429,15 +442,10 @@ def build_argparser() -> argparse.ArgumentParser:
         choices=["ckpt", "cli"],
         help="ckpt: build model from its checkpoint cfg. cli: build from current inherited ver3 CLI args.",
     )
-    g.add_argument("--out-dir", type=Path, default=Path("swin_unet/outputs/alzheimer_tsne"), help="Output directory.")
     g.add_argument("--info-out", type=Path, default=Path(""), help="Info output file (.npz) for single mode. Default: out-dir/<tag>_tsne_info.npz")
 
-    g.add_argument("--image-size", type=int, default=256, help="Input resize for HF images and model override.")
-    g.add_argument("--batch-size", type=int, default=32)
-    g.add_argument("--num-workers", type=int, default=2)
     g.add_argument("--max-items", type=int, default=0, help="Max test samples to use (0 = all).")
     g.add_argument("--perplexity", type=float, default=30.0)
-    g.add_argument("--seed", type=int, default=42)
     g.add_argument("--alpha", type=float, default=0.8, help="Scatter alpha (default 0.8 = 80%).")
     g.add_argument("--point-size", type=float, default=14.0)
     g.add_argument(
@@ -446,7 +454,8 @@ def build_argparser() -> argparse.ArgumentParser:
         default="Non_Demented:#66c2a4,Very_Mild_Demented:#31a354,Mild_Demented:#2ca25f,Moderate_Demented:#006d2c",
         help="Comma list for single mode: 'Class:#RRGGBB,...'",
     )
-    g.add_argument("--cpu", action="store_true", help="Force CPU.")
+    if not _has_option(p, "--cpu"):
+        g.add_argument("--cpu", action="store_true", help="Force CPU.")
     return p
 
 
