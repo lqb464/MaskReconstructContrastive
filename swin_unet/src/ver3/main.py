@@ -20,6 +20,12 @@ def run(args) -> None:
     )
 
     cfg = ExperimentConfig.from_args(args)
+    if str(getattr(cfg.model, "backbone", "swin")).lower() == "unet":
+        cfg.training.enable_reconstruct = True
+        cfg.training.enable_contrastive = False
+        cfg.model.enable_saca = False
+        if float(cfg.training.lambda_recon) == 0.0:
+            cfg.training.lambda_recon = 1.0
     
     print("="*100)
     print("Configuration:")
@@ -27,6 +33,7 @@ def run(args) -> None:
     print("="*100)
     
     print("Loss Function:")
+    print("Backbone:", cfg.model.backbone)
     print("Contrastive loss type:", cfg.contrast_loss.contrastive_loss_type)
     print("Contrastive position:", cfg.contrast_loss.contrastive_position)
     print("L =", cfg.training.lambda_contrast, "* L_contrast +", cfg.training.lambda_recon, "* L_recon")

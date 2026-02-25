@@ -42,6 +42,7 @@ class MaskConfig:
 @dataclass
 class ModelConfig:
     """Model architecture configuration (SwinUNet dual-view SSL)"""
+    backbone: str = "swin"  # "swin" | "unet"
     in_ch: int = 1
 
     # Swin/UNet knobs (Phase 1 implementation)
@@ -69,6 +70,9 @@ class ModelConfig:
     saca_positions: list[str] = field(default_factory=list)
     saca_gate_init: float = 0.0 
     saca_warmup_epochs: int = 5 
+    unet_base_ch: int = 16
+    unet_use_gn: bool = False
+    unet_use_se: bool = False
     
 
 @dataclass
@@ -126,7 +130,7 @@ class DataConfig:
     """Data loading configuration"""
     data_root: str = ""
     preprocessed_dir: str = ""
-    train_mod: int = 1
+    train_mod: float = 1.0
     image_size: int = 192
     plane: str = "axial"  # "axial" | "coronal" | "auto"
     skip_resize_in_loader: bool = False
@@ -193,6 +197,7 @@ class ExperimentConfig:
         """Create config from argparse namespace"""
         cfg = cls(
             model=ModelConfig(
+                backbone=("unet" if getattr(args, "unet", False) else "swin"),
                 in_ch=args.in_ch,
                 patch_size=args.patch_size,
                 embed_dim=args.embed_dim,
@@ -210,6 +215,9 @@ class ExperimentConfig:
                 saca_positions=[],
                 saca_gate_init=args.saca_gate_init,
                 saca_warmup_epochs=args.saca_warmup_epochs,
+                unet_base_ch=getattr(args, "unet_base_ch", 16),
+                unet_use_gn=getattr(args, "unet_use_gn", False),
+                unet_use_se=getattr(args, "unet_use_se", False),
             ),
             training=TrainingConfig(
                 epochs=args.epochs,
@@ -320,7 +328,16 @@ def build_argparser() -> argparse.ArgumentParser:
     # Data (folder dataset)
     p.add_argument("--data-root", type=str, required=True, help="Root folder containing subfolders of images")
     p.add_argument("--preprocessed-dir", type=str, default="", help="Optional root/folder of offline preprocessed data.")
-    p.add_argument("--train-mod", type=int, default=1, help="Use only items where index%%train_mod==0")
+    p.add_argument(
+        "--train-mod",
+        type=float,
+        default=1.0,
+        help=(
+            "Train subsampling factor (>=1). "
+            "Integer k keeps indices 0,k,2k,... ; "
+            "float (e.g. 2.5) keeps ~1/2.5 samples with deterministic interleaving."
+        ),
+    )
     p.add_argument("--image-size", type=int, default=192)
     p.add_argument("--plane", type=str, default="axial", choices=["axial", "coronal", "auto"])
     p.add_argument("--skip-resize-in-loader", action="store_true", help="Skip resize work in dataset loader (for preprocessed data).")
@@ -356,6 +373,10 @@ def build_argparser() -> argparse.ArgumentParser:
     p.set_defaults(enable_masking=True)
 
     # Model
+    p.add_argument("--unet", action="store_true", help="Use UNet backbone adapter (reconstruction-only mode).")
+    p.add_argument("--unet-base-ch", type=int, default=16, help="Base channels for UNet backbone when --unet is enabled.")
+    p.add_argument("--unet-use-gn", action="store_true", help="Use GroupNorm in UNet backbone.")
+    p.add_argument("--unet-use-se", action="store_true", help="Use SE blocks in UNet backbone.")
     p.add_argument("--in-ch", type=int, default=1)
     p.add_argument("--embed-dim", type=int, default=96)
     p.add_argument("--enc-depths", type=int, nargs=4, default=[2, 2, 6, 2])

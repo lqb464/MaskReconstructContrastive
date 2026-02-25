@@ -27,7 +27,9 @@ from .viz.visualization import (
     run_tsne_visualization,
     save_image_grid,
 )
-from .models.swin_unet_dualview_ssl import SwinUNetDualViewSSL, flip_lr
+from .models.model_utils import flip_lr
+from .models.swin_unet_dualview_ssl import SwinUNetDualViewSSL
+from .models.unet_dualview_ssl import UNetDualViewSSL
 
 from .training.batch_ops import prepare_inputs
 from .training.ckpt_io import load_checkpoint_weights, load_checkpoint_weights_filtered, save_checkpoint
@@ -72,27 +74,39 @@ class Trainer:
         self.loss_decomp_csv_path = self.out_dir / "loss_decomp.csv"
         self.loss_logger = LossDecompCSVLogger(self.loss_decomp_csv_path)
 
-        self.model = SwinUNetDualViewSSL(
-            in_ch=cfg.model.in_ch,
-            image_size=cfg.data.image_size,
-            patch_size=cfg.model.patch_size,
-            embed_dim=cfg.model.embed_dim,
-            enc_depths=tuple(cfg.model.enc_depths),
-            dec_depths=tuple(cfg.model.dec_depths),
-            num_heads=tuple(cfg.model.num_heads),
-            window_size=cfg.model.window_size,
-            proj_dim=cfg.model.proj_dim,
-            plane_inject_method=cfg.model.plane_inject_method,
-            enable_saca=cfg.model.enable_saca,
-            saca_position=cfg.model.saca_position,
-            saca_gate_init=cfg.model.saca_gate_init,
-            saca_warmup_epochs=cfg.model.saca_warmup_epochs,
-            enable_reconstruct=cfg.training.enable_reconstruct,
-            enable_contrastive=cfg.training.enable_contrastive,
-            contrastive_loss_type=self.cfg.contrast_loss.contrastive_loss_type,
-            contrastive_position=self.cfg.contrast_loss.contrastive_position,
-            single_view=cfg.training.single_view,
-        ).to(device)
+        backbone = str(getattr(cfg.model, "backbone", "swin")).lower()
+        if backbone == "unet":
+            self.model = UNetDualViewSSL(
+                in_ch=cfg.model.in_ch,
+                base_ch=int(getattr(cfg.model, "unet_base_ch", 16)),
+                use_gn=bool(getattr(cfg.model, "unet_use_gn", False)),
+                use_se=bool(getattr(cfg.model, "unet_use_se", False)),
+                enable_reconstruct=cfg.training.enable_reconstruct,
+                enable_contrastive=cfg.training.enable_contrastive,
+                single_view=cfg.training.single_view,
+            ).to(device)
+        else:
+            self.model = SwinUNetDualViewSSL(
+                in_ch=cfg.model.in_ch,
+                image_size=cfg.data.image_size,
+                patch_size=cfg.model.patch_size,
+                embed_dim=cfg.model.embed_dim,
+                enc_depths=tuple(cfg.model.enc_depths),
+                dec_depths=tuple(cfg.model.dec_depths),
+                num_heads=tuple(cfg.model.num_heads),
+                window_size=cfg.model.window_size,
+                proj_dim=cfg.model.proj_dim,
+                plane_inject_method=cfg.model.plane_inject_method,
+                enable_saca=cfg.model.enable_saca,
+                saca_position=cfg.model.saca_position,
+                saca_gate_init=cfg.model.saca_gate_init,
+                saca_warmup_epochs=cfg.model.saca_warmup_epochs,
+                enable_reconstruct=cfg.training.enable_reconstruct,
+                enable_contrastive=cfg.training.enable_contrastive,
+                contrastive_loss_type=self.cfg.contrast_loss.contrastive_loss_type,
+                contrastive_position=self.cfg.contrast_loss.contrastive_position,
+                single_view=cfg.training.single_view,
+            ).to(device)
         
         # ---- Checkpoint loading modes ----
         resume_ckpt = getattr(cfg.training, "resume_ckpt", "")
