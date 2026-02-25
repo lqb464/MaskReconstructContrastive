@@ -458,6 +458,12 @@ def run(args: argparse.Namespace) -> None:
 def build_argparser() -> argparse.ArgumentParser:
     p = build_ssl_argparser()
     p.description = "Visualize Swin/SACA attention heatmaps from SSL checkpoint"
+    # Plot mode does not need dataset root; keep compatibility with shared ver3 parser.
+    for action in p._actions:
+        if action.dest == "data_root":
+            action.required = False
+            if action.default is None:
+                action.default = ""
     p.add_argument("--input-image", type=str, required=True, help="Path to single grayscale image")
     p.add_argument(
         "--plot-out-dir",
