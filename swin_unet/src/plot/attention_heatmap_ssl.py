@@ -98,17 +98,54 @@ def _load_weights(
     ckpt_path: Path,
     ckpt_load_mode: str,
     device: torch.device,
+    allow_partial_load_fallback: bool,
 ) -> None:
+    def _load_matching_keys_from_ckpt() -> None:
+        obj = torch.load(ckpt_path, map_location=device)
+        state = obj.get("model", None)
+        if not isinstance(state, dict):
+            raise ValueError(f"Checkpoint {ckpt_path} has no valid 'model' state_dict.")
+
+        model_state = model.state_dict()
+        matched: dict[str, torch.Tensor] = {}
+        skipped_missing = 0
+        skipped_shape = 0
+        for k, v in state.items():
+            if k not in model_state:
+                skipped_missing += 1
+                continue
+            if tuple(model_state[k].shape) != tuple(v.shape):
+                skipped_shape += 1
+                continue
+            matched[k] = v
+
+        msg = model.load_state_dict(matched, strict=False)
+        print(
+            "[ckpt] partial load fallback applied: "
+            f"matched={len(matched)} "
+            f"skipped_missing={skipped_missing} "
+            f"skipped_shape={skipped_shape} "
+            f"missing_after_load={len(msg.missing_keys)} "
+            f"unexpected_after_load={len(msg.unexpected_keys)}"
+        )
+
     mode = str(ckpt_load_mode).strip().lower()
     if mode == "none":
         return
     if mode == "full":
-        load_checkpoint_weights(
-            ckpt_path=ckpt_path,
-            device=device,
-            model=model,
-            strict=True,
-        )
+        try:
+            load_checkpoint_weights(
+                ckpt_path=ckpt_path,
+                device=device,
+                model=model,
+                strict=True,
+            )
+        except RuntimeError as exc:
+            if not bool(allow_partial_load_fallback):
+                raise
+            print(f"[ckpt] strict full load failed: {exc}")
+            print("[ckpt] fallback to partial matched-key load (name+shape match).")
+            _load_matching_keys_from_ckpt()
         return
     if mode == "encoder_only":
         load_checkpoint_weights_filtered(
@@ -355,6 +392,7 @@ def run(args: argparse.Namespace) -> None:
         ckpt_path=ckpt_path,
         ckpt_load_mode=args.ckpt_load_mode,
         device=device,
+        allow_partial_load_fallback=bool(args.allow_partial_load_fallback),
     )
 
     # Force reconstruction-only + dual-view for visualization run.
@@ -489,6 +527,17 @@ def build_argparser() -> argparse.ArgumentParser:
         choices=["none", "full", "encoder_only"],
         help="Checkpoint loading mode (same semantics as ver3 experiment.py)",
     )
+    p.add_argument(
+        "--allow-partial-load-fallback",
+        action="store_true",
+        help="If strict full load fails (legacy arch mismatch), load only matching keys by name+shape.",
+    )
+    p.add_argument(
+        "--no-allow-partial-load-fallback",
+        dest="allow_partial_load_fallback",
+        action="store_false",
+    )
+    p.set_defaults(allow_partial_load_fallback=True)
     p.add_argument("--input-image", type=str, required=True, help="Path to single grayscale image")
     p.add_argument("--out-dir", type=str, default="swin_unet/outputs/attention_heatmap_ssl")
     p.add_argument("--plane", type=str, default="auto", choices=["axial", "coronal", "auto"])
