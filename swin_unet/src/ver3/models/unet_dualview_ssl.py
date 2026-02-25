@@ -81,6 +81,7 @@ class UNetDualViewSSL(nn.Module):
         *,
         in_ch: int = 1,
         base_ch: int = 16,
+        out_ch: int = 1,
         use_gn: bool = False,
         use_se: bool = False,
         enable_reconstruct: bool = True,
@@ -109,7 +110,9 @@ class UNetDualViewSSL(nn.Module):
         self.up2 = _UpBlock(base_ch * 4, base_ch * 4, base_ch * 2, use_gn=use_gn)
         self.up3 = _UpBlock(base_ch * 2, base_ch * 2, base_ch, use_gn=use_gn)
         self.up4 = _UpBlock(base_ch, base_ch, base_ch, use_gn=use_gn)
-        self.out_conv = nn.Conv2d(base_ch, 1, kernel_size=1)
+        if int(out_ch) < 1:
+            raise ValueError(f"out_ch must be >=1, got {out_ch}")
+        self.out_conv = nn.Conv2d(base_ch, int(out_ch), kernel_size=1)
 
     @staticmethod
     def _apply_pixel_mask(x: torch.Tensor, pixel_mask: Optional[torch.Tensor]) -> torch.Tensor:

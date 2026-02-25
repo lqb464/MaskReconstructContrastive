@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 from ..config.experiment import ExperimentConfig
 from ..data.augmentation import sample_masks_anti_mirror
-from ..models.swin_unet_dualview_ssl import SwinUNetDualViewSSL, flip_lr
+from ..models.model_utils import flip_lr
 from ..training.ckpt_io import save_checkpoint
 from ..training.utils import ensure_dir
 from .dice import (
@@ -235,7 +235,7 @@ class TissueSegmentationTrainer:
     def __init__(
         self,
         *,
-        model: SwinUNetDualViewSSL,
+        model: torch.nn.Module,
         optimizer: torch.optim.Optimizer,
         device: torch.device,
         out_dir: Path,
@@ -360,17 +360,22 @@ class TissueSegmentationTrainer:
                 "Ensure model/data num_classes are aligned."
             )
 
-        for attr in ("recon_head_v1", "recon_head_v2"):
-            head = getattr(self.model, attr, None)
-            if head is None:
-                raise RuntimeError(f"Model missing {attr}; tissue task requires reconstruction head for logits.")
-            if not hasattr(head, "__len__") or len(head) < 1 or not isinstance(head[-1], torch.nn.Conv2d):
-                raise RuntimeError(f"Unexpected {attr} structure; expected nn.Sequential ending with Conv2d")
-            out_ch = int(head[-1].out_channels)
-            if out_ch != int(self.num_classes):
-                raise RuntimeError(
-                    f"{attr} output channels ({out_ch}) != num_classes ({self.num_classes})"
-                )
+        # Swin backbone exposes recon_head_v1/v2. UNet adapter may not expose these attributes,
+        # and output channel compatibility is validated in _forward_views via runtime shape checks.
+        has_recon_head_v1 = hasattr(self.model, "recon_head_v1")
+        has_recon_head_v2 = hasattr(self.model, "recon_head_v2")
+        if has_recon_head_v1 and has_recon_head_v2:
+            for attr in ("recon_head_v1", "recon_head_v2"):
+                head = getattr(self.model, attr, None)
+                if head is None:
+                    raise RuntimeError(f"Model missing {attr}; tissue task requires reconstruction head for logits.")
+                if not hasattr(head, "__len__") or len(head) < 1 or not isinstance(head[-1], torch.nn.Conv2d):
+                    raise RuntimeError(f"Unexpected {attr} structure; expected nn.Sequential ending with Conv2d")
+                out_ch = int(head[-1].out_channels)
+                if out_ch != int(self.num_classes):
+                    raise RuntimeError(
+                        f"{attr} output channels ({out_ch}) != num_classes ({self.num_classes})"
+                    )
 
     def _build_scheduler(self, total_epochs: int) -> None:
         total_epochs = max(1, int(total_epochs))

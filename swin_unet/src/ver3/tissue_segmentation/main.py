@@ -9,6 +9,7 @@ from torch.utils.data import DataLoader
 
 from ..common.cli_utils import run_entrypoint
 from ..models.swin_unet_dualview_ssl import SwinUNetDualViewSSL
+from ..models.unet_dualview_ssl import UNetDualViewSSL
 from ..training.utils import copy_images_to_dir, ensure_dir, extract_dataset_paths, get_device, write_path_list
 from ..data.dataset import select_indices_by_train_mod
 from .dataset import TissueSegmentationDataset
@@ -48,12 +49,25 @@ def _replace_recon_head_out_channels(model: SwinUNetDualViewSSL, num_classes: in
         head[-1] = nn.Conv2d(last_conv.in_channels, int(num_classes), kernel_size=1)
 
 
-def build_model(cfg: ExperimentConfig, *, num_classes: int) -> SwinUNetDualViewSSL:
+def build_model(cfg: ExperimentConfig, *, num_classes: int):
     mcfg = cfg.model
     tcfg = cfg.training
 
     if bool(getattr(tcfg, "enable_contrastive", False)):
         raise ValueError("tissue_segmentation entrypoint forbids contrastive mode.")
+
+    backbone = str(getattr(mcfg, "backbone", "swin")).lower()
+    if backbone == "unet":
+        return UNetDualViewSSL(
+            in_ch=mcfg.in_ch,
+            base_ch=int(getattr(mcfg, "unet_base_ch", 16)),
+            out_ch=int(num_classes),
+            use_gn=bool(getattr(mcfg, "unet_use_gn", False)),
+            use_se=bool(getattr(mcfg, "unet_use_se", False)),
+            enable_reconstruct=True,
+            enable_contrastive=False,
+            single_view=False,
+        )
 
     model = SwinUNetDualViewSSL(
         in_ch=mcfg.in_ch,

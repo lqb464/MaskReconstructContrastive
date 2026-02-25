@@ -12,6 +12,7 @@ from ..common.cli_utils import run_entrypoint
 from .experiment import ExperimentConfig, build_argparser, enforce_recon_only_args
 from .dataset import MaskReconstructionDataset
 from ..models.swin_unet_dualview_ssl import SwinUNetDualViewSSL
+from ..models.unet_dualview_ssl import UNetDualViewSSL
 
 PREPROCESS_META_FILENAME = "preprocess_meta.json"
 
@@ -124,17 +125,25 @@ def make_dataloaders(
     return _loader(Subset(train_ds, train_idx), shuffle=True), _loader(Subset(train_ds, val_idx), shuffle=False)
 
 
-def build_model(cfg: ExperimentConfig) -> SwinUNetDualViewSSL:
+def build_model(cfg: ExperimentConfig):
     """Instantiate Swin-UNet using shared config to honor SACA/contrastive flags."""
-    from ..models.swin_unet_dualview_ssl import SwinUNetDualViewSSL
-
     mcfg = cfg.model
     tcfg = cfg.training
     if bool(getattr(tcfg, "enable_contrastive", False)):
         raise ValueError("mask_reconstruction entrypoint forbids contrastive mode.")
-    # if bool(getattr(cfg.mask, "enable_masking", False)):
-    #     raise ValueError("mask_reconstruction entrypoint forbids masking mode.")
-    model = SwinUNetDualViewSSL(
+    backbone = str(getattr(mcfg, "backbone", "swin")).lower()
+    if backbone == "unet":
+        return UNetDualViewSSL(
+            in_ch=mcfg.in_ch,
+            base_ch=int(getattr(mcfg, "unet_base_ch", 16)),
+            out_ch=1,
+            use_gn=bool(getattr(mcfg, "unet_use_gn", False)),
+            use_se=bool(getattr(mcfg, "unet_use_se", False)),
+            enable_reconstruct=tcfg.enable_reconstruct,
+            enable_contrastive=False,
+            single_view=tcfg.single_view,
+        )
+    return SwinUNetDualViewSSL(
         in_ch=mcfg.in_ch,
         image_size=cfg.data.image_size,
         patch_size=mcfg.patch_size,
@@ -156,7 +165,6 @@ def build_model(cfg: ExperimentConfig) -> SwinUNetDualViewSSL:
         contrastive_position=cfg.contrast_loss.contrastive_position,
         single_view=tcfg.single_view,
     )
-    return model
 
 
 def _load_preprocess_meta_or_none(data_dir: str | Path) -> dict | None:

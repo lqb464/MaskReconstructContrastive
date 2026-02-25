@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 from ..config.experiment import ExperimentConfig
 from ..data.augmentation import sample_masks_anti_mirror
-from ..models.swin_unet_dualview_ssl import SwinUNetDualViewSSL, flip_lr
+from ..models.model_utils import flip_lr
 from ..training.utils import ensure_dir
 from .ckpt_io import save_checkpoint
 from .dice import dice_coefficient
@@ -62,7 +62,7 @@ class EpochLogger:
 class MaskReconstructionTrainer:
     def __init__(
         self,
-        model: SwinUNetDualViewSSL,
+        model: torch.nn.Module,
         optimizer: torch.optim.Optimizer,
         device: torch.device,
         out_dir: Path,
