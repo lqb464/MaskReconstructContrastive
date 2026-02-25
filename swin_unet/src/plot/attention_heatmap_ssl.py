@@ -445,10 +445,11 @@ def run(args: argparse.Namespace) -> None:
         cfg.mask.image_size = int(args.plot_image_size)
 
     model = _build_model(cfg, device=device)
+    selected_ckpt_mode = str(getattr(args, "ckpt_load_mode", "none"))
     _load_weights(
         model=model,
         ckpt_path=ckpt_path,
-        ckpt_load_mode=cli_cfg.training.ckpt_load_mode,
+        ckpt_load_mode=selected_ckpt_mode,
         device=device,
     )
 
@@ -501,7 +502,7 @@ def run(args: argparse.Namespace) -> None:
         "input_image": str(image_path),
         "plane": plane_name,
         "image_size": int(cfg.data.image_size),
-        "ckpt_load_mode": str(cli_cfg.training.ckpt_load_mode),
+        "ckpt_load_mode": selected_ckpt_mode,
         "model_config_source": model_cfg_source,
         "num_records": int(len(module_maps)),
         "records": [],
