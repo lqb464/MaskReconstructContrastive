@@ -547,11 +547,11 @@ def build_argparser() -> argparse.ArgumentParser:
     g = p.add_argument_group("tsne_compare")
     g.add_argument("--mode", type=str, default="single", choices=["single", "compare"], help="single: run one model and export info+plots. compare: use two info files and render both.")
 
-    g.add_argument("--ckpt", type=Path, default=Path(""), help="Checkpoint path for single mode.")
+    g.add_argument("--ckpt", type=Path, default=None, help="Checkpoint path for single mode.")
     g.add_argument("--tag", type=str, default="model", help="Tag for single model outputs, e.g. baseline or our.")
 
-    g.add_argument("--baseline-info", type=Path, default=Path(""), help="Baseline info file (.npz) for compare mode.")
-    g.add_argument("--our-info", type=Path, default=Path(""), help="Our info file (.npz) for compare mode.")
+    g.add_argument("--baseline-info", type=Path, default=None, help="Baseline info file (.npz) for compare mode.")
+    g.add_argument("--our-info", type=Path, default=None, help="Our info file (.npz) for compare mode.")
 
     g.add_argument(
         "--model-config-source",
@@ -560,7 +560,7 @@ def build_argparser() -> argparse.ArgumentParser:
         choices=["ckpt", "cli"],
         help="ckpt: build model from its checkpoint cfg. cli: build from current inherited ver3 CLI args.",
     )
-    g.add_argument("--info-out", type=Path, default=Path(""), help="Info output file (.npz) for single mode. Default: out-dir/<tag>_tsne_info.npz")
+    g.add_argument("--info-out", type=Path, default=None, help="Info output file (.npz) for single mode. Default: out-dir/<tag>_tsne_info.npz")
 
     g.add_argument("--max-items", type=int, default=0, help="Max test samples to use (0 = all).")
     g.add_argument("--perplexity", type=float, default=30.0)
@@ -577,8 +577,8 @@ def build_argparser() -> argparse.ArgumentParser:
     return p
 
 
-def _resolve_info_path(info_arg: Path, out_dir: Path, tag: str) -> Path:
-    if str(info_arg):
+def _resolve_info_path(info_arg: Path | None, out_dir: Path, tag: str) -> Path:
+    if info_arg is not None:
         return info_arg.expanduser().resolve()
     return (out_dir / f"{tag}_tsne_info.npz").resolve()
 
@@ -592,7 +592,7 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if str(args.mode) == "compare":
-        if not str(args.baseline_info) or not str(args.our_info):
+        if args.baseline_info is None or args.our_info is None:
             raise ValueError("compare mode requires --baseline-info and --our-info")
         _plot_compare_from_infos(
             Path(args.baseline_info).expanduser().resolve(),
@@ -605,7 +605,7 @@ def main() -> None:
         return
 
     # single mode
-    if not str(args.ckpt):
+    if args.ckpt is None:
         raise ValueError("single mode requires --ckpt")
 
     device = get_device(bool(args.cpu))
@@ -647,7 +647,7 @@ def main() -> None:
     coords = _run_tsne(emb, perplexity=float(args.perplexity), random_state=int(args.seed))
 
     colors = _parse_color_map(args.colors, fallback={})
-    info_path = _resolve_info_path(Path(args.info_out), out_dir=out_dir, tag=str(args.tag))
+    info_path = _resolve_info_path(args.info_out, out_dir=out_dir, tag=str(args.tag))
 
     meta = {
         "ckpt": str(ckpt),
@@ -682,10 +682,10 @@ def main() -> None:
     print(f"[done] info file: {info_path}")
 
     # Optional auto-merge if both info files are provided and exist.
-    if str(args.baseline_info) and str(args.our_info):
+    if args.baseline_info is not None and args.our_info is not None:
         b = Path(args.baseline_info).expanduser().resolve()
         o = Path(args.our_info).expanduser().resolve()
-        if b.exists() and o.exists():
+        if b.is_file() and o.is_file():
             _plot_compare_from_infos(
                 b,
                 o,
