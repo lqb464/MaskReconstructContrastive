@@ -22,7 +22,10 @@ from swin_unet.src.ver3.config.experiment import (
     build_argparser as build_ssl_argparser,
 )
 from swin_unet.src.ver3.models.swin_unet_dualview_ssl import SwinUNetDualViewSSL
-from swin_unet.src.ver3.training.ckpt_io import load_checkpoint_weights_filtered
+from swin_unet.src.ver3.training.ckpt_io import (
+    load_checkpoint_weights,
+    load_checkpoint_weights_filtered,
+)
 from swin_unet.src.ver3.training.utils import get_device
 
 
@@ -188,19 +191,125 @@ def _build_model_from_ckpt(
         cfg.mask.image_size = int(image_size_override)
 
     model = _build_model_from_cfg(cfg, device=device)
-
-    msg_obj = load_checkpoint_weights_filtered(
+    ckpt_mode = str(getattr(cfg.training, "ckpt_load_mode", "encoder_only"))
+    _load_model_weights_with_mode(
         ckpt_path=ckpt_path,
-        device=device,
         model=model,
-        include_prefixes=model.encoder_state_dict_prefixes(),
-        exclude_prefixes=("proj_c1", "proj_c2", "proj_c3", "proj"),
+        device=device,
+        ckpt_mode=ckpt_mode,
     )
-    load_msg = msg_obj.get("_load_msg", {}) if isinstance(msg_obj, dict) else {}
-    missing_n = len(load_msg.get("missing_keys", []))
-    unexpected_n = len(load_msg.get("unexpected_keys", []))
-    print(f"[ckpt] {ckpt_path.name}: encoder-only load | missing={missing_n} unexpected={unexpected_n}")
     return model
+
+
+def _load_model_weights_with_mode(
+    *,
+    ckpt_path: Path,
+    model: SwinUNetDualViewSSL,
+    device: torch.device,
+    ckpt_mode: str,
+) -> None:
+    mode = str(ckpt_mode or "encoder_only").lower().strip()
+    if mode == "none":
+        # Plotting requires loading weights; default to encoder_only when mode=none.
+        print("[ckpt] ckpt_load_mode=none in cfg -> fallback to encoder_only for plotting.")
+        mode = "encoder_only"
+
+    if mode == "full":
+        load_checkpoint_weights(
+            ckpt_path=ckpt_path,
+            device=device,
+            model=model,
+            strict=True,
+        )
+        print(f"[ckpt] {ckpt_path.name}: full load done (strict=True)")
+        return
+
+    if mode != "encoder_only":
+        raise ValueError(f"Unsupported ckpt_load_mode for plotting: {ckpt_mode}")
+
+    # Use project-native encoder_only loading first.
+    try:
+        obj = load_checkpoint_weights_filtered(
+            ckpt_path=ckpt_path,
+            device=device,
+            model=model,
+            include_prefixes=model.encoder_state_dict_prefixes(),
+            exclude_prefixes=("proj_c1", "proj_c2", "proj_c3", "proj"),
+        )
+        load_msg = obj.get("_load_msg", {}) if isinstance(obj, dict) else {}
+        missing_n = len(load_msg.get("missing_keys", []))
+        unexpected_n = len(load_msg.get("unexpected_keys", []))
+        print(
+            f"[ckpt] {ckpt_path.name}: encoder_only load done | "
+            f"missing={missing_n} unexpected={unexpected_n}"
+        )
+        return
+    except RuntimeError as e:
+        print(f"[ckpt] encoder_only native load failed, fallback compatibility loader. reason={e}")
+        _load_encoder_state_filtered_compat(ckpt_path=ckpt_path, model=model, device=device)
+
+
+def _load_encoder_state_filtered_compat(
+    *,
+    ckpt_path: Path,
+    model: SwinUNetDualViewSSL,
+    device: torch.device,
+) -> None:
+    """
+    Compatibility path:
+    - encoder-only filtering
+    - adapt legacy SACA gate shapes (scalar -> per-channel vector)
+    - drop shape-mismatch keys
+    """
+    obj = torch.load(ckpt_path, map_location=device)
+    if not isinstance(obj, dict) or "model" not in obj or (not isinstance(obj["model"], dict)):
+        raise ValueError(f"Invalid checkpoint format at {ckpt_path}. Expected dict with key 'model'.")
+
+    encoder_prefixes = model.encoder_state_dict_prefixes()
+    exclude_prefixes = ("proj_c1", "proj_c2", "proj_c3", "proj")
+    raw_sd = {
+        k: v
+        for k, v in obj["model"].items()
+        if str(k).startswith(encoder_prefixes) and (not str(k).startswith(exclude_prefixes))
+    }
+
+    model_sd = model.state_dict()
+    filtered_sd = {}
+    dropped_shape = []
+    converted_gate = 0
+
+    for k, v in raw_sd.items():
+        if k not in model_sd:
+            continue
+        target_v = model_sd[k]
+        src_v = v
+
+        # Backward compatibility: old checkpoints used scalar SACA gate, new model uses per-channel gate.
+        if (
+            str(k).endswith(".gate")
+            and torch.is_tensor(src_v)
+            and torch.is_tensor(target_v)
+            and target_v.ndim == 1
+            and src_v.numel() == 1
+        ):
+            src_v = src_v.reshape(1).to(dtype=target_v.dtype, device=target_v.device).repeat(target_v.numel())
+            converted_gate += 1
+
+        if tuple(src_v.shape) != tuple(target_v.shape):
+            dropped_shape.append((k, tuple(src_v.shape), tuple(target_v.shape)))
+            continue
+
+        filtered_sd[k] = src_v
+
+    msg = model.load_state_dict(filtered_sd, strict=False)
+    print(
+        f"[ckpt] {ckpt_path.name}: encoder_only compatibility load | "
+        f"loaded={len(filtered_sd)} missing={len(msg.missing_keys)} unexpected={len(msg.unexpected_keys)} "
+        f"gate_converted={converted_gate} dropped_shape={len(dropped_shape)}"
+    )
+    if dropped_shape:
+        preview = ", ".join([f"{k}:{s}->{t}" for k, s, t in dropped_shape[:5]])
+        print(f"[ckpt] dropped shape-mismatch keys preview: {preview}")
 
 
 @torch.no_grad()
