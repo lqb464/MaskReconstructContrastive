@@ -4,8 +4,9 @@ import argparse
 import json
 import math
 import types
+from dataclasses import fields, is_dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional, Sequence
+from typing import Any, Dict, Iterable, Optional, Sequence, Union, get_args, get_origin, get_type_hints
 
 import matplotlib
 
@@ -31,6 +32,45 @@ from swin_unet.src.ver3.training.ckpt_io import (
     load_checkpoint_weights_filtered,
 )
 from swin_unet.src.ver3.training.utils import get_device
+
+
+def _dataclass_from_dict(dc_type, raw: dict):
+    if not is_dataclass(dc_type):
+        raise TypeError(f"{dc_type} is not a dataclass")
+
+    type_hints = get_type_hints(dc_type)
+    kwargs = {}
+    for f in fields(dc_type):
+        name = f.name
+        if name not in raw:
+            continue
+        val = raw[name]
+        ftype = type_hints.get(name, f.type)
+
+        if is_dataclass(ftype) and isinstance(val, dict):
+            kwargs[name] = _dataclass_from_dict(ftype, val)
+            continue
+
+        origin = get_origin(ftype)
+        args = get_args(ftype)
+        if origin is Union and isinstance(val, dict):
+            dc_candidates = [a for a in args if is_dataclass(a)]
+            if dc_candidates:
+                kwargs[name] = _dataclass_from_dict(dc_candidates[0], val)
+                continue
+
+        kwargs[name] = val
+    return dc_type(**kwargs)
+
+
+def _cfg_from_ckpt(ckpt_path: Path) -> ExperimentConfig:
+    obj = torch.load(ckpt_path, map_location="cpu")
+    if not isinstance(obj, dict):
+        raise ValueError(f"Invalid checkpoint format at {ckpt_path}.")
+    raw_cfg = obj.get("cfg", None)
+    if not isinstance(raw_cfg, dict):
+        raise ValueError(f"Checkpoint {ckpt_path} has no 'cfg' dictionary.")
+    return _dataclass_from_dict(ExperimentConfig, raw_cfg)
 
 
 def _build_model(cfg: ExperimentConfig, device: torch.device) -> SwinUNetDualViewSSL:
@@ -59,6 +99,62 @@ def _build_model(cfg: ExperimentConfig, device: torch.device) -> SwinUNetDualVie
     return model
 
 
+def _load_encoder_state_filtered_compat(
+    *,
+    ckpt_path: Path,
+    model: SwinUNetDualViewSSL,
+    device: torch.device,
+) -> None:
+    obj = torch.load(ckpt_path, map_location=device)
+    if not isinstance(obj, dict) or "model" not in obj or (not isinstance(obj["model"], dict)):
+        raise ValueError(f"Invalid checkpoint format at {ckpt_path}. Expected dict with key 'model'.")
+
+    encoder_prefixes = model.encoder_state_dict_prefixes()
+    exclude_prefixes = ("proj_c1", "proj_c2", "proj_c3", "proj")
+    raw_sd = {
+        k: v
+        for k, v in obj["model"].items()
+        if str(k).startswith(encoder_prefixes) and (not str(k).startswith(exclude_prefixes))
+    }
+
+    model_sd = model.state_dict()
+    filtered_sd = {}
+    dropped_shape = []
+    converted_gate = 0
+
+    for k, v in raw_sd.items():
+        if k not in model_sd:
+            continue
+        target_v = model_sd[k]
+        src_v = v
+
+        if (
+            str(k).endswith(".gate")
+            and torch.is_tensor(src_v)
+            and torch.is_tensor(target_v)
+            and target_v.ndim == 1
+            and src_v.numel() == 1
+        ):
+            src_v = src_v.reshape(1).to(dtype=target_v.dtype, device=target_v.device).repeat(target_v.numel())
+            converted_gate += 1
+
+        if tuple(src_v.shape) != tuple(target_v.shape):
+            dropped_shape.append((k, tuple(src_v.shape), tuple(target_v.shape)))
+            continue
+
+        filtered_sd[k] = src_v
+
+    msg = model.load_state_dict(filtered_sd, strict=False)
+    print(
+        f"[ckpt] {ckpt_path.name}: encoder_only compatibility load | "
+        f"loaded={len(filtered_sd)} missing={len(msg.missing_keys)} unexpected={len(msg.unexpected_keys)} "
+        f"gate_converted={converted_gate} dropped_shape={len(dropped_shape)}"
+    )
+    if dropped_shape:
+        preview = ", ".join([f"{k}:{s}->{t}" for k, s, t in dropped_shape[:5]])
+        print(f"[ckpt] dropped shape-mismatch keys preview: {preview}")
+
+
 def _load_weights(
     *,
     model: SwinUNetDualViewSSL,
@@ -66,9 +162,10 @@ def _load_weights(
     ckpt_load_mode: str,
     device: torch.device,
 ) -> None:
-    mode = str(ckpt_load_mode).strip().lower()
+    mode = str(ckpt_load_mode or "encoder_only").strip().lower()
     if mode == "none":
-        return
+        print("[ckpt] ckpt_load_mode=none -> fallback to encoder_only for plotting.")
+        mode = "encoder_only"
     if mode == "full":
         load_checkpoint_weights(
             ckpt_path=ckpt_path,
@@ -76,15 +173,30 @@ def _load_weights(
             model=model,
             strict=True,
         )
+        print(f"[ckpt] {ckpt_path.name}: full load done (strict=True)")
         return
     if mode == "encoder_only":
-        load_checkpoint_weights_filtered(
-            ckpt_path=ckpt_path,
-            device=device,
-            model=model,
-            include_prefixes=model.encoder_state_dict_prefixes(),
-            exclude_prefixes=("proj_c1", "proj_c2", "proj_c3", "proj"),
-        )
+        try:
+            obj = load_checkpoint_weights_filtered(
+                ckpt_path=ckpt_path,
+                device=device,
+                model=model,
+                include_prefixes=model.encoder_state_dict_prefixes(),
+                exclude_prefixes=("proj_c1", "proj_c2", "proj_c3", "proj"),
+            )
+            load_msg = obj.get("_load_msg", {}) if isinstance(obj, dict) else {}
+            print(
+                f"[ckpt] {ckpt_path.name}: encoder_only load done | "
+                f"missing={len(load_msg.get('missing_keys', []))} "
+                f"unexpected={len(load_msg.get('unexpected_keys', []))}"
+            )
+        except RuntimeError as e:
+            print(f"[ckpt] encoder_only native load failed, fallback compatibility loader. reason={e}")
+            _load_encoder_state_filtered_compat(
+                ckpt_path=ckpt_path,
+                model=model,
+                device=device,
+            )
         return
     raise ValueError(f"Unsupported ckpt-load-mode={ckpt_load_mode}")
 
@@ -300,36 +412,43 @@ def _saca_position(module_name: str) -> str:
 
 
 def run(args: argparse.Namespace) -> None:
-    cfg = ExperimentConfig.from_args(args)
-    if not str(cfg.training.resume_ckpt).strip():
+    cli_cfg = ExperimentConfig.from_args(args)
+    if not str(cli_cfg.training.resume_ckpt).strip():
         raise ValueError("Missing --resume-ckpt. Provide a checkpoint path to visualize attention.")
-    ckpt_path = Path(cfg.training.resume_ckpt).expanduser().resolve()
+    ckpt_path = Path(cli_cfg.training.resume_ckpt).expanduser().resolve()
     if not ckpt_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
     image_path = Path(args.input_image).expanduser().resolve()
     if not image_path.exists():
         raise FileNotFoundError(f"Input image not found: {image_path}")
 
+    model_cfg_source = str(args.model_config_source).strip().lower()
+    if model_cfg_source == "cli":
+        cfg = cli_cfg
+    else:
+        cfg = _cfg_from_ckpt(ckpt_path)
+
     if str(args.plot_out_dir).strip():
         out_dir = Path(args.plot_out_dir).expanduser().resolve()
     else:
-        out_dir = Path(cfg.logging.out_dir)
-        if cfg.logging.run_name:
-            out_dir = out_dir / cfg.logging.run_name
+        out_dir = Path(cli_cfg.logging.out_dir)
+        if cli_cfg.logging.run_name:
+            out_dir = out_dir / cli_cfg.logging.run_name
         out_dir = out_dir / "attention_heatmap"
         out_dir = out_dir.expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "per_module").mkdir(parents=True, exist_ok=True)
 
     device = get_device(cpu=bool(args.cpu))
-    if int(args.image_size) > 0:
-        cfg.data.image_size = int(args.image_size)
+    if int(args.plot_image_size) > 0:
+        cfg.data.image_size = int(args.plot_image_size)
+        cfg.mask.image_size = int(args.plot_image_size)
 
     model = _build_model(cfg, device=device)
     _load_weights(
         model=model,
         ckpt_path=ckpt_path,
-        ckpt_load_mode=cfg.training.ckpt_load_mode,
+        ckpt_load_mode=cli_cfg.training.ckpt_load_mode,
         device=device,
     )
 
@@ -382,7 +501,8 @@ def run(args: argparse.Namespace) -> None:
         "input_image": str(image_path),
         "plane": plane_name,
         "image_size": int(cfg.data.image_size),
-        "ckpt_load_mode": str(cfg.training.ckpt_load_mode),
+        "ckpt_load_mode": str(cli_cfg.training.ckpt_load_mode),
+        "model_config_source": model_cfg_source,
         "num_records": int(len(module_maps)),
         "records": [],
         "saca_positions": sorted(set(_saca_position(x["name"]) for x in saca_maps)),
@@ -470,6 +590,19 @@ def build_argparser() -> argparse.ArgumentParser:
         type=str,
         default="",
         help="Optional output dir for plots; default=<out-dir>/<run-name>/attention_heatmap",
+    )
+    p.add_argument(
+        "--model-config-source",
+        type=str,
+        default="ckpt",
+        choices=["ckpt", "cli"],
+        help="ckpt: build model from checkpoint cfg (recommended). cli: build from current CLI args.",
+    )
+    p.add_argument(
+        "--plot-image-size",
+        type=int,
+        default=0,
+        help="Optional image-size override for plotting model/input (0 keeps selected model cfg).",
     )
     p.add_argument("--save-npy", action="store_true", help="Also save raw heatmap arrays as .npy")
     return p
