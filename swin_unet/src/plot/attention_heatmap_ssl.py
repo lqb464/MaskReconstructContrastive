@@ -155,6 +155,63 @@ def _load_encoder_state_filtered_compat(
         print(f"[ckpt] dropped shape-mismatch keys preview: {preview}")
 
 
+def _load_full_state_compat(
+    *,
+    ckpt_path: Path,
+    model: SwinUNetDualViewSSL,
+    device: torch.device,
+) -> None:
+    """
+    Compatibility path for full-model loading across schema drift:
+    - keep keys that exist in current model and have matching shape
+    - adapt legacy scalar SACA gate -> per-channel vector gate
+    - load with strict=False
+    """
+    obj = torch.load(ckpt_path, map_location=device)
+    if not isinstance(obj, dict) or "model" not in obj or (not isinstance(obj["model"], dict)):
+        raise ValueError(f"Invalid checkpoint format at {ckpt_path}. Expected dict with key 'model'.")
+
+    src_sd = obj["model"]
+    model_sd = model.state_dict()
+    filtered_sd = {}
+    dropped_shape = []
+    converted_gate = 0
+    missing_in_model = 0
+
+    for k, v in src_sd.items():
+        if k not in model_sd:
+            missing_in_model += 1
+            continue
+
+        target_v = model_sd[k]
+        src_v = v
+        if (
+            str(k).endswith(".gate")
+            and torch.is_tensor(src_v)
+            and torch.is_tensor(target_v)
+            and target_v.ndim == 1
+            and src_v.numel() == 1
+        ):
+            src_v = src_v.reshape(1).to(dtype=target_v.dtype, device=target_v.device).repeat(target_v.numel())
+            converted_gate += 1
+
+        if tuple(src_v.shape) != tuple(target_v.shape):
+            dropped_shape.append((k, tuple(src_v.shape), tuple(target_v.shape)))
+            continue
+
+        filtered_sd[k] = src_v
+
+    msg = model.load_state_dict(filtered_sd, strict=False)
+    print(
+        f"[ckpt] {ckpt_path.name}: full compatibility load | "
+        f"loaded={len(filtered_sd)} missing={len(msg.missing_keys)} unexpected={len(msg.unexpected_keys)} "
+        f"gate_converted={converted_gate} dropped_shape={len(dropped_shape)} missing_in_model={missing_in_model}"
+    )
+    if dropped_shape:
+        preview = ", ".join([f"{k}:{s}->{t}" for k, s, t in dropped_shape[:5]])
+        print(f"[ckpt] dropped shape-mismatch keys preview: {preview}")
+
+
 def _load_weights(
     *,
     model: SwinUNetDualViewSSL,
@@ -167,13 +224,21 @@ def _load_weights(
         print("[ckpt] ckpt_load_mode=none -> fallback to encoder_only for plotting.")
         mode = "encoder_only"
     if mode == "full":
-        load_checkpoint_weights(
-            ckpt_path=ckpt_path,
-            device=device,
-            model=model,
-            strict=True,
-        )
-        print(f"[ckpt] {ckpt_path.name}: full load done (strict=True)")
+        try:
+            load_checkpoint_weights(
+                ckpt_path=ckpt_path,
+                device=device,
+                model=model,
+                strict=True,
+            )
+            print(f"[ckpt] {ckpt_path.name}: full load done (strict=True)")
+        except RuntimeError as e:
+            print(f"[ckpt] full native load failed, fallback compatibility loader. reason={e}")
+            _load_full_state_compat(
+                ckpt_path=ckpt_path,
+                model=model,
+                device=device,
+            )
         return
     if mode == "encoder_only":
         try:
