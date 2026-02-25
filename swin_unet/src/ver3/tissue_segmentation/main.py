@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader
 from ..common.cli_utils import run_entrypoint
 from ..models.swin_unet_dualview_ssl import SwinUNetDualViewSSL
 from ..training.utils import copy_images_to_dir, ensure_dir, extract_dataset_paths, get_device, write_path_list
+from ..data.dataset import select_indices_by_train_mod
 from .dataset import TissueSegmentationDataset
 from .experiment import ExperimentConfig, build_argparser, enforce_tissue_args
 from .io import (
@@ -116,7 +117,6 @@ def run(args: argparse.Namespace) -> None:
     cfg.training.enable_reconstruct = True
     cfg.training.single_view = False
     cfg.mask.enable_masking = False
-    cfg.data.train_mod = 1  # fixed-list task: no random/subset train_mod sampling
 
     print("[config] Loaded experiment configuration:")
     print(cfg)
@@ -149,6 +149,15 @@ def run(args: argparse.Namespace) -> None:
         raise RuntimeError(f"Train list has no usable scan tokens: {cfg.tissue.train_list}")
     if not eval_tokens:
         raise RuntimeError(f"Eval list has no usable scan tokens: {cfg.tissue.eval_list}")
+
+    train_token_count_raw = len(train_tokens)
+    keep_idx = select_indices_by_train_mod(train_token_count_raw, float(cfg.data.train_mod))
+    train_tokens = [train_tokens[i] for i in keep_idx]
+    if not train_tokens:
+        raise RuntimeError(
+            f"No train scans selected after applying train_mod={cfg.data.train_mod} "
+            f"on train_list={cfg.tissue.train_list}"
+        )
 
     train_image_index = build_image_index(image_root=cfg.tissue.train_root, image_ext=cfg.tissue.image_ext)
     eval_root_resolved = Path(cfg.tissue.eval_root).expanduser().resolve()
@@ -218,6 +227,10 @@ def run(args: argparse.Namespace) -> None:
     print(
         f"[split] fixed lists (no random split): train_list={cfg.tissue.train_list} "
         f"eval_list={cfg.tissue.eval_list}"
+    )
+    print(
+        f"[subsample] train_mod={float(cfg.data.train_mod):.4f} "
+        f"train_scans={len(train_tokens)}/{train_token_count_raw} (eval unchanged)"
     )
     print(
         f"[roots] train_root={cfg.tissue.train_root} eval_root={cfg.tissue.eval_root} "
