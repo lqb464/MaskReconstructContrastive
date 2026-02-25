@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import csv
+import math
 import random
 from dataclasses import dataclass
 from pathlib import Path
@@ -246,9 +247,41 @@ def split_indices(
     return train_idx, val_idx, test_idx
 
 
+def select_indices_by_train_mod(n: int, train_mod: float = 1.0) -> List[int]:
+    """
+    Deterministic index subsampling for train_mod >= 1.
+
+    - Integer train_mod=k: keep 0, k, 2k, ...
+    - Float train_mod=m: keep approximately 1/m samples with interleaving spacing.
+      Example m=2.5 -> 0,3,5,8,10,... (intervals 3,2,3,2,...)
+    """
+    if n <= 0:
+        return []
+
+    m = float(train_mod)
+    if (not math.isfinite(m)) or (m < 1.0):
+        raise ValueError("train_mod must be a finite number >= 1")
+
+    if m == 1.0:
+        return list(range(n))
+
+    if m.is_integer():
+        step = int(m)
+        return list(range(0, n, step))
+
+    selected: List[int] = []
+    prev_bucket = -1
+    for i in range(n):
+        bucket = math.floor(i / m)
+        if bucket > prev_bucket:
+            selected.append(i)
+            prev_bucket = bucket
+    return selected
+
+
 def create_dataloaders_from_folder(
     data_root: str | Path,
-    train_mod: int = 1,
+    train_mod: float = 1.0,
     image_size: int = 192,
     plane: str = "axial",               # axial|coronal|auto
     label_csv: Optional[str | Path] = None,
@@ -277,7 +310,7 @@ def create_dataloaders_from_folder(
             label_col=label_col,
         )
 
-    if train_mod < 1:
+    if float(train_mod) < 1.0:
         raise ValueError("train_mod must be >= 1")
 
     root_dir = Path(data_root).expanduser()
@@ -287,7 +320,8 @@ def create_dataloaders_from_folder(
     if len(all_paths) == 0:
         raise RuntimeError(f"No images found under {root_dir} with extensions: {sorted(_IMG_EXTS)}")
 
-    selected_paths = [p for i, p in enumerate(all_paths) if (i % train_mod) == 0]
+    selected_idx = select_indices_by_train_mod(len(all_paths), float(train_mod))
+    selected_paths = [all_paths[i] for i in selected_idx]
     if len(selected_paths) == 0:
         raise RuntimeError(f"No images selected after applying train_mod={train_mod}")
 
@@ -342,6 +376,7 @@ def create_dataloaders_from_folder(
 __all__ = [
     "FolderSubfolderImageDataset",
     "create_dataloaders_from_folder",
+    "select_indices_by_train_mod",
     "load_label_map_from_csv",
     "plane_to_one_hot",
     "infer_plane_from_path",

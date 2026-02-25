@@ -75,7 +75,7 @@ def make_dataloaders(
 ):
     from torch.utils.data import DataLoader, Subset
 
-    from ..data.dataset import split_indices
+    from ..data.dataset import select_indices_by_train_mod, split_indices
     from .utils import make_worker_init_fn
 
     seed_workers = bool(int(os.getenv("MASK_RECON_SEED_WORKERS", "0")))
@@ -100,14 +100,14 @@ def make_dataloaders(
 
     if val_ds is not None:
         # Apply train_mod only to train set
-        if int(cfg.data.train_mod) > 1:
-            idx_train = [i for i in range(len(train_ds)) if (i % int(cfg.data.train_mod)) == 0]
+        idx_train = select_indices_by_train_mod(len(train_ds), float(cfg.data.train_mod))
+        if len(idx_train) != len(train_ds):
             train_ds = Subset(train_ds, idx_train)
         return _loader(train_ds, shuffle=True), _loader(val_ds, shuffle=False)
 
     # Apply train_mod before split
-    if int(cfg.data.train_mod) > 1:
-        idx_train = [i for i in range(len(train_ds)) if (i % int(cfg.data.train_mod)) == 0]
+    idx_train = select_indices_by_train_mod(len(train_ds), float(cfg.data.train_mod))
+    if len(idx_train) != len(train_ds):
         train_ds = Subset(train_ds, idx_train)
 
     train_idx, val_idx, _ = split_indices(
