@@ -2,8 +2,9 @@
 
 import argparse
 import json
+from dataclasses import fields, is_dataclass
 from pathlib import Path
-from typing import Dict, Iterable, Tuple
+from typing import Dict, Iterable, Tuple, Union, get_args, get_origin, get_type_hints
 
 import matplotlib
 
@@ -110,31 +111,39 @@ def _cfg_from_ckpt(ckpt_path: Path) -> ExperimentConfig:
     raw_cfg = obj.get("cfg", None)
     if not isinstance(raw_cfg, dict):
         raise ValueError(f"Checkpoint {ckpt_path} has no 'cfg' dictionary.")
+    return _dataclass_from_dict(ExperimentConfig, raw_cfg)
 
-    ns = argparse.Namespace()
-    for k, v in raw_cfg.items():
-        setattr(ns, k, v)
 
-    if isinstance(raw_cfg.get("model", None), dict):
-        for k, v in raw_cfg["model"].items():
-            setattr(ns, k, v)
-    if isinstance(raw_cfg.get("data", None), dict):
-        for k, v in raw_cfg["data"].items():
-            setattr(ns, k, v)
-    if isinstance(raw_cfg.get("training", None), dict):
-        for k, v in raw_cfg["training"].items():
-            setattr(ns, k, v)
-    if isinstance(raw_cfg.get("mask", None), dict):
-        for k, v in raw_cfg["mask"].items():
-            setattr(ns, k, v)
-    if isinstance(raw_cfg.get("logging", None), dict):
-        for k, v in raw_cfg["logging"].items():
-            setattr(ns, k, v)
-    if isinstance(raw_cfg.get("contrast_loss", None), dict):
-        for k, v in raw_cfg["contrast_loss"].items():
-            setattr(ns, k, v)
+def _dataclass_from_dict(dc_type, raw: dict):
+    """
+    Rebuild nested dataclass from dict while tolerating checkpoint schema drift.
+    """
+    if not is_dataclass(dc_type):
+        raise TypeError(f"{dc_type} is not a dataclass")
 
-    return ExperimentConfig.from_args(ns)
+    type_hints = get_type_hints(dc_type)
+    kwargs = {}
+    for f in fields(dc_type):
+        name = f.name
+        if name not in raw:
+            continue
+        val = raw[name]
+        ftype = type_hints.get(name, f.type)
+
+        if is_dataclass(ftype) and isinstance(val, dict):
+            kwargs[name] = _dataclass_from_dict(ftype, val)
+            continue
+
+        origin = get_origin(ftype)
+        args = get_args(ftype)
+        if origin is Union and isinstance(val, dict):
+            dc_candidates = [a for a in args if is_dataclass(a)]
+            if dc_candidates:
+                kwargs[name] = _dataclass_from_dict(dc_candidates[0], val)
+                continue
+
+        kwargs[name] = val
+    return dc_type(**kwargs)
 
 
 def _build_model_from_cfg(cfg: ExperimentConfig, device: torch.device) -> SwinUNetDualViewSSL:
