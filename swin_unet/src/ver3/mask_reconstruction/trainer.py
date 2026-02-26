@@ -557,6 +557,7 @@ class MaskReconstructionTrainer:
                     threshold=self.vis_threshold,
                     max_items=self.vis_num,
                     dice_fn=lambda p, t: dice_coefficient(p, t, threshold=self.vis_threshold),
+                    show_flip=not bool(getattr(self.cfg.training, "single_view", False)),
                 )
                 print(f"[vis] Saved val visualization: {vis_path}")
 

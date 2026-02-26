@@ -112,11 +112,11 @@ def save_val_visualization_grid(
     logits_flip = None
     if show_flip:
         if "recon2_logits" not in val_batch:
-            raise RuntimeError(
-                "show_flip=True requires val_batch['recon2_logits']; "
-                "run validation forward once and pass the precomputed logits."
-            )
-        logits_flip = val_batch["recon2_logits"][:n_items].to(device, non_blocking=True)
+            # Single-view path has no second reconstruction head/output.
+            print("[vis] show_flip requested but recon2_logits is missing; fallback to single-view visualization.")
+            show_flip = False
+        else:
+            logits_flip = val_batch["recon2_logits"][:n_items].to(device, non_blocking=True)
 
     prob_orig = torch.sigmoid(logits_orig)
     bin_orig = (prob_orig >= threshold).float()
