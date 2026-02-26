@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
 from datasets import load_dataset  # noqa: E402
+from sklearn.decomposition import PCA  # noqa: E402
 from sklearn.manifold import TSNE  # noqa: E402
 from torch.utils.data import DataLoader, Dataset  # noqa: E402
 from torchvision import transforms  # noqa: E402
@@ -397,9 +398,8 @@ def _scatter_plot(
     else:
         ax.set_xlabel("t-SNE 1")
         ax.set_ylabel("t-SNE 2")
-
-    ax.set_title(title)
-    ax.legend(frameon=False, loc="best")
+        ax.set_title(title)
+        ax.legend(frameon=False, loc="best")
     fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
@@ -415,6 +415,11 @@ def _run_tsne(emb: np.ndarray, perplexity: float, random_state: int) -> np.ndarr
         random_state=int(random_state),
     )
     return tsne.fit_transform(emb)
+
+
+def _run_pca(emb: np.ndarray, random_state: int) -> np.ndarray:
+    pca = PCA(n_components=2, random_state=int(random_state))
+    return pca.fit_transform(emb)
 
 
 def _save_info_file(
@@ -543,6 +548,8 @@ def build_argparser() -> argparse.ArgumentParser:
         seed=42,
         cpu=False,
     )
+    if not _has_option(p, "--image-size"):
+        p.add_argument("--image-size", type=int, default=256, help="Input image size.")
 
     g = p.add_argument_group("tsne_compare")
     g.add_argument("--mode", type=str, default="single", choices=["single", "compare"], help="single: run one model and export info+plots. compare: use two info files and render both.")
@@ -564,6 +571,7 @@ def build_argparser() -> argparse.ArgumentParser:
 
     g.add_argument("--max-items", type=int, default=0, help="Max test samples to use (0 = all).")
     g.add_argument("--perplexity", type=float, default=30.0)
+    g.add_argument("--pca", action="store_true", help="Use PCA(2D) instead of t-SNE.")
     g.add_argument("--alpha", type=float, default=0.8, help="Scatter alpha (default 0.8 = 80%).")
     g.add_argument("--point-size", type=float, default=14.0)
     g.add_argument(
@@ -644,7 +652,10 @@ def main() -> None:
         device=device,
         max_items=int(args.max_items),
     )
-    coords = _run_tsne(emb, perplexity=float(args.perplexity), random_state=int(args.seed))
+    if bool(args.pca):
+        coords = _run_pca(emb, random_state=int(args.seed))
+    else:
+        coords = _run_tsne(emb, perplexity=float(args.perplexity), random_state=int(args.seed))
 
     colors = _parse_color_map(args.colors, fallback={})
     info_path = _resolve_info_path(args.info_out, out_dir=out_dir, tag=str(args.tag))
@@ -656,6 +667,7 @@ def main() -> None:
         "labels": [str(_normalize_label_name(x)) for x in ds.label_names],
         "encoded_id_to_name": {str(k): v for k, v in ENCODED_ID_TO_NAME.items()},
         "severity_order": list(SEVERITY_ORDER),
+        "projection": "pca" if bool(args.pca) else "tsne",
         "perplexity": float(args.perplexity),
         "seed": int(args.seed),
     }
