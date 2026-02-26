@@ -361,7 +361,21 @@ def _choose_positions(
 
 
 def _mean_np(arrs: list[np.ndarray]) -> np.ndarray:
-    x = np.stack(arrs, axis=0).mean(axis=0)
+    if not arrs:
+        raise ValueError("Cannot aggregate empty array list.")
+
+    target_h = max(int(a.shape[0]) for a in arrs)
+    target_w = max(int(a.shape[1]) for a in arrs)
+    resized: list[np.ndarray] = []
+    for a in arrs:
+        if int(a.shape[0]) == target_h and int(a.shape[1]) == target_w:
+            resized.append(a)
+            continue
+        ten = torch.from_numpy(a).unsqueeze(0).unsqueeze(0).to(dtype=torch.float32)
+        ten = F.interpolate(ten, size=(target_h, target_w), mode="bilinear", align_corners=False)
+        resized.append(ten.squeeze(0).squeeze(0).cpu().numpy())
+
+    x = np.stack(resized, axis=0).mean(axis=0)
     x = x - float(x.min())
     vmax = float(x.max())
     if vmax > 1e-12:
