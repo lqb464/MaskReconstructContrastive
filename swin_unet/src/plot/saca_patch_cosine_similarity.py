@@ -404,11 +404,9 @@ def run(args: argparse.Namespace) -> None:
     if str(args.plot_out_dir).strip():
         out_dir = Path(args.plot_out_dir).expanduser().resolve()
     else:
-        out_dir = Path(cli_cfg.logging.out_dir)
+        out_dir = Path(cli_cfg.logging.out_dir).expanduser().resolve()
         if cli_cfg.logging.run_name:
-            out_dir = out_dir / cli_cfg.logging.run_name
-        out_dir = out_dir / "patch_cosine_similarity"
-        out_dir = out_dir.expanduser().resolve()
+            out_dir = (out_dir / cli_cfg.logging.run_name).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
     device = get_device(bool(args.cpu))
