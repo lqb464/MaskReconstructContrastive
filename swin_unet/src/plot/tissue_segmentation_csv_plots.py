@@ -110,7 +110,7 @@ def plot_per_class_eval_dice_all_labels(
     )
     plt.tight_layout(rect=[0.0, 0.0, 0.78, 1.0])
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(out_path, dpi=int(dpi))
+    plt.savefig(out_path, dpi=int(dpi), bbox_inches="tight")
     plt.close()
 
 
@@ -166,7 +166,7 @@ def plot_per_label_eval_dice_latest_ranking(
     ax.invert_yaxis()
     plt.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(out_path, dpi=int(dpi))
+    plt.savefig(out_path, dpi=int(dpi), bbox_inches="tight")
     plt.close(fig)
 
 
@@ -174,7 +174,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Rebuild tissue-segmentation plots from CSV outputs. "
-            "Creates: per_class_eval_dice_all_labels.png and per_label_eval_dice_latest_ranking.png."
+            "Creates: per_class_eval_dice_all_labels.svg and per_label_eval_dice_latest_ranking.svg."
         )
     )
     parser.add_argument("--input-dir", type=Path, required=True, help="Run folder containing CSV files.")
@@ -205,8 +205,8 @@ def build_argparser() -> argparse.ArgumentParser:
         default="f58518",
         help="Hex color for points in ranking plot.",
     )
-    parser.add_argument("--dpi-class", type=int, default=150, help="DPI for per_class_eval_dice_all_labels.png")
-    parser.add_argument("--dpi-ranking", type=int, default=170, help="DPI for per_label_eval_dice_latest_ranking.png")
+    parser.add_argument("--dpi-class", type=int, default=150, help="DPI for per_class_eval_dice_all_labels.svg")
+    parser.add_argument("--dpi-ranking", type=int, default=170, help="DPI for per_label_eval_dice_latest_ranking.svg")
     return parser
 
 
@@ -221,8 +221,8 @@ def main() -> None:
     ranking_point_color = _normalize_hex_color(args.ranking_point_color)
     class_name_map = _read_class_name_map(run_dir)
 
-    out_class = out_dir / "per_class_eval_dice_all_labels.png"
-    out_rank = out_dir / "per_label_eval_dice_latest_ranking.png"
+    out_class = out_dir / "per_class_eval_dice_all_labels.svg"
+    out_rank = out_dir / "per_label_eval_dice_latest_ranking.svg"
 
     plot_per_class_eval_dice_all_labels(
         run_dir=run_dir,

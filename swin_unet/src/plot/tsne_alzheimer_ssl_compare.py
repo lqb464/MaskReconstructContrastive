@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import json
@@ -390,10 +390,10 @@ def _scatter_plot(
         )
 
     if no_axes:
-        ax.set_xticks([])
-        ax.set_yticks([])
-        for spine in ax.spines.values():
-            spine.set_visible(False)
+        # Keep tick marks, hide only axis label text/numbers.
+        ax.set_xlabel("")
+        ax.set_ylabel("")
+        ax.tick_params(axis="both", which="both", labelbottom=False, labelleft=False, labeltop=False, labelright=False)
     else:
         ax.set_xlabel("t-SNE 1")
         ax.set_ylabel("t-SNE 2")
@@ -402,7 +402,7 @@ def _scatter_plot(
     ax.legend(frameon=False, loc="best")
     fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=300)
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -477,7 +477,7 @@ def _plot_single_from_info(
         labels=labels,
         label_names=label_names,
         color_map=color_map,
-        out_path=out_dir / f"{tag}_tsne_square.png",
+        out_path=out_dir / f"{tag}_tsne_square.svg",
         title=f"{tag} SSL Encoder t-SNE (Test)",
         alpha=float(alpha),
         no_axes=False,
@@ -488,7 +488,7 @@ def _plot_single_from_info(
         labels=labels,
         label_names=label_names,
         color_map=color_map,
-        out_path=out_dir / f"{tag}_tsne_square_no_axes.png",
+        out_path=out_dir / f"{tag}_tsne_square_no_axes.svg",
         title=f"{tag} SSL Encoder t-SNE (Test)",
         alpha=float(alpha),
         no_axes=True,

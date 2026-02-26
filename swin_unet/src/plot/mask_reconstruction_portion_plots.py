@@ -99,7 +99,7 @@ def plot_loss_vs_partion(
     ax.legend(loc="best", frameon=False)
     plt.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(out_path, dpi=int(dpi))
+    plt.savefig(out_path, dpi=int(dpi), bbox_inches="tight")
     plt.close(fig)
 
 
@@ -139,7 +139,7 @@ def plot_main_dice_vs_partion(
     ax.legend(loc="best", frameon=False)
     plt.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(out_path, dpi=int(dpi))
+    plt.savefig(out_path, dpi=int(dpi), bbox_inches="tight")
     plt.close(fig)
 
 
@@ -201,7 +201,7 @@ def plot_other_dice_vs_partion(
     ax.legend(loc="best", frameon=False)
     plt.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(out_path, dpi=int(dpi))
+    plt.savefig(out_path, dpi=int(dpi), bbox_inches="tight")
     plt.close(fig)
 
 
@@ -275,9 +275,9 @@ def main() -> None:
     df = _load_csv(input_csv)
     hide_x_axis = bool(args.no_x_axis)
 
-    out_loss = out_dir / "mask_recon_loss_vs_partion.png"
-    out_dice = out_dir / "mask_recon_dice_vs_partion.png"
-    out_dice_types = out_dir / "mask_recon_dice_types_vs_partion.png"
+    out_loss = out_dir / "mask_recon_loss_vs_partion.svg"
+    out_dice = out_dir / "mask_recon_dice_vs_partion.svg"
+    out_dice_types = out_dir / "mask_recon_dice_types_vs_partion.svg"
 
     plot_loss_vs_partion(
         df=df,

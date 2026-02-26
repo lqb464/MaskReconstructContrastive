@@ -49,10 +49,8 @@ def _load_curve(csv_path: Path, max_epoch: int = 150) -> pd.DataFrame:
 def _style_minimal_axes(ax: plt.Axes) -> None:
     ax.set_xlabel("")
     ax.set_ylabel("")
-    ax.set_xticks([])
-    ax.set_yticks([])
-    for spine in ax.spines.values():
-        spine.set_visible(False)
+    # Keep tick marks, but hide all tick label text/numbers.
+    ax.tick_params(axis="both", which="both", labelbottom=False, labelleft=False, labeltop=False, labelright=False)
 
 
 def _plot_metric(
@@ -136,7 +134,7 @@ def _plot_metric(
     ax.grid(alpha=0.25)
     fig.tight_layout()
     out_full.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_full, dpi=300)
+    fig.savefig(out_full, dpi=300, bbox_inches="tight")
     plt.close(fig)
 
     # Minimal version (no axis titles/ticks/legend)
@@ -178,11 +176,13 @@ def _plot_metric(
         zorder=2,
     )
     ax.set_xlim(0, 150)
+    ax.set_xticks([0, 50, 100, 150])
     ax.set_ylim(y_min, y_max)
+    ax.set_yticks(y_ticks)
     _style_minimal_axes(ax)
     fig.tight_layout()
     out_minimal.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_minimal, dpi=300)
+    fig.savefig(out_minimal, dpi=300, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -217,8 +217,8 @@ def build_dynamic_stability_plots(
         train_alpha=train_alpha,
         val_alpha=val_alpha,
         train_lighten=train_lighten,
-        out_full=out_dir / "dynamic_total_loss_full.png",
-        out_minimal=out_dir / "dynamic_total_loss_minimal.png",
+        out_full=out_dir / "dynamic_total_loss_full.svg",
+        out_minimal=out_dir / "dynamic_total_loss_minimal.svg",
     )
     _plot_metric(
         baseline_df=baseline_df,
@@ -234,8 +234,8 @@ def build_dynamic_stability_plots(
         train_alpha=train_alpha,
         val_alpha=val_alpha,
         train_lighten=train_lighten,
-        out_full=out_dir / "dynamic_ssim_full.png",
-        out_minimal=out_dir / "dynamic_ssim_minimal.png",
+        out_full=out_dir / "dynamic_ssim_full.svg",
+        out_minimal=out_dir / "dynamic_ssim_minimal.svg",
     )
 
 

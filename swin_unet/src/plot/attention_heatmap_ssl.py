@@ -574,8 +574,8 @@ def run(args: argparse.Namespace) -> None:
 
     for idx, rec in enumerate(module_maps):
         stem = f"{idx:03d}_{rec['name'].replace('.', '_')}"
-        hm_path = out_dir / "per_module" / f"{stem}_heatmap.png"
-        ov_path = out_dir / "per_module" / f"{stem}_overlay.png"
+        hm_path = out_dir / "per_module" / f"{stem}_heatmap.svg"
+        ov_path = out_dir / "per_module" / f"{stem}_overlay.svg"
         _save_heatmap(rec["map"], hm_path, title=f"{rec['kind']} | {rec['name']}")
         _save_overlay(input_img, rec["map"], ov_path, title=f"{rec['kind']} | {rec['name']}")
         if bool(args.save_npy):
@@ -592,8 +592,8 @@ def run(args: argparse.Namespace) -> None:
 
     if base_maps:
         base_agg = _mean_maps(base_maps)
-        _save_heatmap(base_agg, out_dir / "base_attention_aggregate_heatmap.png", title="Base Swin Attention (Aggregate)")
-        _save_overlay(input_img, base_agg, out_dir / "base_attention_aggregate_overlay.png", title="Base Swin Attention (Aggregate)")
+        _save_heatmap(base_agg, out_dir / "base_attention_aggregate_heatmap.svg", title="Base Swin Attention (Aggregate)")
+        _save_overlay(input_img, base_agg, out_dir / "base_attention_aggregate_overlay.svg", title="Base Swin Attention (Aggregate)")
         if bool(args.save_npy):
             np.save(out_dir / "base_attention_aggregate.npy", base_agg)
 
@@ -611,8 +611,8 @@ def run(args: argparse.Namespace) -> None:
     for pos, maps in sorted(by_pos.items()):
         pos_agg = _mean_maps(maps)
         pos_agg_maps.append(pos_agg)
-        _save_heatmap(pos_agg, out_dir / f"saca_{pos}_aggregate_heatmap.png", title=f"SACA {pos} (Aggregate)")
-        _save_overlay(input_img, pos_agg, out_dir / f"saca_{pos}_aggregate_overlay.png", title=f"SACA {pos} (Aggregate)")
+        _save_heatmap(pos_agg, out_dir / f"saca_{pos}_aggregate_heatmap.svg", title=f"SACA {pos} (Aggregate)")
+        _save_overlay(input_img, pos_agg, out_dir / f"saca_{pos}_aggregate_overlay.svg", title=f"SACA {pos} (Aggregate)")
         if bool(args.save_npy):
             np.save(out_dir / f"saca_{pos}_aggregate.npy", pos_agg)
 
@@ -620,17 +620,17 @@ def run(args: argparse.Namespace) -> None:
         m21 = by_dir.get(f"{pos}:21", [])
         if m12:
             a12 = _mean_maps(m12)
-            _save_heatmap(a12, out_dir / f"saca_{pos}_dir12_heatmap.png", title=f"SACA {pos} dir12")
-            _save_overlay(input_img, a12, out_dir / f"saca_{pos}_dir12_overlay.png", title=f"SACA {pos} dir12")
+            _save_heatmap(a12, out_dir / f"saca_{pos}_dir12_heatmap.svg", title=f"SACA {pos} dir12")
+            _save_overlay(input_img, a12, out_dir / f"saca_{pos}_dir12_overlay.svg", title=f"SACA {pos} dir12")
         if m21:
             a21 = _mean_maps(m21)
-            _save_heatmap(a21, out_dir / f"saca_{pos}_dir21_heatmap.png", title=f"SACA {pos} dir21")
-            _save_overlay(input_img, a21, out_dir / f"saca_{pos}_dir21_overlay.png", title=f"SACA {pos} dir21")
+            _save_heatmap(a21, out_dir / f"saca_{pos}_dir21_heatmap.svg", title=f"SACA {pos} dir21")
+            _save_overlay(input_img, a21, out_dir / f"saca_{pos}_dir21_overlay.svg", title=f"SACA {pos} dir21")
 
     if pos_agg_maps:
         saca_all = _mean_maps(pos_agg_maps)
-        _save_heatmap(saca_all, out_dir / "saca_all_positions_aggregate_heatmap.png", title="SACA All Positions (Aggregate)")
-        _save_overlay(input_img, saca_all, out_dir / "saca_all_positions_aggregate_overlay.png", title="SACA All Positions (Aggregate)")
+        _save_heatmap(saca_all, out_dir / "saca_all_positions_aggregate_heatmap.svg", title="SACA All Positions (Aggregate)")
+        _save_overlay(input_img, saca_all, out_dir / "saca_all_positions_aggregate_overlay.svg", title="SACA All Positions (Aggregate)")
         if bool(args.save_npy):
             np.save(out_dir / "saca_all_positions_aggregate.npy", saca_all)
 

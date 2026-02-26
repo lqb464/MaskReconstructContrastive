@@ -467,19 +467,19 @@ def run(args: argparse.Namespace) -> None:
         delta = post_cos - pre_cos
 
         # Cos matrix range in [-1,1].
-        _save_heatmap(pre_cos, pos_dir / "cosine_pre.png", f"{pos} | cosine pre", vmin=-1.0, vmax=1.0)
-        _save_heatmap(post_cos, pos_dir / "cosine_post.png", f"{pos} | cosine post", vmin=-1.0, vmax=1.0)
-        _save_heatmap(delta, pos_dir / "cosine_delta.png", f"{pos} | cosine delta(post-pre)", vmin=-1.0, vmax=1.0)
+        _save_heatmap(pre_cos, pos_dir / "cosine_pre.svg", f"{pos} | cosine pre", vmin=-1.0, vmax=1.0)
+        _save_heatmap(post_cos, pos_dir / "cosine_post.svg", f"{pos} | cosine post", vmin=-1.0, vmax=1.0)
+        _save_heatmap(delta, pos_dir / "cosine_delta.svg", f"{pos} | cosine delta(post-pre)", vmin=-1.0, vmax=1.0)
 
         h, w, _ = pre1.shape[1:]
         pre_best = _best_match_map(torch.from_numpy(pre_cos), axis=0, hw=(h, w))
         post_best = _best_match_map(torch.from_numpy(post_cos), axis=0, hw=(h, w))
         e_pre = _feature_energy_map(pre1)
         e_post = _feature_energy_map(post1)
-        _save_overlay(input_img, pre_best, pos_dir / "overlay_pre_best_match.png", f"{pos} | pre best-match")
-        _save_overlay(input_img, post_best, pos_dir / "overlay_post_best_match.png", f"{pos} | post best-match")
-        _save_overlay(input_img, e_pre, pos_dir / "overlay_pre_energy.png", f"{pos} | pre feature energy")
-        _save_overlay(input_img, e_post, pos_dir / "overlay_post_energy.png", f"{pos} | post feature energy")
+        _save_overlay(input_img, pre_best, pos_dir / "overlay_pre_best_match.svg", f"{pos} | pre best-match")
+        _save_overlay(input_img, post_best, pos_dir / "overlay_post_best_match.svg", f"{pos} | post best-match")
+        _save_overlay(input_img, e_pre, pos_dir / "overlay_pre_energy.svg", f"{pos} | pre feature energy")
+        _save_overlay(input_img, e_post, pos_dir / "overlay_post_energy.svg", f"{pos} | post feature energy")
 
         if bool(args.save_npy):
             np.save(pos_dir / "cosine_pre.npy", pre_cos)
@@ -494,9 +494,9 @@ def run(args: argparse.Namespace) -> None:
             {
                 "position": pos,
                 "shape": [int(pre1.shape[1]), int(pre1.shape[2]), int(pre1.shape[3])],
-                "cos_pre": str(pos_dir / "cosine_pre.png"),
-                "cos_post": str(pos_dir / "cosine_post.png"),
-                "cos_delta": str(pos_dir / "cosine_delta.png"),
+                "cos_pre": str(pos_dir / "cosine_pre.svg"),
+                "cos_post": str(pos_dir / "cosine_post.svg"),
+                "cos_delta": str(pos_dir / "cosine_delta.svg"),
             }
         )
 
@@ -504,9 +504,9 @@ def run(args: argparse.Namespace) -> None:
         pre_m = _mean_np(agg_pre)
         post_m = _mean_np(agg_post)
         delta_m = _mean_np(agg_delta)
-        _save_heatmap(pre_m, out_dir / "aggregate_cosine_pre.png", "aggregate cosine pre", vmin=0.0, vmax=1.0)
-        _save_heatmap(post_m, out_dir / "aggregate_cosine_post.png", "aggregate cosine post", vmin=0.0, vmax=1.0)
-        _save_heatmap(delta_m, out_dir / "aggregate_abs_delta.png", "aggregate abs delta", vmin=0.0, vmax=1.0)
+        _save_heatmap(pre_m, out_dir / "aggregate_cosine_pre.svg", "aggregate cosine pre", vmin=0.0, vmax=1.0)
+        _save_heatmap(post_m, out_dir / "aggregate_cosine_post.svg", "aggregate cosine post", vmin=0.0, vmax=1.0)
+        _save_heatmap(delta_m, out_dir / "aggregate_abs_delta.svg", "aggregate abs delta", vmin=0.0, vmax=1.0)
 
     (out_dir / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     print(f"[done] saved patch cosine similarity outputs to: {out_dir}")

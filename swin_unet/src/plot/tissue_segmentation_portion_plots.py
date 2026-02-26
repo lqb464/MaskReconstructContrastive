@@ -89,7 +89,7 @@ def plot_loss_by_portion(
     plt.tight_layout()
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(out_path, dpi=int(dpi))
+    plt.savefig(out_path, dpi=int(dpi), bbox_inches="tight")
     plt.close(fig)
 
 
@@ -142,7 +142,7 @@ def plot_macro_dice_by_portion(
     plt.tight_layout()
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(out_path, dpi=int(dpi))
+    plt.savefig(out_path, dpi=int(dpi), bbox_inches="tight")
     plt.close(fig)
 
 
@@ -208,7 +208,7 @@ def plot_class_dice_by_portion(
     plt.tight_layout(rect=[0.0, 0.0, 0.80, 1.0])
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(out_path, dpi=int(dpi))
+    plt.savefig(out_path, dpi=int(dpi), bbox_inches="tight")
     plt.close(fig)
 
 
@@ -266,9 +266,9 @@ def main() -> None:
 
     df = _load_summary_csv(input_csv)
 
-    out_loss = out_dir / "tissue_loss_vs_portion.png"
-    out_macro = out_dir / "tissue_macro_dice_vs_portion.png"
-    out_class = out_dir / "tissue_class_dice_vs_portion.png"
+    out_loss = out_dir / "tissue_loss_vs_portion.svg"
+    out_macro = out_dir / "tissue_macro_dice_vs_portion.svg"
+    out_class = out_dir / "tissue_class_dice_vs_portion.svg"
 
     plot_loss_by_portion(
         df=df,

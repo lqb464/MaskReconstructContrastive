@@ -94,7 +94,7 @@ def _plot_metric(
     ax.legend(loc="best", frameon=False)
     plt.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(out_path, dpi=int(dpi))
+    plt.savefig(out_path, dpi=int(dpi), bbox_inches="tight")
     plt.close(fig)
 
 
@@ -153,10 +153,10 @@ def main() -> None:
     no_ssim_train_color = _normalize_hex_color(args.no_ssim_train_color)
     no_ssim_val_color = _normalize_hex_color(args.no_ssim_val_color)
 
-    out_multi_loss = out_dir / "ssl_multi_saca_loss_vs_portion.png"
-    out_multi_ssim = out_dir / "ssl_multi_saca_ssim_vs_portion.png"
-    out_no_loss = out_dir / "ssl_no_saca_loss_vs_portion.png"
-    out_no_ssim = out_dir / "ssl_no_saca_ssim_vs_portion.png"
+    out_multi_loss = out_dir / "ssl_multi_saca_loss_vs_portion.svg"
+    out_multi_ssim = out_dir / "ssl_multi_saca_ssim_vs_portion.svg"
+    out_no_loss = out_dir / "ssl_no_saca_loss_vs_portion.svg"
+    out_no_ssim = out_dir / "ssl_no_saca_ssim_vs_portion.svg"
 
     _plot_metric(
         df=multi_df,
