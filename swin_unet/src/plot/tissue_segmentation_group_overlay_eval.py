@@ -105,6 +105,11 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--device", type=str, default="cuda", help="Device: cuda|cpu.")
     p.add_argument("--batch-size", type=int, default=8, help="Inference batch size.")
     p.add_argument("--top-k", type=int, default=5, help="Top-K overlays per group.")
+    p.add_argument(
+        "--group-by-modality",
+        action="store_true",
+        help="If enabled, group by modality token (t1/ct/pet/t2/dwi/flair). Default is disabled: all images go to group 'all'.",
+    )
     p.add_argument("--include-bg", action="store_true", help="Include class 0 when computing macro dice.")
     p.add_argument(
         "--exclude-rank-label-ids",
@@ -233,23 +238,27 @@ def _collect_samples(
     label_root: Path,
     *,
     label_suffixes: list[str],
+    group_by_modality: bool,
 ) -> list[Sample]:
     label_stem_indices = {sx: _build_label_index(label_root, sx) for sx in label_suffixes}
     samples: list[Sample] = []
     total_png = 0
     dropped_group = 0
     dropped_label = 0
-    grouped_counts: dict[str, int] = {g: 0 for g in VALID_GROUPS}
-    paired_counts: dict[str, int] = {g: 0 for g in VALID_GROUPS}
+    grouped_counts: dict[str, int] = {}
+    paired_counts: dict[str, int] = {}
     missing_label_examples: list[str] = []
     for img in sorted(image_root.rglob("*.png")):
         if not img.is_file():
             continue
         total_png += 1
-        group = _resolve_group(img)
-        if group is None:
-            dropped_group += 1
-            continue
+        if bool(group_by_modality):
+            group = _resolve_group(img)
+            if group is None:
+                dropped_group += 1
+                continue
+        else:
+            group = "all"
         grouped_counts[group] = grouped_counts.get(group, 0) + 1
         lbl = _resolve_label_path(
             image_path=img,
@@ -265,8 +274,9 @@ def _collect_samples(
             continue
         samples.append(Sample(image_path=img.resolve(), label_path=lbl.resolve(), group=group))
         paired_counts[group] = paired_counts.get(group, 0) + 1
-    grouped_breakdown = ", ".join(f"{g}:{grouped_counts.get(g, 0)}" for g in VALID_GROUPS)
-    paired_breakdown = ", ".join(f"{g}:{paired_counts.get(g, 0)}" for g in VALID_GROUPS)
+    ordered_groups = sorted(set(grouped_counts.keys()) | set(paired_counts.keys()))
+    grouped_breakdown = ", ".join(f"{g}:{grouped_counts.get(g, 0)}" for g in ordered_groups)
+    paired_breakdown = ", ".join(f"{g}:{paired_counts.get(g, 0)}" for g in ordered_groups)
     print(
         f"[scan] total_png={total_png} grouped={total_png - dropped_group} "
         f"paired={len(samples)} dropped_group={dropped_group} dropped_label={dropped_label} "
@@ -580,11 +590,12 @@ def main() -> None:
         image_root=image_root,
         label_root=label_root,
         label_suffixes=label_suffixes,
+        group_by_modality=bool(args.group_by_modality),
     )
     if not samples:
         raise RuntimeError(
-            "No valid samples found. Ensure filenames match '*_x_*.png' with x in "
-            f"{VALID_GROUPS}, and corresponding labels exist. Tried suffixes: {label_suffixes}"
+            "No valid samples found. Ensure corresponding labels exist. "
+            f"Tried suffixes: {label_suffixes}"
         )
     group_counts: dict[str, int] = {}
     for s in samples:
@@ -698,7 +709,8 @@ def main() -> None:
     print(f"[rank] exclude_if_target_only_in={sorted(rank_exclude_ids)}")
     print(f"[rank] ignore_ids_for_exclusion_check={sorted(rank_ignore_ids)}")
     print(f"[rank] min_other_classes={max(0, int(args.rank_min_other_classes))}")
-    for g in VALID_GROUPS:
+    groups_for_summary = sorted(set(str(r["group"]) for r in records))
+    for g in groups_for_summary:
         g_rows = [r for r in records if r["group"] == g]
         g_vals = [float(r["dice"]) for r in g_rows if math.isfinite(float(r["dice"]))]
         if g_vals:
