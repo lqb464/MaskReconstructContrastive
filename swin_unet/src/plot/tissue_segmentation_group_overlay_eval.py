@@ -106,6 +106,16 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--batch-size", type=int, default=8, help="Inference batch size.")
     p.add_argument("--top-k", type=int, default=5, help="Top-K overlays per group.")
     p.add_argument("--include-bg", action="store_true", help="Include class 0 when computing macro dice.")
+    p.add_argument(
+        "--exclude-rank-label-ids",
+        type=str,
+        default="100,101,102,103,104,105",
+        help="Comma-separated label ids. Samples whose target labels are only within this set are excluded from ranking.",
+    )
+    p.add_argument("--overlay-dpi", type=int, default=220, help="DPI for overlay images.")
+    p.add_argument("--overlay-linewidth", type=float, default=2.0, help="Boundary line width.")
+    p.add_argument("--overlay-contrast-qmin", type=float, default=1.0, help="Lower percentile for image contrast.")
+    p.add_argument("--overlay-contrast-qmax", type=float, default=99.0, help="Upper percentile for image contrast.")
     p.add_argument("--out-dir", type=Path, required=True, help="Output directory.")
     p.set_defaults(
         strict_label_ids=False,
@@ -430,9 +440,22 @@ def _draw_overlay(
     class_name_map: dict[int, str],
     dice_value: float,
     include_bg: bool,
+    dpi: int,
+    linewidth: float,
+    qmin: float,
+    qmax: float,
 ) -> None:
+    qmin_f = max(0.0, min(100.0, float(qmin)))
+    qmax_f = max(0.0, min(100.0, float(qmax)))
+    if qmax_f <= qmin_f:
+        qmin_f, qmax_f = 1.0, 99.0
+    vmin = float(np.percentile(image, qmin_f))
+    vmax = float(np.percentile(image, qmax_f))
+    if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+        vmin, vmax = 0.0, 1.0
+
     fig, ax = plt.subplots(figsize=(6.5, 6.5))
-    ax.imshow(image, cmap="gray", vmin=0.0, vmax=1.0)
+    ax.imshow(image, cmap="gray", vmin=vmin, vmax=vmax, interpolation="nearest")
     cmap = plt.get_cmap("tab20")
 
     handles = []
@@ -445,7 +468,7 @@ def _draw_overlay(
         if int(mask.sum()) <= 0:
             continue
         color = cmap(int(cid) % cmap.N)
-        ax.contour(mask, levels=[0.5], colors=[color], linewidths=1.2, alpha=0.95)
+        ax.contour(mask, levels=[0.5], colors=[color], linewidths=float(linewidth), alpha=1.0)
         handles.append(plt.Line2D([0], [0], color=color, lw=2, label=f"{int(cid)}:{class_name_map.get(int(cid), f'class_{int(cid)}')}"))
 
     dice_txt = "nan" if (not math.isfinite(float(dice_value))) else f"{float(dice_value):.4f}"
@@ -455,8 +478,18 @@ def _draw_overlay(
         ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=7, frameon=True)
     fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=170, bbox_inches="tight")
+    fig.savefig(out_path, dpi=int(dpi), bbox_inches="tight")
     plt.close(fig)
+
+
+def _parse_id_csv(raw: str) -> set[int]:
+    out: set[int] = set()
+    for tok in str(raw).split(","):
+        s = tok.strip()
+        if not s:
+            continue
+        out.add(int(s))
+    return out
 
 
 def main() -> None:
@@ -562,6 +595,7 @@ def main() -> None:
                         "group": s.group,
                         "dice": float(dice_value),
                         "pred": pred[j].detach().cpu().numpy().astype(np.int32),
+                        "target": y[j].detach().cpu().numpy().astype(np.int32),
                         "image": x[j, 0].detach().cpu().numpy().astype(np.float32),
                         "per_class": per_class_map,
                     }
@@ -582,6 +616,8 @@ def main() -> None:
             )
 
     summary_rows: list[dict[str, Any]] = []
+    rank_exclude_ids = _parse_id_csv(str(args.exclude_rank_label_ids))
+    print(f"[rank] exclude_if_target_only_in={sorted(rank_exclude_ids)}")
     for g in VALID_GROUPS:
         g_rows = [r for r in records if r["group"] == g]
         g_vals = [float(r["dice"]) for r in g_rows if math.isfinite(float(r["dice"]))]
@@ -600,8 +636,19 @@ def main() -> None:
             }
         )
 
+        rank_candidates: list[dict[str, Any]] = []
+        excluded_for_rank = 0
+        for r in g_rows:
+            tgt_ids = set(int(v) for v in np.unique(r["target"]).tolist())
+            if tgt_ids and tgt_ids.issubset(rank_exclude_ids):
+                excluded_for_rank += 1
+                continue
+            rank_candidates.append(r)
+        if excluded_for_rank > 0:
+            print(f"[rank/{g}] excluded={excluded_for_rank} kept={len(rank_candidates)}")
+
         ranked = sorted(
-            g_rows,
+            rank_candidates,
             key=lambda x: float(x["dice"]) if math.isfinite(float(x["dice"])) else float("-inf"),
             reverse=True,
         )
@@ -616,6 +663,10 @@ def main() -> None:
                 class_name_map=class_name_map,
                 dice_value=float(r["dice"]),
                 include_bg=bool(args.include_bg),
+                dpi=int(args.overlay_dpi),
+                linewidth=float(args.overlay_linewidth),
+                qmin=float(args.overlay_contrast_qmin),
+                qmax=float(args.overlay_contrast_qmax),
             )
 
     summary_csv = out_dir / "dice_group_summary.csv"
