@@ -512,6 +512,19 @@ def _parse_id_csv(raw: str) -> set[int]:
     return out
 
 
+def _should_exclude_from_ranking(
+    target_ids: set[int],
+    *,
+    exclude_ids: set[int],
+    ignore_ids: set[int],
+) -> bool:
+    # Ignore background/ignore-index when deciding whether a sample is non-brain-only.
+    effective = set(int(x) for x in target_ids if int(x) not in ignore_ids)
+    if not effective:
+        return True
+    return effective.issubset(exclude_ids)
+
+
 def main() -> None:
     args = _parse_args()
     _mode4_guard(int(args.mode))
@@ -637,7 +650,9 @@ def main() -> None:
 
     summary_rows: list[dict[str, Any]] = []
     rank_exclude_ids = _parse_id_csv(str(args.exclude_rank_label_ids))
+    rank_ignore_ids = {0, -100}
     print(f"[rank] exclude_if_target_only_in={sorted(rank_exclude_ids)}")
+    print(f"[rank] ignore_ids_for_exclusion_check={sorted(rank_ignore_ids)}")
     for g in VALID_GROUPS:
         g_rows = [r for r in records if r["group"] == g]
         g_vals = [float(r["dice"]) for r in g_rows if math.isfinite(float(r["dice"]))]
@@ -658,14 +673,25 @@ def main() -> None:
 
         rank_candidates: list[dict[str, Any]] = []
         excluded_for_rank = 0
+        excluded_examples: list[str] = []
         for r in g_rows:
             tgt_ids = set(int(v) for v in np.unique(r["target"]).tolist())
-            if tgt_ids and tgt_ids.issubset(rank_exclude_ids):
+            if _should_exclude_from_ranking(
+                tgt_ids,
+                exclude_ids=rank_exclude_ids,
+                ignore_ids=rank_ignore_ids,
+            ):
                 excluded_for_rank += 1
+                if len(excluded_examples) < 3:
+                    excluded_examples.append(
+                        f"{Path(str(r['image_path'])).name}: target_ids={sorted(tgt_ids)}"
+                    )
                 continue
             rank_candidates.append(r)
         if excluded_for_rank > 0:
             print(f"[rank/{g}] excluded={excluded_for_rank} kept={len(rank_candidates)}")
+            for ex in excluded_examples:
+                print(f"[rank/{g}] excluded_example {ex}")
 
         ranked = sorted(
             rank_candidates,
