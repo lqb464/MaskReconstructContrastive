@@ -36,6 +36,7 @@ class TissueTaskConfig:
     vis_threshold: float = 0.5
     no_tqdm: bool = False
     debug_shapes: bool = False
+    one: str = ""
     primary_metric: str = "pc_macro_dice"
     presence_policy: str = "target_present"
     aggregation_level: str = "scan"
@@ -75,6 +76,7 @@ class ExperimentConfig(_BaseExperimentConfig):
             vis_threshold=float(args.vis_threshold),
             no_tqdm=bool(args.no_tqdm),
             debug_shapes=bool(args.debug_shapes),
+            one=str(getattr(args, "one", "")).strip(),
             primary_metric=str(getattr(args, "primary_metric", "pc_macro_dice")),
             presence_policy=str(getattr(args, "presence_policy", "target_present")),
             aggregation_level=str(getattr(args, "aggregation_level", "scan")),
@@ -96,12 +98,22 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.set_defaults(enable_contrastive=False, enable_masking=False, enable_reconstruct=True, plane="auto")
 
     grp = parser.add_argument_group("tissue_segmentation dataset")
-    grp.add_argument("--train-root", type=str, required=True, help="Root folder containing train input images.")
-    grp.add_argument("--eval-root", type=str, required=True, help="Root folder containing eval input images.")
-    grp.add_argument("--train-label", type=str, required=True, help="Root folder containing train segmentation labels.")
-    grp.add_argument("--eval-label", type=str, required=True, help="Root folder containing eval segmentation labels.")
-    grp.add_argument("--train-list", type=str, required=True, help="Path to scans list for train split.")
-    grp.add_argument("--eval-list", type=str, required=True, help="Path to scans list for eval/test split.")
+    grp.add_argument("--train-root", "--train-dir", dest="train_root", type=str, default="", help="Root folder containing train input images.")
+    grp.add_argument("--eval-root", "--eval-dir", dest="eval_root", type=str, default="", help="Root folder containing eval input images.")
+    grp.add_argument("--train-label", type=str, default="", help="Root folder containing train segmentation labels.")
+    grp.add_argument("--eval-label", type=str, default="", help="Root folder containing eval segmentation labels.")
+    grp.add_argument("--train-list", type=str, default="", help="Path to scans list for train split.")
+    grp.add_argument("--eval-list", type=str, default="", help="Path to scans list for eval/test split.")
+    grp.add_argument(
+        "--one",
+        type=str,
+        default="",
+        help=(
+            "Single-image mode: train/eval on one scan token or path. "
+            "This sample is resolved from --train-root and labeled from --train-label. "
+            "When set, eval root/label/list are optional and default to train root/label."
+        ),
+    )
     grp.add_argument(
         "--seg-labels",
         type=str,
@@ -201,6 +213,29 @@ def build_argparser() -> argparse.ArgumentParser:
 
 
 def enforce_tissue_args(args: argparse.Namespace) -> None:
+    one_token = str(getattr(args, "one", "")).strip()
+    one_mode = bool(one_token)
+
+    if not str(getattr(args, "train_root", "")).strip():
+        raise ValueError("--train-root is required.")
+    if not str(getattr(args, "train_label", "")).strip():
+        raise ValueError("--train-label is required.")
+
+    if one_mode:
+        if not str(getattr(args, "eval_root", "")).strip():
+            args.eval_root = args.train_root
+        if not str(getattr(args, "eval_label", "")).strip():
+            args.eval_label = args.train_label
+    else:
+        if not str(getattr(args, "eval_root", "")).strip():
+            raise ValueError("--eval-root is required when --one is not set.")
+        if not str(getattr(args, "eval_label", "")).strip():
+            raise ValueError("--eval-label is required when --one is not set.")
+        if not str(getattr(args, "train_list", "")).strip():
+            raise ValueError("--train-list is required when --one is not set.")
+        if not str(getattr(args, "eval_list", "")).strip():
+            raise ValueError("--eval-list is required when --one is not set.")
+
     if bool(getattr(args, "enable_contrastive", False)):
         raise ValueError(
             "tissue_segmentation task is supervised segmentation-only. "

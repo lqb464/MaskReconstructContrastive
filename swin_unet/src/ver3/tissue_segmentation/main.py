@@ -157,21 +157,30 @@ def run(args: argparse.Namespace) -> None:
     cfg.data.num_classes = int(encoding_info.num_classes)
     cfg.model.num_classes = int(encoding_info.num_classes)
 
-    train_tokens = read_scan_list(cfg.tissue.train_list)
-    eval_tokens = read_scan_list(cfg.tissue.eval_list)
-    if not train_tokens:
-        raise RuntimeError(f"Train list has no usable scan tokens: {cfg.tissue.train_list}")
-    if not eval_tokens:
-        raise RuntimeError(f"Eval list has no usable scan tokens: {cfg.tissue.eval_list}")
+    one_token = str(getattr(cfg.tissue, "one", "")).strip()
+    one_mode = bool(one_token)
+    if one_mode:
+        train_tokens = [one_token]
+        eval_tokens = [one_token]
+        cfg.tissue.eval_root = cfg.tissue.train_root
+        cfg.tissue.eval_label = cfg.tissue.train_label
+        train_token_count_raw = 1
+    else:
+        train_tokens = read_scan_list(cfg.tissue.train_list)
+        eval_tokens = read_scan_list(cfg.tissue.eval_list)
+        if not train_tokens:
+            raise RuntimeError(f"Train list has no usable scan tokens: {cfg.tissue.train_list}")
+        if not eval_tokens:
+            raise RuntimeError(f"Eval list has no usable scan tokens: {cfg.tissue.eval_list}")
 
-    train_token_count_raw = len(train_tokens)
-    keep_idx = select_indices_by_train_mod(train_token_count_raw, float(cfg.data.train_mod))
-    train_tokens = [train_tokens[i] for i in keep_idx]
-    if not train_tokens:
-        raise RuntimeError(
-            f"No train scans selected after applying train_mod={cfg.data.train_mod} "
-            f"on train_list={cfg.tissue.train_list}"
-        )
+        train_token_count_raw = len(train_tokens)
+        keep_idx = select_indices_by_train_mod(train_token_count_raw, float(cfg.data.train_mod))
+        train_tokens = [train_tokens[i] for i in keep_idx]
+        if not train_tokens:
+            raise RuntimeError(
+                f"No train scans selected after applying train_mod={cfg.data.train_mod} "
+                f"on train_list={cfg.tissue.train_list}"
+            )
 
     train_image_index = build_image_index(image_root=cfg.tissue.train_root, image_ext=cfg.tissue.image_ext)
     eval_root_resolved = Path(cfg.tissue.eval_root).expanduser().resolve()
@@ -242,6 +251,11 @@ def run(args: argparse.Namespace) -> None:
         f"[split] fixed lists (no random split): train_list={cfg.tissue.train_list} "
         f"eval_list={cfg.tissue.eval_list}"
     )
+    if one_mode:
+        print(
+            f"[one] enabled token={one_token} "
+            f"train_root={cfg.tissue.train_root} eval_root={cfg.tissue.eval_root}"
+        )
     print(
         f"[subsample] train_mod={float(cfg.data.train_mod):.4f} "
         f"train_scans={len(train_tokens)}/{train_token_count_raw} (eval unchanged)"

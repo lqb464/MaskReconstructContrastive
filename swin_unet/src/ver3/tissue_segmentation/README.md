@@ -34,6 +34,26 @@ Optional alias (supported by `ver3/cli.py`):
 python -m swin_unet.src.ver3.cli tissue ...
 ```
 
+### One-image debug mode (`--one`)
+Train + eval on exactly one scan token/path from `--train-root`:
+```bash
+python -m swin_unet.src.ver3.cli train-tissue \
+  --train-root /path/to/images/train \
+  --train-label /path/to/labels/train \
+  --one asl_t1_105 \
+  --seg-labels /path/to/seg_labels.txt \
+  --label-mode 1 \
+  --image-ext .png \
+  --label-suffix _label.npz \
+  --epochs 20 \
+  --batch-size 1 \
+  --out-dir runs_ssl_swinunet \
+  --run-name tissue_one_image
+```
+Notes:
+- In `--one` mode, eval uses the same single sample and defaults `eval_root=train_root`, `eval_label=train_label`.
+- `--eval-root`, `--eval-label`, `--train-list`, `--eval-list` are optional when `--one` is set.
+
 ## Dataset and mapping assumptions
 - Train set is resolved only from `--train-list` (use `scans_test.txt`).
 - Eval set is resolved only from `--eval-list` (use `scans_valid.txt`).
@@ -73,11 +93,12 @@ python -m swin_unet.src.ver3.cli tissue ...
 | Flag | Type | Default | Description |
 |---|---|---|---|
 | `--train-root` | `str` | required | Root directory of train input images. |
-| `--eval-root` | `str` | required | Root directory of eval input images. |
+| `--eval-root` | `str` | required (normal mode), optional (`--one`) | Root directory of eval input images. |
 | `--train-label` | `str` | required | Root directory of train segmentation labels. |
-| `--eval-label` | `str` | required | Root directory of eval segmentation labels. |
-| `--train-list` | `str` | required | Train scan list path (`scans_test.txt`). |
-| `--eval-list` | `str` | required | Eval scan list path (`scans_valid.txt`). |
+| `--eval-label` | `str` | required (normal mode), optional (`--one`) | Root directory of eval segmentation labels. |
+| `--train-list` | `str` | required (normal mode), optional (`--one`) | Train scan list path (`scans_test.txt`). |
+| `--eval-list` | `str` | required (normal mode), optional (`--one`) | Eval scan list path (`scans_valid.txt`). |
+| `--one` | `str` | `""` | Single-image mode token/path. Uses one sample from train root/label for both train and eval. |
 | `--seg-labels` | `str` | `swin_unet/src/ver3/tissue_segmentation/txt/seg_labels.txt` | Path to `seg_labels.txt` (only rows with trailing RGBA columns are used). |
 | `--image-ext` | `str` | `.png` | Image extension used for indexing. |
 | `--label-suffix` | `str` | `_label.npz` | Label filename suffix. |

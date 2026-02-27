@@ -339,6 +339,39 @@ def _resolve_input_scan_tokens(
     return [str(pick.relative_to(image_root)).replace("\\", "/")]
 
 
+def _resolve_single_image_path(
+    image_root: Path,
+    *,
+    image_query: str,
+) -> Path:
+    tokens = _resolve_input_scan_tokens(image_root, one=True, image_query=image_query)
+    rel = tokens[0]
+    p = (image_root / rel).resolve()
+    if not p.exists():
+        raise FileNotFoundError(f"Resolved one-image path does not exist: {p}")
+    return p
+
+
+def _resolve_single_label_path(
+    image_path: Path,
+    *,
+    image_root: Path,
+    label_root: Path,
+    label_suffix: str,
+) -> Path | None:
+    # Replicate TissueSegmentationDataset._resolve_label_path strategy:
+    # 1) mirrored relative tree
+    # 2) deterministic basename-stem fallback (sorted)
+    rel = image_path.resolve().relative_to(image_root.resolve())
+    c1 = (label_root / rel.parent / f"{image_path.stem}{label_suffix}").resolve()
+    if c1.exists():
+        return c1
+    cands = sorted([p.resolve() for p in label_root.rglob(f"{image_path.stem}{label_suffix}") if p.is_file()])
+    if cands:
+        return cands[0]
+    return None
+
+
 def _load_ckpt(path: Path, device: torch.device) -> dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {path}")
@@ -650,31 +683,62 @@ def main() -> None:
     print(f"[labels] encoded_num_classes={num_classes}")
     class_name_map = _build_class_name_map(encoding_info.encoded_id_to_name, num_classes)
 
-    samples = _collect_samples(
-        dataset=TissueSegmentationDataset(
+    if bool(args.one):
+        one_img = _resolve_single_image_path(
+            image_root=image_root,
+            image_query=str(args.image),
+        )
+        one_lbl = _resolve_single_label_path(
+            one_img,
             image_root=image_root,
             label_root=label_root,
-            scan_tokens=_resolve_input_scan_tokens(
-                image_root=image_root,
-                one=bool(args.one),
-                image_query=str(args.image),
-            ),
-            encoding_info=encoding_info,
-            image_ext=".png",
             label_suffix=str(args.label_suffix),
-            label_key=(str(args.label_key) or None),
-            image_size=int(args.image_size),
-            target_size=int(args.image_size),
-            resize_mode=str(args.resize_mode),
-            plane="auto",
-            strict_pairs=False,
-            strict_label_ids=bool(args.strict_label_ids),
-            allow_unknown_label_ids=bool(args.allow_unknown_label_ids),
-            debug_shapes=False,
-            image_index=build_image_index(image_root=image_root, image_ext=".png"),
-        ),
-        group_by_modality=bool(args.group_by_modality),
-    )
+        )
+        if one_lbl is None:
+            raise RuntimeError(
+                "No label found for --one image with source matching rules "
+                f"(mirror-path then stem fallback): image={one_img} label_suffix={args.label_suffix}"
+            )
+        if bool(args.group_by_modality):
+            g = _resolve_group(one_img)
+            if g is None:
+                raise RuntimeError(
+                    f"--group-by-modality is enabled but cannot infer modality token from image name: {one_img.name}"
+                )
+            one_group = g
+        else:
+            one_group = "all"
+        samples = [Sample(image_path=one_img, label_path=one_lbl, group=one_group)]
+        print(
+            f"[scan] one_fast_path=1 total_png=1 grouped=1 paired=1 dropped_group=0 dropped_label=0 "
+            f"grouped_by_group={{ {one_group}:1 }} paired_by_group={{ {one_group}:1 }}"
+        )
+    else:
+        samples = _collect_samples(
+            dataset=TissueSegmentationDataset(
+                image_root=image_root,
+                label_root=label_root,
+                scan_tokens=_resolve_input_scan_tokens(
+                    image_root=image_root,
+                    one=False,
+                    image_query=str(args.image),
+                ),
+                encoding_info=encoding_info,
+                image_ext=".png",
+                label_suffix=str(args.label_suffix),
+                label_key=(str(args.label_key) or None),
+                image_size=int(args.image_size),
+                target_size=int(args.image_size),
+                resize_mode=str(args.resize_mode),
+                plane="auto",
+                strict_pairs=False,
+                strict_label_ids=bool(args.strict_label_ids),
+                allow_unknown_label_ids=bool(args.allow_unknown_label_ids),
+                debug_shapes=False,
+                image_index=build_image_index(image_root=image_root, image_ext=".png"),
+            ),
+            group_by_modality=bool(args.group_by_modality),
+        )
     if not samples:
         raise RuntimeError(
             "No valid samples found. Ensure corresponding labels exist. "
