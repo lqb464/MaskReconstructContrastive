@@ -4,6 +4,7 @@ import argparse
 import csv
 import heapq
 import json
+import re
 from collections import Counter
 from dataclasses import fields, is_dataclass
 from pathlib import Path
@@ -24,6 +25,7 @@ from swin_unet.src.ver3.mask_reconstruction.main import build_model
 from swin_unet.src.ver3.training.utils import ensure_dir, get_device
 
 VALID_MODALITIES = ("t1", "ct", "pet", "t2", "dwi", "flair")
+HEX_COLOR_RE = re.compile(r"^#?[0-9a-fA-F]{6}$")
 
 
 def dataclass_from_dict(dc_type, raw: dict):
@@ -77,6 +79,17 @@ def per_sample_dice(pred_bin: torch.Tensor, target_bin: torch.Tensor, eps: float
     inter = (pred_bin * target_bin).sum(dim=(1, 2, 3))
     denom = pred_bin.sum(dim=(1, 2, 3)) + target_bin.sum(dim=(1, 2, 3)) + eps
     return (2.0 * inter + eps) / denom
+
+
+def _normalize_hex_color(value: str) -> str:
+    s = str(value).strip()
+    if not HEX_COLOR_RE.match(s):
+        raise argparse.ArgumentTypeError(
+            f"Invalid color '{value}'. Use hex format RRGGBB or #RRGGBB."
+        )
+    if not s.startswith("#"):
+        s = f"#{s}"
+    return s
 
 
 def _maybe_draw_contour(ax: plt.Axes, mask: np.ndarray, *, color: str, linewidth: float) -> None:
@@ -203,8 +216,18 @@ def build_argparser() -> argparse.ArgumentParser:
         help="Threshold to convert target tensor to binary for Dice/overlay (default 0.0).",
     )
     p.add_argument("--threshold", type=float, default=0.5, help="Dice/pred threshold.")
-    p.add_argument("--gt-color", type=str, default="lime", help="Matplotlib color for GT boundary.")
-    p.add_argument("--pred-color", type=str, default="red", help="Matplotlib color for predicted boundary.")
+    p.add_argument(
+        "--gt-color",
+        type=_normalize_hex_color,
+        default="#00FF00",
+        help="GT boundary color in hex (RRGGBB or #RRGGBB).",
+    )
+    p.add_argument(
+        "--pred-color",
+        type=_normalize_hex_color,
+        default="#FF0000",
+        help="Pred boundary color in hex (RRGGBB or #RRGGBB).",
+    )
 
     p.add_argument("--batch-size", type=int, default=8)
     p.add_argument("--num-workers", type=int, default=0)

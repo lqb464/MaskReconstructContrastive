@@ -220,6 +220,8 @@ def _collect_samples(
     total_png = 0
     dropped_group = 0
     dropped_label = 0
+    grouped_counts: dict[str, int] = {g: 0 for g in VALID_GROUPS}
+    paired_counts: dict[str, int] = {g: 0 for g in VALID_GROUPS}
     missing_label_examples: list[str] = []
     for img in sorted(image_root.rglob("*.png")):
         if not img.is_file():
@@ -229,6 +231,7 @@ def _collect_samples(
         if group is None:
             dropped_group += 1
             continue
+        grouped_counts[group] = grouped_counts.get(group, 0) + 1
         lbl = _resolve_label_path(
             image_path=img,
             image_root=image_root,
@@ -242,9 +245,13 @@ def _collect_samples(
                 missing_label_examples.append(str(img))
             continue
         samples.append(Sample(image_path=img.resolve(), label_path=lbl.resolve(), group=group))
+        paired_counts[group] = paired_counts.get(group, 0) + 1
+    grouped_breakdown = ", ".join(f"{g}:{grouped_counts.get(g, 0)}" for g in VALID_GROUPS)
+    paired_breakdown = ", ".join(f"{g}:{paired_counts.get(g, 0)}" for g in VALID_GROUPS)
     print(
         f"[scan] total_png={total_png} grouped={total_png - dropped_group} "
-        f"paired={len(samples)} dropped_group={dropped_group} dropped_label={dropped_label}"
+        f"paired={len(samples)} dropped_group={dropped_group} dropped_label={dropped_label} "
+        f"grouped_by_group={{ {grouped_breakdown} }} paired_by_group={{ {paired_breakdown} }}"
     )
     if missing_label_examples:
         print("[scan] missing_label_examples:")
