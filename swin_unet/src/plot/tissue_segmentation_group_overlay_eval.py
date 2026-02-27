@@ -60,6 +60,15 @@ def _parse_args() -> argparse.Namespace:
         default="_label.npz",
         help="Suffix for label files: <stem><label-suffix>.",
     )
+    p.add_argument(
+        "--label-suffixes",
+        type=str,
+        default="",
+        help=(
+            "Optional comma-separated suffix list for label lookup, e.g. "
+            "'_label.npz,_label.npy,.npz,.npy'. If empty, script auto-adds common fallbacks."
+        ),
+    )
     p.add_argument("--label-key", type=str, default="", help="Optional key in NPZ label file.")
     p.add_argument("--seg-labels", type=Path, required=True, help="Path to seg_labels.txt.")
     p.add_argument("--mode", type=int, default=4, choices=[1, 2, 3, 4], help="Label encoding mode. Use 4 as requested.")
@@ -151,34 +160,57 @@ def _build_label_index(label_root: Path, label_suffix: str) -> dict[str, list[Pa
     return out
 
 
+def _resolve_label_suffixes(primary_suffix: str, raw_suffixes: str) -> list[str]:
+    suffixes: list[str] = []
+    if raw_suffixes.strip():
+        for x in raw_suffixes.split(","):
+            sx = x.strip()
+            if sx:
+                suffixes.append(sx)
+
+    if primary_suffix and primary_suffix not in suffixes:
+        suffixes.insert(0, primary_suffix)
+
+    # Common fallbacks in tissue segmentation pipelines.
+    for sx in ("_label.npz", "_label.npy", ".npz", ".npy"):
+        if sx not in suffixes:
+            suffixes.append(sx)
+    return suffixes
+
+
 def _resolve_label_path(
     image_path: Path,
     image_root: Path,
     label_root: Path,
-    label_suffix: str,
-    label_stem_index: dict[str, list[Path]],
+    label_suffixes: list[str],
+    label_stem_indices: dict[str, dict[str, list[Path]]],
 ) -> Path | None:
     rel = image_path.resolve().relative_to(image_root.resolve())
-    c1 = (label_root / rel.parent / f"{image_path.stem}{label_suffix}").resolve()
-    if c1.exists():
-        return c1
-    cands = label_stem_index.get(image_path.stem.lower(), [])
-    if not cands:
-        return None
-    return sorted(cands)[0]
+    for sx in label_suffixes:
+        c1 = (label_root / rel.parent / f"{image_path.stem}{sx}").resolve()
+        if c1.exists():
+            return c1
+
+    for sx in label_suffixes:
+        idx = label_stem_indices.get(sx, {})
+        cands = idx.get(image_path.stem.lower(), [])
+        if cands:
+            return sorted(cands)[0]
+    return None
 
 
 def _collect_samples(
     image_root: Path,
     label_root: Path,
     *,
-    label_suffix: str,
+    label_suffixes: list[str],
 ) -> list[Sample]:
-    label_stem_index = _build_label_index(label_root, label_suffix)
+    label_stem_indices = {sx: _build_label_index(label_root, sx) for sx in label_suffixes}
     samples: list[Sample] = []
     total_png = 0
     dropped_group = 0
     dropped_label = 0
+    missing_label_examples: list[str] = []
     for img in sorted(image_root.rglob("*.png")):
         if not img.is_file():
             continue
@@ -191,17 +223,23 @@ def _collect_samples(
             image_path=img,
             image_root=image_root,
             label_root=label_root,
-            label_suffix=label_suffix,
-            label_stem_index=label_stem_index,
+            label_suffixes=label_suffixes,
+            label_stem_indices=label_stem_indices,
         )
         if lbl is None:
             dropped_label += 1
+            if len(missing_label_examples) < 8:
+                missing_label_examples.append(str(img))
             continue
         samples.append(Sample(image_path=img.resolve(), label_path=lbl.resolve(), group=group))
     print(
         f"[scan] total_png={total_png} grouped={total_png - dropped_group} "
         f"paired={len(samples)} dropped_group={dropped_group} dropped_label={dropped_label}"
     )
+    if missing_label_examples:
+        print("[scan] missing_label_examples:")
+        for p in missing_label_examples:
+            print(f"  - {p}")
     return samples
 
 
@@ -417,6 +455,8 @@ def main() -> None:
 
     out_dir = Path(args.out_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
+    label_suffixes = _resolve_label_suffixes(str(args.label_suffix), str(args.label_suffixes))
+    print(f"[scan] label_suffixes={label_suffixes}")
 
     seg_labels = parse_seg_labels_txt(args.seg_labels)
     unknown_ids, non_brain_ids = identify_special_ids(seg_labels)
@@ -434,12 +474,12 @@ def main() -> None:
     samples = _collect_samples(
         image_root=image_root,
         label_root=label_root,
-        label_suffix=str(args.label_suffix),
+        label_suffixes=label_suffixes,
     )
     if not samples:
         raise RuntimeError(
             "No valid samples found. Ensure filenames match '*_x_*.png' with x in "
-            f"{VALID_GROUPS}, and corresponding labels exist with suffix '{args.label_suffix}'."
+            f"{VALID_GROUPS}, and corresponding labels exist. Tried suffixes: {label_suffixes}"
         )
 
     device = _to_device(args.device)

@@ -103,14 +103,14 @@ def save_group_overlay(group: str, items: list[dict[str, Any]], out_path: Path) 
         # Light GT mask fill to make GT presence visually obvious even when boundary is thin.
         if np.any(target > 0):
             ax.imshow(np.ma.masked_where(target <= 0, target), cmap="spring", alpha=0.18, vmin=0, vmax=1)
-        _maybe_draw_contour(ax, target, color="lime", linewidth=1.4)
-        _maybe_draw_contour(ax, pred, color="red", linewidth=1.2)
+        _maybe_draw_contour(ax, target, color=row["gt_color"], linewidth=1.4)
+        _maybe_draw_contour(ax, pred, color=row["pred_color"], linewidth=1.2)
         ax.set_title(f"{Path(row['path']).name} | dice={row['dice']:.4f}", fontsize=10)
         ax.axis("off")
 
     handles = [
-        Line2D([0], [0], color="lime", lw=2, label="GT boundary"),
-        Line2D([0], [0], color="red", lw=2, label="Pred boundary"),
+        Line2D([0], [0], color=items_sorted[0]["gt_color"], lw=2, label="GT boundary"),
+        Line2D([0], [0], color=items_sorted[0]["pred_color"], lw=2, label="Pred boundary"),
     ]
     fig.legend(handles=handles, loc="upper right", frameon=False)
     fig.suptitle(f"Top Dice Overlays - group={group}", fontsize=12)
@@ -196,6 +196,8 @@ def build_argparser() -> argparse.ArgumentParser:
         help="Threshold to convert target tensor to binary for Dice/overlay (default 0.0).",
     )
     p.add_argument("--threshold", type=float, default=0.5, help="Dice/pred threshold.")
+    p.add_argument("--gt-color", type=str, default="lime", help="Matplotlib color for GT boundary.")
+    p.add_argument("--pred-color", type=str, default="red", help="Matplotlib color for predicted boundary.")
 
     p.add_argument("--batch-size", type=int, default=8)
     p.add_argument("--num-workers", type=int, default=0)
@@ -305,6 +307,8 @@ def run(args: argparse.Namespace) -> None:
                     "pred": pred[i, 0].detach().cpu().numpy(),
                     "gt_pixels": gt_pixels,
                     "pred_pixels": pred_pixels,
+                    "gt_color": str(args.gt_color),
+                    "pred_color": str(args.pred_color),
                 }
 
                 serial += 1
