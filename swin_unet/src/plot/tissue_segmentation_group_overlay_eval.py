@@ -79,7 +79,13 @@ def _parse_args() -> argparse.Namespace:
         help="Optional num_classes override for encoding info (0=infer).",
     )
     p.add_argument("--strict-label-ids", action="store_true", help="Require all label ids to exist in seg_labels.")
-    p.add_argument("--allow-unknown-label-ids", action="store_true", help="Map unknown ids to class 0 when strict mode is off.")
+    p.add_argument("--no-strict-label-ids", dest="strict_label_ids", action="store_false")
+    p.add_argument(
+        "--allow-unknown-label-ids",
+        action="store_true",
+        help="Map unknown ids to class 0 when strict mode is off.",
+    )
+    p.add_argument("--no-allow-unknown-label-ids", dest="allow_unknown_label_ids", action="store_false")
     p.add_argument("--image-size", type=int, default=192, help="Square size for pair transform.")
     p.add_argument(
         "--resize-mode",
@@ -101,6 +107,10 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--top-k", type=int, default=5, help="Top-K overlays per group.")
     p.add_argument("--include-bg", action="store_true", help="Include class 0 when computing macro dice.")
     p.add_argument("--out-dir", type=Path, required=True, help="Output directory.")
+    p.set_defaults(
+        strict_label_ids=False,
+        allow_unknown_label_ids=True,
+    )
     return p.parse_args()
 
 
@@ -457,6 +467,11 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     label_suffixes = _resolve_label_suffixes(str(args.label_suffix), str(args.label_suffixes))
     print(f"[scan] label_suffixes={label_suffixes}")
+    print(
+        "[labels] "
+        f"mode={int(args.mode)} strict_label_ids={bool(args.strict_label_ids)} "
+        f"allow_unknown_label_ids={bool(args.allow_unknown_label_ids)}"
+    )
 
     seg_labels = parse_seg_labels_txt(args.seg_labels)
     unknown_ids, non_brain_ids = identify_special_ids(seg_labels)
