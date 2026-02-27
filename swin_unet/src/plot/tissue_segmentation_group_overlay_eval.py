@@ -696,14 +696,23 @@ def main() -> None:
             )
 
     target_hist = np.zeros((num_classes,), dtype=np.int64)
+    pred_hist = np.zeros((num_classes,), dtype=np.int64)
     for r in records:
         tgt = np.asarray(r["target"], dtype=np.int64).reshape(-1)
+        prd = np.asarray(r["pred"], dtype=np.int64).reshape(-1)
         if tgt.size == 0:
-            continue
-        valid = (tgt >= 0) & (tgt < num_classes)
-        if not np.any(valid):
-            continue
-        target_hist += np.bincount(tgt[valid], minlength=num_classes).astype(np.int64)
+            tgt_valid = np.zeros((0,), dtype=bool)
+        else:
+            tgt_valid = (tgt >= 0) & (tgt < num_classes)
+        if prd.size == 0:
+            prd_valid = np.zeros((0,), dtype=bool)
+        else:
+            prd_valid = (prd >= 0) & (prd < num_classes)
+        if np.any(tgt_valid):
+            target_hist += np.bincount(tgt[tgt_valid], minlength=num_classes).astype(np.int64)
+        if np.any(prd_valid):
+            pred_hist += np.bincount(prd[prd_valid], minlength=num_classes).astype(np.int64)
+
     target_hist_csv = out_dir / "target_class_hist.csv"
     with target_hist_csv.open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=["class_id", "class_name", "pixel_count"])
@@ -716,11 +725,59 @@ def main() -> None:
                     "pixel_count": int(target_hist[cid]),
                 }
             )
+    pred_hist_csv = out_dir / "pred_class_hist.csv"
+    with pred_hist_csv.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=["class_id", "class_name", "pixel_count"])
+        w.writeheader()
+        for cid in range(num_classes):
+            w.writerow(
+                {
+                    "class_id": cid,
+                    "class_name": class_name_map.get(cid, f"class_{cid}"),
+                    "pixel_count": int(pred_hist[cid]),
+                }
+            )
+
     nonzero = [(cid, int(target_hist[cid])) for cid in range(num_classes) if int(target_hist[cid]) > 0]
     nonzero_sorted = sorted(nonzero, key=lambda x: x[1], reverse=True)
     print(f"[target_hist] nonzero_classes={len(nonzero_sorted)}/{num_classes}")
     for cid, cnt in nonzero_sorted[:20]:
         print(f"[target_hist] c{cid}:{class_name_map.get(cid, f'class_{cid}')} pixels={cnt}")
+    nonzero_pred = [(cid, int(pred_hist[cid])) for cid in range(num_classes) if int(pred_hist[cid]) > 0]
+    nonzero_pred_sorted = sorted(nonzero_pred, key=lambda x: x[1], reverse=True)
+    print(f"[pred_hist] nonzero_classes={len(nonzero_pred_sorted)}/{num_classes}")
+    for cid, cnt in nonzero_pred_sorted[:20]:
+        print(f"[pred_hist] c{cid}:{class_name_map.get(cid, f'class_{cid}')} pixels={cnt}")
+
+    compare_csv = out_dir / "target_vs_pred_class_hist.csv"
+    with compare_csv.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(
+            f,
+            fieldnames=[
+                "class_id",
+                "class_name",
+                "target_pixel_count",
+                "pred_pixel_count",
+                "pred_over_target_ratio",
+            ],
+        )
+        w.writeheader()
+        for cid in range(num_classes):
+            tcnt = int(target_hist[cid])
+            pcnt = int(pred_hist[cid])
+            if tcnt > 0:
+                ratio = float(pcnt) / float(tcnt)
+            else:
+                ratio = float("nan")
+            w.writerow(
+                {
+                    "class_id": cid,
+                    "class_name": class_name_map.get(cid, f"class_{cid}"),
+                    "target_pixel_count": tcnt,
+                    "pred_pixel_count": pcnt,
+                    "pred_over_target_ratio": ratio,
+                }
+            )
 
     summary_rows: list[dict[str, Any]] = []
     rank_exclude_ids = _parse_id_csv(str(args.exclude_rank_label_ids))
@@ -811,6 +868,8 @@ def main() -> None:
         )
     print(f"[out] per-image: {metrics_csv}")
     print(f"[out] target-hist: {target_hist_csv}")
+    print(f"[out] pred-hist: {pred_hist_csv}")
+    print(f"[out] target-vs-pred: {compare_csv}")
     print(f"[out] summary: {summary_csv}")
     print(f"[out] overlays: {out_dir / 'overlays'}")
 
