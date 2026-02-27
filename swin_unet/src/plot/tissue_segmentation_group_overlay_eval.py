@@ -436,6 +436,7 @@ def _draw_overlay(
     *,
     image: np.ndarray,
     pred: np.ndarray,
+    target: np.ndarray,
     out_path: Path,
     class_name_map: dict[int, str],
     dice_value: float,
@@ -454,11 +455,14 @@ def _draw_overlay(
     if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
         vmin, vmax = 0.0, 1.0
 
-    fig, ax = plt.subplots(figsize=(6.5, 6.5))
-    ax.imshow(image, cmap="gray", vmin=vmin, vmax=vmax, interpolation="nearest")
+    fig, axes = plt.subplots(1, 2, figsize=(12.0, 6.0))
+    ax_pred, ax_gt = axes
+    ax_pred.imshow(image, cmap="gray", vmin=vmin, vmax=vmax, interpolation="nearest")
+    ax_gt.imshow(image, cmap="gray", vmin=vmin, vmax=vmax, interpolation="nearest")
     cmap = plt.get_cmap("tab20")
 
-    handles = []
+    handles_pred = []
+    handles_gt = []
     for cid in sorted(np.unique(pred).tolist()):
         if int(cid) < 0:
             continue
@@ -468,14 +472,30 @@ def _draw_overlay(
         if int(mask.sum()) <= 0:
             continue
         color = cmap(int(cid) % cmap.N)
-        ax.contour(mask, levels=[0.5], colors=[color], linewidths=float(linewidth), alpha=1.0)
-        handles.append(plt.Line2D([0], [0], color=color, lw=2, label=f"{int(cid)}:{class_name_map.get(int(cid), f'class_{int(cid)}')}"))
+        ax_pred.contour(mask, levels=[0.5], colors=[color], linewidths=float(linewidth), alpha=1.0)
+        handles_pred.append(plt.Line2D([0], [0], color=color, lw=2, label=f"{int(cid)}:{class_name_map.get(int(cid), f'class_{int(cid)}')}"))
+
+    for cid in sorted(np.unique(target).tolist()):
+        if int(cid) < 0:
+            continue
+        if (not include_bg) and int(cid) == 0:
+            continue
+        mask = (target == int(cid)).astype(np.float32)
+        if int(mask.sum()) <= 0:
+            continue
+        color = cmap(int(cid) % cmap.N)
+        ax_gt.contour(mask, levels=[0.5], colors=[color], linewidths=float(linewidth), alpha=1.0)
+        handles_gt.append(plt.Line2D([0], [0], color=color, lw=2, label=f"{int(cid)}:{class_name_map.get(int(cid), f'class_{int(cid)}')}"))
 
     dice_txt = "nan" if (not math.isfinite(float(dice_value))) else f"{float(dice_value):.4f}"
-    ax.set_title(f"pred boundary overlay | dice={dice_txt}")
-    ax.axis("off")
-    if handles:
-        ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=7, frameon=True)
+    ax_pred.set_title(f"Pred boundary | dice={dice_txt}")
+    ax_gt.set_title("Ground truth boundary")
+    ax_pred.axis("off")
+    ax_gt.axis("off")
+    if handles_pred:
+        ax_pred.legend(handles=handles_pred, loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=7, frameon=True)
+    if handles_gt:
+        ax_gt.legend(handles=handles_gt, loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=7, frameon=True)
     fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=int(dpi), bbox_inches="tight")
@@ -659,6 +679,7 @@ def main() -> None:
             _draw_overlay(
                 image=r["image"],
                 pred=r["pred"],
+                target=r["target"],
                 out_path=out_img,
                 class_name_map=class_name_map,
                 dice_value=float(r["dice"]),
