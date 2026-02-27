@@ -112,6 +112,15 @@ def _parse_args() -> argparse.Namespace:
         default="100,101,102,103,104,105",
         help="Comma-separated label ids. Samples whose target labels are only within this set are excluded from ranking.",
     )
+    p.add_argument(
+        "--rank-min-other-classes",
+        type=int,
+        default=1,
+        help=(
+            "Minimum number of target classes outside --exclude-rank-label-ids "
+            "(after removing ignore ids {0,-100}) required to keep a sample in ranking."
+        ),
+    )
     p.add_argument("--overlay-dpi", type=int, default=220, help="DPI for overlay images.")
     p.add_argument("--overlay-linewidth", type=float, default=2.0, help="Boundary line width.")
     p.add_argument("--overlay-contrast-qmin", type=float, default=1.0, help="Lower percentile for image contrast.")
@@ -517,12 +526,14 @@ def _should_exclude_from_ranking(
     *,
     exclude_ids: set[int],
     ignore_ids: set[int],
+    min_other_classes: int,
 ) -> bool:
     # Ignore background/ignore-index when deciding whether a sample is non-brain-only.
     effective = set(int(x) for x in target_ids if int(x) not in ignore_ids)
     if not effective:
         return True
-    return effective.issubset(exclude_ids)
+    other = effective - exclude_ids
+    return len(other) < max(0, int(min_other_classes))
 
 
 def main() -> None:
@@ -653,6 +664,7 @@ def main() -> None:
     rank_ignore_ids = {0, -100}
     print(f"[rank] exclude_if_target_only_in={sorted(rank_exclude_ids)}")
     print(f"[rank] ignore_ids_for_exclusion_check={sorted(rank_ignore_ids)}")
+    print(f"[rank] min_other_classes={max(0, int(args.rank_min_other_classes))}")
     for g in VALID_GROUPS:
         g_rows = [r for r in records if r["group"] == g]
         g_vals = [float(r["dice"]) for r in g_rows if math.isfinite(float(r["dice"]))]
@@ -680,6 +692,7 @@ def main() -> None:
                 tgt_ids,
                 exclude_ids=rank_exclude_ids,
                 ignore_ids=rank_ignore_ids,
+                min_other_classes=int(args.rank_min_other_classes),
             ):
                 excluded_for_rank += 1
                 if len(excluded_examples) < 3:
