@@ -559,6 +559,11 @@ def main() -> None:
 
     seg_labels = parse_seg_labels_txt(args.seg_labels)
     unknown_ids, non_brain_ids = identify_special_ids(seg_labels)
+    print(f"[labels] parsed_seg_labels={len(seg_labels)} from {Path(args.seg_labels).expanduser().resolve()}")
+    if seg_labels:
+        seg_id_min = min(int(k) for k in seg_labels.keys())
+        seg_id_max = max(int(k) for k in seg_labels.keys())
+        print(f"[labels] seg_id_range=[{seg_id_min},{seg_id_max}]")
     encoding_info = build_label_encoding_info(
         mode=int(args.mode),
         id_to_name=seg_labels,
@@ -568,6 +573,7 @@ def main() -> None:
         require_special_ids=False,
     )
     num_classes = int(encoding_info.num_classes)
+    print(f"[labels] encoded_num_classes={num_classes}")
     class_name_map = _build_class_name_map(encoding_info.encoded_id_to_name, num_classes)
 
     samples = _collect_samples(
@@ -659,6 +665,33 @@ def main() -> None:
                 }
             )
 
+    target_hist = np.zeros((num_classes,), dtype=np.int64)
+    for r in records:
+        tgt = np.asarray(r["target"], dtype=np.int64).reshape(-1)
+        if tgt.size == 0:
+            continue
+        valid = (tgt >= 0) & (tgt < num_classes)
+        if not np.any(valid):
+            continue
+        target_hist += np.bincount(tgt[valid], minlength=num_classes).astype(np.int64)
+    target_hist_csv = out_dir / "target_class_hist.csv"
+    with target_hist_csv.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=["class_id", "class_name", "pixel_count"])
+        w.writeheader()
+        for cid in range(num_classes):
+            w.writerow(
+                {
+                    "class_id": cid,
+                    "class_name": class_name_map.get(cid, f"class_{cid}"),
+                    "pixel_count": int(target_hist[cid]),
+                }
+            )
+    nonzero = [(cid, int(target_hist[cid])) for cid in range(num_classes) if int(target_hist[cid]) > 0]
+    nonzero_sorted = sorted(nonzero, key=lambda x: x[1], reverse=True)
+    print(f"[target_hist] nonzero_classes={len(nonzero_sorted)}/{num_classes}")
+    for cid, cnt in nonzero_sorted[:20]:
+        print(f"[target_hist] c{cid}:{class_name_map.get(cid, f'class_{cid}')} pixels={cnt}")
+
     summary_rows: list[dict[str, Any]] = []
     rank_exclude_ids = _parse_id_csv(str(args.exclude_rank_label_ids))
     rank_ignore_ids = {0, -100}
@@ -746,6 +779,7 @@ def main() -> None:
             f"avg_dice={avg_txt} std_dice={std_txt}"
         )
     print(f"[out] per-image: {metrics_csv}")
+    print(f"[out] target-hist: {target_hist_csv}")
     print(f"[out] summary: {summary_csv}")
     print(f"[out] overlays: {out_dir / 'overlays'}")
 
