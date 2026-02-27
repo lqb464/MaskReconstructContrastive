@@ -100,6 +100,9 @@ def save_group_overlay(group: str, items: list[dict[str, Any]], out_path: Path) 
         target = row["target"]
         pred = row["pred"]
         ax.imshow(image, cmap="gray", vmin=0, vmax=1)
+        # Light GT mask fill to make GT presence visually obvious even when boundary is thin.
+        if np.any(target > 0):
+            ax.imshow(np.ma.masked_where(target <= 0, target), cmap="spring", alpha=0.18, vmin=0, vmax=1)
         _maybe_draw_contour(ax, target, color="lime", linewidth=1.4)
         _maybe_draw_contour(ax, pred, color="red", linewidth=1.2)
         ax.set_title(f"{Path(row['path']).name} | dice={row['dice']:.4f}", fontsize=10)
@@ -174,7 +177,24 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--target-size", type=int, default=0)
     p.add_argument("--resize-mode", type=str, default="letterbox", choices=["letterbox", "direct"])
     p.add_argument("--plane", type=str, default="axial", choices=["axial", "coronal", "auto"])
-    p.add_argument("--binarize-target", action="store_true")
+    p.add_argument(
+        "--binarize-target",
+        action="store_true",
+        default=True,
+        help="Binarize loaded target mask before evaluation. Default: enabled.",
+    )
+    p.add_argument(
+        "--no-binarize-target",
+        dest="binarize_target",
+        action="store_false",
+        help="Disable target binarization in dataset loader.",
+    )
+    p.add_argument(
+        "--target-threshold",
+        type=float,
+        default=0.0,
+        help="Threshold to convert target tensor to binary for Dice/overlay (default 0.0).",
+    )
     p.add_argument("--threshold", type=float, default=0.5, help="Dice/pred threshold.")
 
     p.add_argument("--batch-size", type=int, default=8)
@@ -225,6 +245,7 @@ def run(args: argparse.Namespace) -> None:
     all_prefix_groups = Counter()
     per_image_rows: list[dict[str, Any]] = []
     skipped = 0
+    gt_empty = 0
     serial = 0
 
     with torch.no_grad():
@@ -236,7 +257,9 @@ def run(args: argparse.Namespace) -> None:
 
             recon1, _, _, _ = model(x, None, plane)
             pred = (torch.sigmoid(recon1) >= float(args.threshold)).float()
-            tgt = (y > 0.5).float()
+            # Robust target binarization: default threshold 0.0 works for both
+            # binarized masks and masks stored as small scaled values (e.g., /255 path).
+            tgt = (y > float(args.target_threshold)).float()
             dice_vals = per_sample_dice(pred, tgt)
 
             for i, path in enumerate(paths):
@@ -250,6 +273,8 @@ def run(args: argparse.Namespace) -> None:
                     continue
 
                 dice_i = float(dice_vals[i].item())
+                if float(tgt[i].sum().item()) <= 0.0:
+                    gt_empty += 1
                 per_image_rows.append({"path": str(path), "group": group, "dice": dice_i})
 
                 st = stats[group]
@@ -308,16 +333,19 @@ def run(args: argparse.Namespace) -> None:
         "checkpoint": str(ckpt_path),
         "input_dir": str(Path(args.input_dir).expanduser().resolve()),
         "threshold": float(args.threshold),
+        "target_threshold": float(args.target_threshold),
         "top_k": top_k,
         "valid_groups": list(VALID_MODALITIES),
         "all_prefix_groups": dict(sorted(all_prefix_groups.items(), key=lambda kv: kv[0])),
         "skipped_images_without_valid_group_token": int(skipped),
+        "gt_empty_after_threshold": int(gt_empty),
         "summary": summary_rows,
     }
     (out_dir / "summary.json").write_text(json.dumps(summary_json, indent=2), encoding="utf-8")
 
     print(f"[done] checkpoint={ckpt_path}")
     print(f"[done] evaluated_images={len(per_image_rows)} skipped={skipped}")
+    print(f"[done] gt_empty_after_threshold={gt_empty} (target_threshold={float(args.target_threshold):.6f})")
     print(f"[done] per-image csv: {per_image_csv}")
     print(f"[done] summary csv: {summary_csv}")
     print(f"[done] overlay dir: {overlay_dir}")
