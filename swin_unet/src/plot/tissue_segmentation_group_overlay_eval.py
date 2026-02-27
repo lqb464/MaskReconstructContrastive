@@ -107,6 +107,13 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--device", type=str, default="cuda", help="Device: cuda|cpu.")
     p.add_argument("--batch-size", type=int, default=8, help="Inference batch size.")
     p.add_argument("--top-k", type=int, default=5, help="Top-K overlays per group.")
+    p.add_argument("--one", action="store_true", help="Run inference for a single image resolved from --input-dir.")
+    p.add_argument(
+        "--image",
+        type=str,
+        default="",
+        help="Image stem or filename used with --one (example: asl_t1_120_axial_064).",
+    )
     p.add_argument(
         "--group-by-modality",
         action="store_true",
@@ -291,6 +298,45 @@ def _to_device(device_arg: str) -> torch.device:
     if d == "cuda" and torch.cuda.is_available():
         return torch.device("cuda")
     return torch.device("cpu")
+
+
+def _resolve_input_scan_tokens(
+    image_root: Path,
+    *,
+    one: bool,
+    image_query: str,
+) -> list[str]:
+    all_png = sorted([p for p in image_root.rglob("*.png") if p.is_file()])
+    if not one:
+        return [str(p.relative_to(image_root)).replace("\\", "/") for p in all_png]
+
+    query = str(image_query).strip()
+    if not query:
+        raise ValueError("--one requires --image.")
+
+    q_stem = Path(query).stem.lower()
+    q_name = Path(query).name.lower()
+    exact_stem = [p for p in all_png if p.stem.lower() == q_stem]
+    exact_name = [p for p in all_png if p.name.lower() == q_name]
+
+    cands: list[Path]
+    if exact_stem:
+        cands = exact_stem
+    elif exact_name:
+        cands = exact_name
+    else:
+        # Fallback: substring lookup on stem/name for convenience.
+        cands = [p for p in all_png if (q_stem in p.stem.lower()) or (q_name in p.name.lower())]
+
+    if not cands:
+        raise FileNotFoundError(f"No image matched --image '{query}' under {image_root}")
+
+    cands = sorted(set([p.resolve() for p in cands]))
+    if len(cands) > 1:
+        print(f"[scan] WARNING: --image '{query}' matched {len(cands)} files; using first: {cands[0]}")
+    pick = cands[0]
+    print(f"[scan] one-image mode matched: {pick}")
+    return [str(pick.relative_to(image_root)).replace("\\", "/")]
 
 
 def _load_ckpt(path: Path, device: torch.device) -> dict[str, Any]:
@@ -608,11 +654,11 @@ def main() -> None:
         dataset=TissueSegmentationDataset(
             image_root=image_root,
             label_root=label_root,
-            scan_tokens=[
-                str(p.relative_to(image_root)).replace("\\", "/")
-                for p in sorted(image_root.rglob("*.png"))
-                if p.is_file()
-            ],
+            scan_tokens=_resolve_input_scan_tokens(
+                image_root=image_root,
+                one=bool(args.one),
+                image_query=str(args.image),
+            ),
             encoding_info=encoding_info,
             image_ext=".png",
             label_suffix=str(args.label_suffix),
