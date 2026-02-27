@@ -130,6 +130,8 @@ def _parse_args() -> argparse.Namespace:
     )
     p.add_argument("--overlay-dpi", type=int, default=220, help="DPI for overlay images.")
     p.add_argument("--overlay-linewidth", type=float, default=2.0, help="Boundary line width.")
+    p.add_argument("--overlay-alpha", type=float, default=0.35, help="Alpha for filled class overlays.")
+    p.add_argument("--boundary", action="store_true", help="Use boundary contours instead of filled overlays.")
     p.add_argument("--overlay-contrast-qmin", type=float, default=1.0, help="Lower percentile for image contrast.")
     p.add_argument("--overlay-contrast-qmax", type=float, default=99.0, help="Upper percentile for image contrast.")
     p.add_argument("--out-dir", type=Path, required=True, help="Output directory.")
@@ -457,6 +459,8 @@ def _draw_overlay(
     include_bg: bool,
     dpi: int,
     linewidth: float,
+    overlay_alpha: float,
+    boundary: bool,
     qmin: float,
     qmax: float,
 ) -> None:
@@ -477,6 +481,7 @@ def _draw_overlay(
 
     handles_pred = []
     handles_gt = []
+    alpha = max(0.0, min(1.0, float(overlay_alpha)))
     for cid in sorted(np.unique(pred).tolist()):
         if int(cid) < 0:
             continue
@@ -486,7 +491,13 @@ def _draw_overlay(
         if int(mask.sum()) <= 0:
             continue
         color = cmap(int(cid) % cmap.N)
-        ax_pred.contour(mask, levels=[0.5], colors=[color], linewidths=float(linewidth), alpha=1.0)
+        if bool(boundary):
+            ax_pred.contour(mask, levels=[0.5], colors=[color], linewidths=float(linewidth), alpha=1.0)
+        else:
+            rgba = np.zeros((mask.shape[0], mask.shape[1], 4), dtype=np.float32)
+            rgba[..., :3] = np.asarray(color[:3], dtype=np.float32)
+            rgba[..., 3] = mask * alpha
+            ax_pred.imshow(rgba, interpolation="nearest")
         handles_pred.append(plt.Line2D([0], [0], color=color, lw=2, label=f"{int(cid)}:{class_name_map.get(int(cid), f'class_{int(cid)}')}"))
 
     for cid in sorted(np.unique(target).tolist()):
@@ -498,12 +509,19 @@ def _draw_overlay(
         if int(mask.sum()) <= 0:
             continue
         color = cmap(int(cid) % cmap.N)
-        ax_gt.contour(mask, levels=[0.5], colors=[color], linewidths=float(linewidth), alpha=1.0)
+        if bool(boundary):
+            ax_gt.contour(mask, levels=[0.5], colors=[color], linewidths=float(linewidth), alpha=1.0)
+        else:
+            rgba = np.zeros((mask.shape[0], mask.shape[1], 4), dtype=np.float32)
+            rgba[..., :3] = np.asarray(color[:3], dtype=np.float32)
+            rgba[..., 3] = mask * alpha
+            ax_gt.imshow(rgba, interpolation="nearest")
         handles_gt.append(plt.Line2D([0], [0], color=color, lw=2, label=f"{int(cid)}:{class_name_map.get(int(cid), f'class_{int(cid)}')}"))
 
     dice_txt = "nan" if (not math.isfinite(float(dice_value))) else f"{float(dice_value):.4f}"
-    ax_pred.set_title(f"Pred boundary | dice={dice_txt}")
-    ax_gt.set_title("Ground truth boundary")
+    vis_tag = "boundary" if bool(boundary) else "overlay"
+    ax_pred.set_title(f"Pred {vis_tag} | dice={dice_txt}")
+    ax_gt.set_title(f"Ground truth {vis_tag}")
     ax_pred.axis("off")
     ax_gt.axis("off")
     if handles_pred:
@@ -846,6 +864,8 @@ def main() -> None:
                 include_bg=bool(args.include_bg),
                 dpi=int(args.overlay_dpi),
                 linewidth=float(args.overlay_linewidth),
+                overlay_alpha=float(args.overlay_alpha),
+                boundary=bool(args.boundary),
                 qmin=float(args.overlay_contrast_qmin),
                 qmax=float(args.overlay_contrast_qmax),
             )
