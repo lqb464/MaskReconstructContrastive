@@ -22,6 +22,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 from swin_unet.src.ver3.config.experiment import ExperimentConfig
 from swin_unet.src.ver3.mask_reconstruction.dataset import MaskReconstructionDataset
 from swin_unet.src.ver3.mask_reconstruction.main import build_model
+from swin_unet.src.ver3.models.model_utils import flip_lr
 from swin_unet.src.ver3.training.utils import ensure_dir, get_device
 
 VALID_MODALITIES = ("t1", "ct", "pet", "t2", "dwi", "flair")
@@ -213,7 +214,7 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--mask-key", type=str, default="")
     p.add_argument("--strict-pairs", type=int, default=1, help="1: error on missing masks, 0: skip missing")
 
-    p.add_argument("--image-size", type=int, default=0, help="Override checkpoint image size (0 keeps ckpt cfg)")
+    p.add_argument("--image-size", type=int, default=256, help="Inference image size. Default 256.")
     p.add_argument("--target-size", type=int, default=0)
     p.add_argument("--resize-mode", type=str, default="letterbox", choices=["letterbox", "direct"])
     p.add_argument("--plane", type=str, default="axial", choices=["axial", "coronal", "auto"])
@@ -254,6 +255,11 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--pin-memory", action="store_true")
     p.add_argument("--cpu", action="store_true")
     p.add_argument("--top-k", type=int, default=5)
+    p.add_argument(
+        "--single-view-eval",
+        action="store_true",
+        help="Evaluate only recon1. Default uses dual-view averaging when recon2 is available.",
+    )
     return p
 
 
@@ -318,10 +324,23 @@ def _eval_dir_for_groups(
             plane = batch["plane_one_hot"].to(device, non_blocking=True)
             paths = batch["path"]
 
-            recon1, _, _, _ = model(x, None, plane)
-            pred = (torch.sigmoid(recon1) >= float(args.threshold)).float()
+            recon1, recon2, _, _ = model(x, None, plane)
+            prob1 = torch.sigmoid(recon1)
+            pred1 = (prob1 >= float(args.threshold)).float()
             tgt = (y > float(args.target_threshold)).float()
-            dice_vals = per_sample_dice(pred, tgt)
+            dice_vals = per_sample_dice(pred1, tgt)
+            pred_for_overlay = pred1
+
+            use_dual = (not bool(args.single_view_eval)) and (recon2 is not None)
+            if use_dual:
+                y_flip = flip_lr(tgt)
+                prob2 = torch.sigmoid(recon2)
+                pred2 = (prob2 >= float(args.threshold)).float()
+                dice_vals_flip = per_sample_dice(pred2, y_flip)
+                dice_vals = 0.5 * (dice_vals + dice_vals_flip)
+                # Bring flip prediction back to original orientation for overlay, then fuse.
+                prob2_unflip = flip_lr(prob2)
+                pred_for_overlay = (((prob1 + prob2_unflip) * 0.5) >= float(args.threshold)).float()
 
             for i, path in enumerate(paths):
                 token = extract_group_token_from_name(path)
@@ -337,7 +356,7 @@ def _eval_dir_for_groups(
 
                 dice_i = float(dice_vals[i].item())
                 gt_pixels = float(tgt[i].sum().item())
-                pred_pixels = float(pred[i].sum().item())
+                pred_pixels = float(pred_for_overlay[i].sum().item())
                 gt_is_empty = gt_pixels <= 0.0
                 pred_is_empty = pred_pixels <= 0.0
 
@@ -363,7 +382,7 @@ def _eval_dir_for_groups(
                     "dice": dice_i,
                     "image": x[i, 0].detach().cpu().numpy(),
                     "target": tgt[i, 0].detach().cpu().numpy(),
-                    "pred": pred[i, 0].detach().cpu().numpy(),
+                    "pred": pred_for_overlay[i, 0].detach().cpu().numpy(),
                     "gt_pixels": gt_pixels,
                     "pred_pixels": pred_pixels,
                     "gt_color": str(args.gt_color),
