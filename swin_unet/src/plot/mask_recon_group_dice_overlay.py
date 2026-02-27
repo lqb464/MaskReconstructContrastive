@@ -241,7 +241,9 @@ def run(args: argparse.Namespace) -> None:
 
     top_k = max(1, int(args.top_k))
     heap_by_group: dict[str, list[tuple[float, int, dict[str, Any]]]] = {g: [] for g in VALID_MODALITIES}
+    heap_by_group_non_empty_gt: dict[str, list[tuple[float, int, dict[str, Any]]]] = {g: [] for g in VALID_MODALITIES}
     stats = {g: {"n": 0, "sum": 0.0, "sum_sq": 0.0} for g in VALID_MODALITIES}
+    group_empty_stats = {g: {"gt_empty": 0, "pred_empty": 0, "both_empty": 0, "gt_non_empty": 0} for g in VALID_MODALITIES}
     all_prefix_groups = Counter()
     per_image_rows: list[dict[str, Any]] = []
     skipped = 0
@@ -273,8 +275,21 @@ def run(args: argparse.Namespace) -> None:
                     continue
 
                 dice_i = float(dice_vals[i].item())
-                if float(tgt[i].sum().item()) <= 0.0:
+                gt_pixels = float(tgt[i].sum().item())
+                pred_pixels = float(pred[i].sum().item())
+                gt_is_empty = gt_pixels <= 0.0
+                pred_is_empty = pred_pixels <= 0.0
+
+                gstat = group_empty_stats[group]
+                if gt_is_empty:
                     gt_empty += 1
+                    gstat["gt_empty"] += 1
+                else:
+                    gstat["gt_non_empty"] += 1
+                if pred_is_empty:
+                    gstat["pred_empty"] += 1
+                if gt_is_empty and pred_is_empty:
+                    gstat["both_empty"] += 1
                 per_image_rows.append({"path": str(path), "group": group, "dice": dice_i})
 
                 st = stats[group]
@@ -288,6 +303,8 @@ def run(args: argparse.Namespace) -> None:
                     "image": x[i, 0].detach().cpu().numpy(),
                     "target": tgt[i, 0].detach().cpu().numpy(),
                     "pred": pred[i, 0].detach().cpu().numpy(),
+                    "gt_pixels": gt_pixels,
+                    "pred_pixels": pred_pixels,
                 }
 
                 serial += 1
@@ -297,6 +314,14 @@ def run(args: argparse.Namespace) -> None:
                     heapq.heappush(bucket, entry)
                 elif dice_i > bucket[0][0]:
                     heapq.heapreplace(bucket, entry)
+
+                # For visualization quality: rank top-k using only samples with non-empty GT mask.
+                if not gt_is_empty:
+                    bucket_fg = heap_by_group_non_empty_gt[group]
+                    if len(bucket_fg) < top_k:
+                        heapq.heappush(bucket_fg, entry)
+                    elif dice_i > bucket_fg[0][0]:
+                        heapq.heapreplace(bucket_fg, entry)
 
     summary_rows: list[dict[str, Any]] = []
     for group in VALID_MODALITIES:
@@ -324,7 +349,10 @@ def run(args: argparse.Namespace) -> None:
         writer.writerows(summary_rows)
 
     for group in VALID_MODALITIES:
-        top_items = [entry[2] for entry in heap_by_group[group]]
+        top_items = [entry[2] for entry in heap_by_group_non_empty_gt[group]]
+        if not top_items:
+            # Fallback only when group has no non-empty GT at all.
+            top_items = [entry[2] for entry in heap_by_group[group]]
         if not top_items:
             continue
         save_group_overlay(group, top_items, overlay_dir / f"{group}_top{top_k}_overlay.png")
@@ -339,6 +367,7 @@ def run(args: argparse.Namespace) -> None:
         "all_prefix_groups": dict(sorted(all_prefix_groups.items(), key=lambda kv: kv[0])),
         "skipped_images_without_valid_group_token": int(skipped),
         "gt_empty_after_threshold": int(gt_empty),
+        "group_empty_stats": group_empty_stats,
         "summary": summary_rows,
     }
     (out_dir / "summary.json").write_text(json.dumps(summary_json, indent=2), encoding="utf-8")
@@ -359,6 +388,12 @@ def run(args: argparse.Namespace) -> None:
         print(
             f"[group] {row['group']}: n={row['count']} "
             f"avg_dice={row['avg_dice']:.4f} std_dice={row['std_dice']:.4f}"
+        )
+    for g in VALID_MODALITIES:
+        gs = group_empty_stats[g]
+        print(
+            f"[group-empty] {g}: gt_non_empty={gs['gt_non_empty']} gt_empty={gs['gt_empty']} "
+            f"pred_empty={gs['pred_empty']} both_empty={gs['both_empty']}"
         )
 
 
