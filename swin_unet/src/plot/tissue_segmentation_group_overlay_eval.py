@@ -22,6 +22,8 @@ from swin_unet.src.ver3.mask_reconstruction.pair_transforms import load_image_pi
 from swin_unet.src.ver3.models.model_utils import flip_lr
 from swin_unet.src.ver3.models.swin_unet_dualview_ssl import SwinUNetDualViewSSL
 from swin_unet.src.ver3.models.unet_dualview_ssl import UNetDualViewSSL
+from swin_unet.src.ver3.tissue_segmentation.dataset import TissueSegmentationDataset
+from swin_unet.src.ver3.tissue_segmentation.io import build_image_index
 from swin_unet.src.ver3.tissue_segmentation.io import build_label_encoding_info
 from swin_unet.src.ver3.tissue_segmentation.io import encode_label_array
 from swin_unet.src.ver3.tissue_segmentation.io import identify_special_ids
@@ -234,46 +236,39 @@ def _resolve_label_path(
 
 
 def _collect_samples(
-    image_root: Path,
-    label_root: Path,
+    dataset: TissueSegmentationDataset,
     *,
-    label_suffixes: list[str],
     group_by_modality: bool,
 ) -> list[Sample]:
-    label_stem_indices = {sx: _build_label_index(label_root, sx) for sx in label_suffixes}
     samples: list[Sample] = []
-    total_png = 0
+    total_png = int(dataset.num_images_resolved)
     dropped_group = 0
-    dropped_label = 0
+    dropped_label = int(dataset.num_missing_labels)
     grouped_counts: dict[str, int] = {}
     paired_counts: dict[str, int] = {}
-    missing_label_examples: list[str] = []
-    for img in sorted(image_root.rglob("*.png")):
-        if not img.is_file():
-            continue
-        total_png += 1
+    missing_label_examples: list[str] = []  # source dataset already handles detailed filtering; keep empty here.
+    for (img_path, lbl_path) in dataset.pairs:
+        img = Path(img_path)
         if bool(group_by_modality):
             group = _resolve_group(img)
             if group is None:
-                dropped_group += 1
                 continue
         else:
             group = "all"
         grouped_counts[group] = grouped_counts.get(group, 0) + 1
-        lbl = _resolve_label_path(
-            image_path=img,
-            image_root=image_root,
-            label_root=label_root,
-            label_suffixes=label_suffixes,
-            label_stem_indices=label_stem_indices,
-        )
-        if lbl is None:
-            dropped_label += 1
-            if len(missing_label_examples) < 8:
-                missing_label_examples.append(str(img))
-            continue
-        samples.append(Sample(image_path=img.resolve(), label_path=lbl.resolve(), group=group))
+        samples.append(Sample(image_path=img.resolve(), label_path=Path(lbl_path).resolve(), group=group))
         paired_counts[group] = paired_counts.get(group, 0) + 1
+
+    if bool(group_by_modality):
+        for img in dataset.images:
+            g = _resolve_group(Path(img))
+            if g is None:
+                dropped_group += 1
+            else:
+                grouped_counts[g] = grouped_counts.get(g, 0) + 1
+    else:
+        grouped_counts["all"] = total_png
+
     ordered_groups = sorted(set(grouped_counts.keys()) | set(paired_counts.keys()))
     grouped_breakdown = ", ".join(f"{g}:{grouped_counts.get(g, 0)}" for g in ordered_groups)
     paired_breakdown = ", ".join(f"{g}:{paired_counts.get(g, 0)}" for g in ordered_groups)
@@ -560,7 +555,12 @@ def main() -> None:
     out_dir = Path(args.out_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     label_suffixes = _resolve_label_suffixes(str(args.label_suffix), str(args.label_suffixes))
-    print(f"[scan] label_suffixes={label_suffixes}")
+    print(f"[scan] source_match_label_suffix={str(args.label_suffix)}")
+    if str(args.label_suffixes).strip():
+        print(
+            "[scan] note: --label-suffixes is ignored in source-match mode; "
+            "pairing follows TissueSegmentationDataset using --label-suffix only."
+        )
     print(
         "[labels] "
         f"mode={int(args.mode)} strict_label_ids={bool(args.strict_label_ids)} "
@@ -587,9 +587,28 @@ def main() -> None:
     class_name_map = _build_class_name_map(encoding_info.encoded_id_to_name, num_classes)
 
     samples = _collect_samples(
-        image_root=image_root,
-        label_root=label_root,
-        label_suffixes=label_suffixes,
+        dataset=TissueSegmentationDataset(
+            image_root=image_root,
+            label_root=label_root,
+            scan_tokens=[
+                str(p.relative_to(image_root)).replace("\\", "/")
+                for p in sorted(image_root.rglob("*.png"))
+                if p.is_file()
+            ],
+            encoding_info=encoding_info,
+            image_ext=".png",
+            label_suffix=str(args.label_suffix),
+            label_key=(str(args.label_key) or None),
+            image_size=int(args.image_size),
+            target_size=int(args.image_size),
+            resize_mode=str(args.resize_mode),
+            plane="auto",
+            strict_pairs=False,
+            strict_label_ids=bool(args.strict_label_ids),
+            allow_unknown_label_ids=bool(args.allow_unknown_label_ids),
+            debug_shapes=False,
+            image_index=build_image_index(image_root=image_root, image_ext=".png"),
+        ),
         group_by_modality=bool(args.group_by_modality),
     )
     if not samples:
