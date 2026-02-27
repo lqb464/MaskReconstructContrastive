@@ -97,6 +97,21 @@ def _maybe_draw_contour(ax: plt.Axes, mask: np.ndarray, *, color: str, linewidth
         ax.contour(mask.astype(np.float32), levels=[0.5], colors=color, linewidths=linewidth)
 
 
+def _draw_ordered_contours(
+    ax: plt.Axes,
+    *,
+    target: np.ndarray,
+    pred: np.ndarray,
+    gt_color: str,
+    pred_color: str,
+) -> None:
+    # Explicit z-order so GT is always drawn first, then prediction on top.
+    if np.any(target > 0):
+        ax.contour(target.astype(np.float32), levels=[0.5], colors=gt_color, linewidths=1.4, zorder=3)
+    if np.any(pred > 0):
+        ax.contour(pred.astype(np.float32), levels=[0.5], colors=pred_color, linewidths=1.2, zorder=4)
+
+
 def save_group_overlay(group: str, items: list[dict[str, Any]], out_path: Path) -> None:
     if not items:
         return
@@ -116,8 +131,13 @@ def save_group_overlay(group: str, items: list[dict[str, Any]], out_path: Path) 
         # Light GT mask fill to make GT presence visually obvious even when boundary is thin.
         if np.any(target > 0):
             ax.imshow(np.ma.masked_where(target <= 0, target), cmap="spring", alpha=0.18, vmin=0, vmax=1)
-        _maybe_draw_contour(ax, target, color=row["gt_color"], linewidth=1.4)
-        _maybe_draw_contour(ax, pred, color=row["pred_color"], linewidth=1.2)
+        _draw_ordered_contours(
+            ax,
+            target=target,
+            pred=pred,
+            gt_color=row["gt_color"],
+            pred_color=row["pred_color"],
+        )
         src = row.get("source", "input")
         ax.set_title(f"{Path(row['path']).name} | dice={row['dice']:.4f} | src={src}", fontsize=10)
         ax.axis("off")
