@@ -105,7 +105,8 @@ def save_group_overlay(group: str, items: list[dict[str, Any]], out_path: Path) 
             ax.imshow(np.ma.masked_where(target <= 0, target), cmap="spring", alpha=0.18, vmin=0, vmax=1)
         _maybe_draw_contour(ax, target, color=row["gt_color"], linewidth=1.4)
         _maybe_draw_contour(ax, pred, color=row["pred_color"], linewidth=1.2)
-        ax.set_title(f"{Path(row['path']).name} | dice={row['dice']:.4f}", fontsize=10)
+        src = row.get("source", "input")
+        ax.set_title(f"{Path(row['path']).name} | dice={row['dice']:.4f} | src={src}", fontsize=10)
         ax.axis("off")
 
     handles = [
@@ -164,6 +165,12 @@ def build_argparser() -> argparse.ArgumentParser:
         )
     )
     p.add_argument("--input-dir", type=str, required=True, help="Folder containing image/mask pairs.")
+    p.add_argument(
+        "--temp-dir",
+        type=str,
+        default="",
+        help="Optional fallback folder. Used only for groups with empty GT in input-dir.",
+    )
     p.add_argument("--ckpt", type=str, required=True, help="Path to checkpoint .pt")
     p.add_argument("--ckpt-load-mode", type=str, default="full", choices=["full"], help="Must be full.")
     p.add_argument("--out-dir", type=str, required=True, help="Output folder for csv/json and overlays.")
@@ -207,21 +214,38 @@ def build_argparser() -> argparse.ArgumentParser:
     return p
 
 
-def run(args: argparse.Namespace) -> None:
-    device = get_device(cpu=bool(args.cpu))
-    ckpt_path = Path(args.ckpt).expanduser().resolve()
-    out_dir = ensure_dir(Path(args.out_dir).expanduser().resolve())
-    overlay_dir = ensure_dir(out_dir / "overlays")
+def _update_topk_bucket(
+    *,
+    bucket: list[tuple[float, int, dict[str, Any]]],
+    entry: tuple[float, int, dict[str, Any]],
+    top_k: int,
+) -> None:
+    if len(bucket) < top_k:
+        heapq.heappush(bucket, entry)
+    elif entry[0] > bucket[0][0]:
+        heapq.heapreplace(bucket, entry)
 
-    model, cfg = load_model_from_ckpt(
-        ckpt_path=ckpt_path,
-        device=device,
-        ckpt_load_mode=args.ckpt_load_mode,
-        image_size_override=int(args.image_size),
-    )
 
+def _eval_dir_for_groups(
+    *,
+    data_dir: str,
+    source_name: str,
+    model: torch.nn.Module,
+    cfg: ExperimentConfig,
+    args: argparse.Namespace,
+    device: torch.device,
+    group_filter: set[str] | None,
+    top_k: int,
+    heap_all: dict[str, list[tuple[float, int, dict[str, Any]]]],
+    heap_non_empty: dict[str, list[tuple[float, int, dict[str, Any]]]],
+    stats: dict[str, dict[str, float]],
+    group_empty_stats: dict[str, dict[str, int]],
+    per_image_rows: list[dict[str, Any]],
+    all_prefix_groups: Counter,
+    serial_start: int,
+) -> tuple[int, int, int]:
     dataset = MaskReconstructionDataset(
-        data_dir=args.input_dir,
+        data_dir=data_dir,
         image_ext=args.image_ext,
         mask_suffix=args.mask_suffix,
         strict_pairs=bool(args.strict_pairs),
@@ -241,17 +265,9 @@ def run(args: argparse.Namespace) -> None:
         drop_last=False,
     )
 
-    top_k = max(1, int(args.top_k))
-    heap_by_group: dict[str, list[tuple[float, int, dict[str, Any]]]] = {g: [] for g in VALID_MODALITIES}
-    heap_by_group_non_empty_gt: dict[str, list[tuple[float, int, dict[str, Any]]]] = {g: [] for g in VALID_MODALITIES}
-    stats = {g: {"n": 0, "sum": 0.0, "sum_sq": 0.0} for g in VALID_MODALITIES}
-    group_empty_stats = {g: {"gt_empty": 0, "pred_empty": 0, "both_empty": 0, "gt_non_empty": 0} for g in VALID_MODALITIES}
-    all_prefix_groups = Counter()
-    per_image_rows: list[dict[str, Any]] = []
     skipped = 0
     gt_empty = 0
-    serial = 0
-
+    serial = int(serial_start)
     with torch.no_grad():
         for batch in loader:
             x = batch["input"].to(device, non_blocking=True)
@@ -261,8 +277,6 @@ def run(args: argparse.Namespace) -> None:
 
             recon1, _, _, _ = model(x, None, plane)
             pred = (torch.sigmoid(recon1) >= float(args.threshold)).float()
-            # Robust target binarization: default threshold 0.0 works for both
-            # binarized masks and masks stored as small scaled values (e.g., /255 path).
             tgt = (y > float(args.target_threshold)).float()
             dice_vals = per_sample_dice(pred, tgt)
 
@@ -274,6 +288,8 @@ def run(args: argparse.Namespace) -> None:
                 group = extract_group_from_name(path)
                 if group is None:
                     skipped += 1
+                    continue
+                if group_filter is not None and group not in group_filter:
                     continue
 
                 dice_i = float(dice_vals[i].item())
@@ -292,8 +308,8 @@ def run(args: argparse.Namespace) -> None:
                     gstat["pred_empty"] += 1
                 if gt_is_empty and pred_is_empty:
                     gstat["both_empty"] += 1
-                per_image_rows.append({"path": str(path), "group": group, "dice": dice_i})
 
+                per_image_rows.append({"path": str(path), "group": group, "dice": dice_i, "source": source_name})
                 st = stats[group]
                 st["n"] += 1
                 st["sum"] += dice_i
@@ -309,23 +325,80 @@ def run(args: argparse.Namespace) -> None:
                     "pred_pixels": pred_pixels,
                     "gt_color": str(args.gt_color),
                     "pred_color": str(args.pred_color),
+                    "source": source_name,
                 }
 
                 serial += 1
-                bucket = heap_by_group[group]
                 entry = (dice_i, serial, payload)
-                if len(bucket) < top_k:
-                    heapq.heappush(bucket, entry)
-                elif dice_i > bucket[0][0]:
-                    heapq.heapreplace(bucket, entry)
-
-                # For visualization quality: rank top-k using only samples with non-empty GT mask.
+                _update_topk_bucket(bucket=heap_all[group], entry=entry, top_k=top_k)
                 if not gt_is_empty:
-                    bucket_fg = heap_by_group_non_empty_gt[group]
-                    if len(bucket_fg) < top_k:
-                        heapq.heappush(bucket_fg, entry)
-                    elif dice_i > bucket_fg[0][0]:
-                        heapq.heapreplace(bucket_fg, entry)
+                    _update_topk_bucket(bucket=heap_non_empty[group], entry=entry, top_k=top_k)
+    return skipped, gt_empty, serial
+
+
+def run(args: argparse.Namespace) -> None:
+    device = get_device(cpu=bool(args.cpu))
+    ckpt_path = Path(args.ckpt).expanduser().resolve()
+    out_dir = ensure_dir(Path(args.out_dir).expanduser().resolve())
+    overlay_dir = ensure_dir(out_dir / "overlays")
+
+    model, cfg = load_model_from_ckpt(
+        ckpt_path=ckpt_path,
+        device=device,
+        ckpt_load_mode=args.ckpt_load_mode,
+        image_size_override=int(args.image_size),
+    )
+
+    top_k = max(1, int(args.top_k))
+    heap_by_group: dict[str, list[tuple[float, int, dict[str, Any]]]] = {g: [] for g in VALID_MODALITIES}
+    heap_by_group_non_empty_gt: dict[str, list[tuple[float, int, dict[str, Any]]]] = {g: [] for g in VALID_MODALITIES}
+    stats = {g: {"n": 0, "sum": 0.0, "sum_sq": 0.0} for g in VALID_MODALITIES}
+    group_empty_stats = {g: {"gt_empty": 0, "pred_empty": 0, "both_empty": 0, "gt_non_empty": 0} for g in VALID_MODALITIES}
+    all_prefix_groups = Counter()
+    per_image_rows: list[dict[str, Any]] = []
+    skipped, gt_empty, serial = _eval_dir_for_groups(
+        data_dir=args.input_dir,
+        source_name="input",
+        model=model,
+        cfg=cfg,
+        args=args,
+        device=device,
+        group_filter=None,
+        top_k=top_k,
+        heap_all=heap_by_group,
+        heap_non_empty=heap_by_group_non_empty_gt,
+        stats=stats,
+        group_empty_stats=group_empty_stats,
+        per_image_rows=per_image_rows,
+        all_prefix_groups=all_prefix_groups,
+        serial_start=0,
+    )
+
+    temp_dir_resolved = ""
+    used_temp_for_groups: list[str] = []
+    temp_skipped = 0
+    temp_gt_empty = 0
+    empty_groups = [g for g in VALID_MODALITIES if int(group_empty_stats[g]["gt_non_empty"]) == 0]
+    if getattr(args, "temp_dir", "") and empty_groups:
+        temp_dir_resolved = str(Path(args.temp_dir).expanduser().resolve())
+        temp_skipped, temp_gt_empty, _ = _eval_dir_for_groups(
+            data_dir=args.temp_dir,
+            source_name="temp",
+            model=model,
+            cfg=cfg,
+            args=args,
+            device=device,
+            group_filter=set(empty_groups),
+            top_k=top_k,
+            heap_all=heap_by_group,
+            heap_non_empty=heap_by_group_non_empty_gt,
+            stats=stats,
+            group_empty_stats=group_empty_stats,
+            per_image_rows=per_image_rows,
+            all_prefix_groups=all_prefix_groups,
+            serial_start=serial,
+        )
+        used_temp_for_groups = [g for g in empty_groups if len(heap_by_group[g]) > 0]
 
     summary_rows: list[dict[str, Any]] = []
     for group in VALID_MODALITIES:
@@ -342,7 +415,7 @@ def run(args: argparse.Namespace) -> None:
 
     per_image_csv = out_dir / "per_image_dice.csv"
     with per_image_csv.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["path", "group", "dice"])
+        writer = csv.DictWriter(f, fieldnames=["path", "group", "dice", "source"])
         writer.writeheader()
         writer.writerows(per_image_rows)
 
@@ -371,6 +444,11 @@ def run(args: argparse.Namespace) -> None:
         "all_prefix_groups": dict(sorted(all_prefix_groups.items(), key=lambda kv: kv[0])),
         "skipped_images_without_valid_group_token": int(skipped),
         "gt_empty_after_threshold": int(gt_empty),
+        "temp_dir": temp_dir_resolved,
+        "temp_skipped_images_without_valid_group_token": int(temp_skipped),
+        "temp_gt_empty_after_threshold": int(temp_gt_empty),
+        "empty_groups_before_temp": empty_groups,
+        "used_temp_for_groups": used_temp_for_groups,
         "group_empty_stats": group_empty_stats,
         "summary": summary_rows,
     }
@@ -379,6 +457,10 @@ def run(args: argparse.Namespace) -> None:
     print(f"[done] checkpoint={ckpt_path}")
     print(f"[done] evaluated_images={len(per_image_rows)} skipped={skipped}")
     print(f"[done] gt_empty_after_threshold={gt_empty} (target_threshold={float(args.target_threshold):.6f})")
+    if temp_dir_resolved:
+        print(f"[temp] temp_dir={temp_dir_resolved}")
+        print(f"[temp] used_temp_for_groups={used_temp_for_groups if used_temp_for_groups else 'none'}")
+        print(f"[temp] temp_skipped={temp_skipped} temp_gt_empty={temp_gt_empty}")
     print(f"[done] per-image csv: {per_image_csv}")
     print(f"[done] summary csv: {summary_csv}")
     print(f"[done] overlay dir: {overlay_dir}")

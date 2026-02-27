@@ -496,6 +496,13 @@ def main() -> None:
             "No valid samples found. Ensure filenames match '*_x_*.png' with x in "
             f"{VALID_GROUPS}, and corresponding labels exist. Tried suffixes: {label_suffixes}"
         )
+    group_counts: dict[str, int] = {}
+    for s in samples:
+        group_counts[s.group] = group_counts.get(s.group, 0) + 1
+    groups_present = sorted(group_counts.keys())
+    print(f"[scan] groups_with_label={groups_present}")
+    for g in groups_present:
+        print(f"[scan/group] {g}: n={group_counts[g]}")
 
     device = _to_device(args.device)
     ckpt = _load_ckpt(Path(args.ckpt_path).expanduser().resolve(), device)
