@@ -13,6 +13,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
+import re
 
 from swin_unet.src.ver3.data.dataset import infer_plane_from_path
 from swin_unet.src.ver3.data.dataset import plane_to_one_hot
@@ -100,12 +101,42 @@ def _mode4_guard(mode: int) -> None:
 
 
 def _resolve_group(image_path: Path) -> str | None:
+    """
+    Resolve modality group from filename/parent names.
+    Priority:
+    1) Any underscore-separated token in filename stem
+    2) Regex boundary-like match in filename stem
+    3) Any token in parent directory names (nearest first)
+    """
     stem = image_path.stem.lower()
     parts = [x for x in stem.split("_") if x]
-    if len(parts) < 3:
-        return None
-    token = parts[1]
-    return token if token in VALID_GROUPS else None
+    for tok in parts:
+        if tok in VALID_GROUPS:
+            return tok
+
+    pat = re.compile(r"(?:^|[_\-.])(t1|ct|pet|t2|dwi|flair)(?:$|[_\-.])", flags=re.IGNORECASE)
+    m = pat.search(stem)
+    if m is not None:
+        tok = str(m.group(1)).lower()
+        if tok in VALID_GROUPS:
+            return tok
+
+    for parent in image_path.parents:
+        name = parent.name.lower().strip()
+        if not name:
+            continue
+        if name in VALID_GROUPS:
+            return name
+        pparts = [x for x in name.split("_") if x]
+        for tok in pparts:
+            if tok in VALID_GROUPS:
+                return tok
+        m2 = pat.search(name)
+        if m2 is not None:
+            tok = str(m2.group(1)).lower()
+            if tok in VALID_GROUPS:
+                return tok
+    return None
 
 
 def _build_label_index(label_root: Path, label_suffix: str) -> dict[str, list[Path]]:
@@ -145,11 +176,16 @@ def _collect_samples(
 ) -> list[Sample]:
     label_stem_index = _build_label_index(label_root, label_suffix)
     samples: list[Sample] = []
+    total_png = 0
+    dropped_group = 0
+    dropped_label = 0
     for img in sorted(image_root.rglob("*.png")):
         if not img.is_file():
             continue
+        total_png += 1
         group = _resolve_group(img)
         if group is None:
+            dropped_group += 1
             continue
         lbl = _resolve_label_path(
             image_path=img,
@@ -159,8 +195,13 @@ def _collect_samples(
             label_stem_index=label_stem_index,
         )
         if lbl is None:
+            dropped_label += 1
             continue
         samples.append(Sample(image_path=img.resolve(), label_path=lbl.resolve(), group=group))
+    print(
+        f"[scan] total_png={total_png} grouped={total_png - dropped_group} "
+        f"paired={len(samples)} dropped_group={dropped_group} dropped_label={dropped_label}"
+    )
     return samples
 
 
