@@ -4,6 +4,7 @@ import argparse
 import csv
 import heapq
 import json
+from collections import Counter
 from dataclasses import fields, is_dataclass
 from pathlib import Path
 from typing import Any, Optional, Union, get_args, get_origin, get_type_hints
@@ -56,14 +57,20 @@ def dataclass_from_dict(dc_type, raw: dict):
 
 
 def extract_group_from_name(path: str | Path) -> Optional[str]:
+    token = extract_group_token_from_name(path)
+    if token is None:
+        return None
+    if token not in VALID_MODALITIES:
+        return None
+    return token
+
+
+def extract_group_token_from_name(path: str | Path) -> Optional[str]:
     stem = Path(path).stem
     parts = stem.split("_")
     if len(parts) < 2:
         return None
-    group = parts[1].lower()
-    if group not in VALID_MODALITIES:
-        return None
-    return group
+    return parts[1].lower()
 
 
 def per_sample_dice(pred_bin: torch.Tensor, target_bin: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
@@ -215,6 +222,7 @@ def run(args: argparse.Namespace) -> None:
     top_k = max(1, int(args.top_k))
     heap_by_group: dict[str, list[tuple[float, int, dict[str, Any]]]] = {g: [] for g in VALID_MODALITIES}
     stats = {g: {"n": 0, "sum": 0.0, "sum_sq": 0.0} for g in VALID_MODALITIES}
+    all_prefix_groups = Counter()
     per_image_rows: list[dict[str, Any]] = []
     skipped = 0
     serial = 0
@@ -232,6 +240,10 @@ def run(args: argparse.Namespace) -> None:
             dice_vals = per_sample_dice(pred, tgt)
 
             for i, path in enumerate(paths):
+                token = extract_group_token_from_name(path)
+                if token is not None:
+                    all_prefix_groups[token] += 1
+
                 group = extract_group_from_name(path)
                 if group is None:
                     skipped += 1
@@ -298,6 +310,7 @@ def run(args: argparse.Namespace) -> None:
         "threshold": float(args.threshold),
         "top_k": top_k,
         "valid_groups": list(VALID_MODALITIES),
+        "all_prefix_groups": dict(sorted(all_prefix_groups.items(), key=lambda kv: kv[0])),
         "skipped_images_without_valid_group_token": int(skipped),
         "summary": summary_rows,
     }
@@ -308,6 +321,12 @@ def run(args: argparse.Namespace) -> None:
     print(f"[done] per-image csv: {per_image_csv}")
     print(f"[done] summary csv: {summary_csv}")
     print(f"[done] overlay dir: {overlay_dir}")
+    if all_prefix_groups:
+        print("[groups] all prefix groups (token after first '_'):")
+        for g, n in sorted(all_prefix_groups.items(), key=lambda kv: kv[0]):
+            print(f"[groups] {g}: {n}")
+    else:
+        print("[groups] no valid filename token found after first '_'")
     for row in summary_rows:
         print(
             f"[group] {row['group']}: n={row['count']} "
