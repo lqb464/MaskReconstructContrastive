@@ -18,7 +18,13 @@ from .config.experiment import ExperimentConfig
 from .models.factory import build_model
 from .models.model_utils import flip_lr
 from .training.batch_ops import get_val_batch, prepare_inputs
-from .training.ckpt_io import load_checkpoint_weights, load_checkpoint_weights_filtered, save_checkpoint
+from .training.ckpt_io import (
+    load_checkpoint_training_state,
+    load_checkpoint_weights,
+    load_checkpoint_weights_filtered,
+    save_checkpoint,
+    warn_cfg_mismatch,
+)
 from .training.loggers import EpochCSVLogger, LossDecompCSVLogger
 from .training.metric_compute import update_recon_metrics
 from .training.utils import ensure_dir, extract_dataset_paths, has_labels_in_batch
@@ -64,19 +70,19 @@ class Trainer:
 
         self.model = build_model(cfg).to(device)
         self._is_vae = self.backbone == "vae"
+        self._start_epoch = 1
+        self._best_val = float("inf")
 
         resume_ckpt = getattr(cfg.training, "resume_ckpt", "")
         ckpt_mode = getattr(cfg.training, "ckpt_load_mode", "none")
+        self._pending_resume_ckpt: Optional[Path] = None
 
         if resume_ckpt and ckpt_mode != "none":
             ckpt_path = Path(resume_ckpt)
+            if not ckpt_path.exists():
+                raise FileNotFoundError(f"resume_ckpt not found: {ckpt_path}")
             if ckpt_mode == "full":
-                load_checkpoint_weights(
-                    ckpt_path=ckpt_path,
-                    device=self.device,
-                    model=self.model,
-                    strict=True,
-                )
+                self._pending_resume_ckpt = ckpt_path
             elif ckpt_mode == "encoder_only":
                 obj = load_checkpoint_weights_filtered(
                     ckpt_path=ckpt_path,
@@ -126,6 +132,25 @@ class Trainer:
         self.opt = AdamW(self.model.parameters(), lr=cfg.training.lr, weight_decay=cfg.training.weight_decay)
         self.scaler = GradScaler(enabled=(cfg.training.amp and device.type == "cuda"))
         self.data_module = None
+
+        if self._pending_resume_ckpt is not None:
+            state = load_checkpoint_training_state(
+                ckpt_path=self._pending_resume_ckpt,
+                device=self.device,
+                model=self.model,
+                optimizer=self.opt,
+                scaler=self.scaler,
+                strict=True,
+            )
+            self._start_epoch = state["start_epoch"]
+            self._best_val = state["best_val"]
+            warn_cfg_mismatch(saved_cfg=state.get("cfg"), current_cfg=self.cfg)
+            print(
+                f"[ckpt] full resume from {self._pending_resume_ckpt} "
+                f"(saved epoch={state['saved_epoch']}, start_epoch={self._start_epoch}, "
+                f"best_val={self._best_val:.4f})"
+            )
+            self._pending_resume_ckpt = None
 
     def _kl_loss(self) -> torch.Tensor:
         if not self._is_vae:
@@ -508,14 +533,23 @@ class Trainer:
         )
 
     def fit(self, train_loader, val_loader):
-        best_val = float("inf")
+        best_val = self._best_val
         best_path = self.ckpt_dir / "best.pt"
         latest_path = self.ckpt_dir / "latest.pt"
         save_latest_every = int(getattr(self.cfg.logging, "save_latest_every", 1))
         save_best_after_epoch = int(getattr(self.cfg.logging, "save_best_after_epoch", 0))
         save_best_every = int(getattr(self.cfg.logging, "save_best_every", 1))
 
-        for epoch in range(1, self.cfg.training.epochs + 1):
+        if self._start_epoch > self.cfg.training.epochs:
+            print(
+                f"[ckpt] warning: start_epoch={self._start_epoch} > epochs={self.cfg.training.epochs}; "
+                "nothing to train."
+            )
+            plot_training_curves(self.log_csv_path, self.plots_dir)
+            plot_loss_decomposition_curves(self.loss_decomp_csv_path, self.plots_dir)
+            return
+
+        for epoch in range(self._start_epoch, self.cfg.training.epochs + 1):
             freeze_n = int(getattr(self.cfg.training, "freeze_encoder_epochs", 0))
             self.model.set_encoder_trainable(trainable=not (epoch <= freeze_n))
 

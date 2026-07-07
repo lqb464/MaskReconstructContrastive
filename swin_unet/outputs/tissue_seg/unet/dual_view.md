@@ -1,0 +1,1 @@
+By default, the tissue_seg task using a U-Net only supports dual_view and does not have single_view mode.
