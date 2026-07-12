@@ -130,19 +130,33 @@ def resolve_brats_root(brats_root: str | Path, *, work_dir: Optional[Path] = Non
 
 
 def _load_nifti(path: Path) -> np.ndarray:
-    """Load NIfTI file, return float32 volume [H, W, D]."""
+    """Load NIfTI file, orient to RAI, and return float32 volume [H, W, D]."""
     try:
-        import nibabel as nib  # type: ignore
-        img = nib.load(str(path))
-        return np.asarray(img.dataobj, dtype=np.float32)
+        import SimpleITK as sitk  # type: ignore
+        img = sitk.ReadImage(str(path))
+        orienter = sitk.DICOMOrientImageFilter()
+        orienter.SetDesiredCoordinateOrientation("RAI")
+        img = orienter.Execute(img)
+        vol = sitk.GetArrayFromImage(img).astype(np.float32)
+        return np.transpose(vol, (1, 2, 0))  # [Z, Y, X] -> [Y, X, Z]
     except ImportError:
         pass
 
     try:
-        import SimpleITK as sitk  # type: ignore
-        img = sitk.ReadImage(str(path))
-        vol = sitk.GetArrayFromImage(img).astype(np.float32)
-        return np.transpose(vol, (1, 2, 0))  # [D,H,W] -> [H,W,D]
+        import nibabel as nib  # type: ignore
+        img = nib.load(str(path))
+        orig_ornt = nib.orientations.io_orientation(img.affine)
+        targ_ornt = nib.orientations.axcodes2ornt(('R', 'A', 'I'))
+        transform = nib.orientations.ornt_transform(orig_ornt, targ_ornt)
+        img_oriented = img.as_reoriented(transform)
+        return np.asarray(img_oriented.dataobj, dtype=np.float32)
+    except (ImportError, Exception):
+        pass
+
+    try:
+        import nibabel as nib  # type: ignore
+        img = nib.load(str(path))
+        return np.asarray(img.dataobj, dtype=np.float32)
     except ImportError:
         pass
 
@@ -153,19 +167,33 @@ def _load_nifti(path: Path) -> np.ndarray:
 
 
 def _load_seg_nifti(path: Path) -> np.ndarray:
-    """Load segmentation NIfTI, return int16 volume [H, W, D]."""
+    """Load segmentation NIfTI, orient to RAI, and return int16 volume [H, W, D]."""
     try:
-        import nibabel as nib  # type: ignore
-        img = nib.load(str(path))
-        return np.asarray(img.dataobj).astype(np.int16)
+        import SimpleITK as sitk  # type: ignore
+        img = sitk.ReadImage(str(path))
+        orienter = sitk.DICOMOrientImageFilter()
+        orienter.SetDesiredCoordinateOrientation("RAI")
+        img = orienter.Execute(img)
+        vol = sitk.GetArrayFromImage(img).astype(np.int16)
+        return np.transpose(vol, (1, 2, 0))
     except ImportError:
         pass
 
     try:
-        import SimpleITK as sitk  # type: ignore
-        img = sitk.ReadImage(str(path))
-        vol = sitk.GetArrayFromImage(img).astype(np.int16)
-        return np.transpose(vol, (1, 2, 0))
+        import nibabel as nib  # type: ignore
+        img = nib.load(str(path))
+        orig_ornt = nib.orientations.io_orientation(img.affine)
+        targ_ornt = nib.orientations.axcodes2ornt(('R', 'A', 'I'))
+        transform = nib.orientations.ornt_transform(orig_ornt, targ_ornt)
+        img_oriented = img.as_reoriented(transform)
+        return np.asarray(img_oriented.dataobj).astype(np.int16)
+    except (ImportError, Exception):
+        pass
+
+    try:
+        import nibabel as nib  # type: ignore
+        img = nib.load(str(path))
+        return np.asarray(img.dataobj).astype(np.int16)
     except ImportError:
         pass
 
@@ -216,6 +244,7 @@ def process_patient(
     bg_keep_prob: float,
     rng: random.Random,
     z_range: Optional[Tuple[int, int]] = None,
+    num_slices: int = 0,
 ) -> List[str]:
     patient_id = patient_dir.name
 
@@ -252,14 +281,43 @@ def process_patient(
     _, _, depth = img_vol.shape
     z_start = z_range[0] if z_range else 0
     z_end = z_range[1] if z_range else depth
+    z_end = min(z_end, depth)
 
-    written: List[str] = []
-    for z in range(z_start, min(z_end, depth)):
+    # Filter slices first to find non-empty/valid ones
+    valid_zs: List[int] = []
+    for z in range(z_start, z_end):
         img_sl = img_vol[:, :, z]
         seg_sl = seg_vol[:, :, z]
 
-        if _is_empty_label(seg_sl) and rng.random() > bg_keep_prob:
+        # Skip if the image slice is empty of brain tissue (all black/zero)
+        # Check if there are at least 500 non-zero voxels (approx 0.8% of 240x240 image)
+        if (img_sl > 0).sum() < 500:
             continue
+
+        # If slice has no tumor, keep with probability bg_keep_prob
+        if _is_empty_label(seg_sl):
+            if rng.random() > bg_keep_prob:
+                continue
+
+        valid_zs.append(z)
+
+    # Select from valid_zs
+    if num_slices > 0:
+        if len(valid_zs) == 0:
+            log.warning(f"[warn] {patient_id}: no non-empty slices found")
+            z_indices = []
+        elif len(valid_zs) <= num_slices:
+            z_indices = valid_zs
+        else:
+            indices = np.linspace(0, len(valid_zs) - 1, num_slices, dtype=int)
+            z_indices = [valid_zs[i] for i in indices]
+    else:
+        z_indices = valid_zs
+
+    written: List[str] = []
+    for z in z_indices:
+        img_sl = img_vol[:, :, z]
+        seg_sl = seg_vol[:, :, z]
 
         stem = f"{patient_id}_z{z:04d}"
         _save_png(_normalize_slice_to_uint8(img_sl), out_images / f"{stem}.png")
@@ -307,6 +365,12 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         type=str,
         default="",
         help="Optional z-slice range 'start:end' (e.g. '40:130').",
+    )
+    parser.add_argument(
+        "--num-slices",
+        type=int,
+        default=0,
+        help="Number of slices to extract per patient (0 to keep all based on bg-keep-prob).",
     )
     parser.add_argument(
         "--patients",
@@ -401,6 +465,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                 bg_keep_prob=args.bg_keep_prob,
                 rng=rng_slice,
                 z_range=z_range,
+                num_slices=args.num_slices,
             )
             total_written += len(stems)
 
@@ -424,7 +489,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         log.info(f"[done] eval_list   -> {eval_list_path} ({len(eval_tokens)} patients)")
         log.info("")
         log.info("Next: train with")
-        log.info("  python -m autoencoder.src.ver3.tumor_segmentation.main \\")
+        log.info("  python -m autoencoder.src.tumor_segmentation.main \\")
         log.info(f"    --train-root {out_images} --train-label {out_labels} \\")
         log.info(f"    --eval-root {out_images} --eval-label {out_labels} \\")
         log.info(f"    --train-list {train_list_path} --eval-list {eval_list_path} \\")
