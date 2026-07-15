@@ -100,6 +100,11 @@ def build_model(cfg: ExperimentConfig, *, num_classes: int):
             enable_reconstruct=True,
             enable_contrastive=False,
             single_view=single_view,
+            enable_saca=bool(getattr(mcfg, "enable_saca", False)),
+            saca_position=str(getattr(mcfg, "saca_position", "after_stage1")),
+            saca_positions=getattr(mcfg, "saca_positions", None),
+            saca_gate_init=float(getattr(mcfg, "saca_gate_init", 0.0)),
+            saca_warmup_epochs=int(getattr(mcfg, "saca_warmup_epochs", 0)),
         )
 
     model = SwinUNetDualViewSSL(

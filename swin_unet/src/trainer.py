@@ -75,6 +75,11 @@ class Trainer:
                 enable_reconstruct=cfg.training.enable_reconstruct,
                 enable_contrastive=cfg.training.enable_contrastive,
                 single_view=cfg.training.single_view,
+                enable_saca=bool(getattr(cfg.model, "enable_saca", False)),
+                saca_position=str(getattr(cfg.model, "saca_position", "after_stage1")),
+                saca_positions=getattr(cfg.model, "saca_positions", None),
+                saca_gate_init=float(getattr(cfg.model, "saca_gate_init", 0.0)),
+                saca_warmup_epochs=int(getattr(cfg.model, "saca_warmup_epochs", 0)),
             ).to(device)
         else:
             self.model = SwinUNetDualViewSSL(
