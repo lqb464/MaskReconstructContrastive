@@ -48,7 +48,7 @@ from ..tissue_segmentation.io import (
 )
 from ..tissue_segmentation.plotting import generate_plots
 from .experiment import ExperimentConfig, build_argparser, enforce_tumor_args, resolve_seg_labels_path
-from .scan_lists import resolve_train_eval_tokens
+from .scan_lists import apply_modality_filter, parse_modality_arg, resolve_train_eval_tokens
 from .trainer import TumorSegmentationTrainer
 
 
@@ -171,6 +171,7 @@ def make_dataloaders(
     eval_ds: TissueSegmentationDataset,
     cfg: ExperimentConfig,
     device: torch.device,
+    distributed: bool = False,
 ) -> tuple[DataLoader, DataLoader]:
     def _loader(dataset, shuffle: bool) -> DataLoader:
         extra = {}
@@ -178,15 +179,27 @@ def make_dataloaders(
             extra["persistent_workers"] = True
             extra["prefetch_factor"] = 2
 
-        return DataLoader(
-            dataset,
-            batch_size=int(cfg.training.batch_size),
-            shuffle=shuffle,
-            num_workers=int(cfg.data.num_workers),
-            pin_memory=bool(cfg.data.pin_memory) and device.type == "cuda",
-            drop_last=bool(cfg.data.drop_last) if shuffle else False,
-            **extra,
-        )
+        if distributed:
+            from torch.utils.data.distributed import DistributedSampler
+            sampler = DistributedSampler(dataset, shuffle=shuffle, drop_last=bool(cfg.data.drop_last) if shuffle else False)
+            return DataLoader(
+                dataset,
+                batch_size=int(cfg.training.batch_size),
+                sampler=sampler,
+                num_workers=int(cfg.data.num_workers),
+                pin_memory=bool(cfg.data.pin_memory) and device.type == "cuda",
+                **extra,
+            )
+        else:
+            return DataLoader(
+                dataset,
+                batch_size=int(cfg.training.batch_size),
+                shuffle=shuffle,
+                num_workers=int(cfg.data.num_workers),
+                pin_memory=bool(cfg.data.pin_memory) and device.type == "cuda",
+                drop_last=bool(cfg.data.drop_last) if shuffle else False,
+                **extra,
+            )
 
     return _loader(train_ds, shuffle=True), _loader(eval_ds, shuffle=False)
 
@@ -210,7 +223,12 @@ def run(args: argparse.Namespace) -> None:
     print(cfg)
     print(f"[view] mode={'single' if bool(cfg.training.single_view) else 'dual'}")
 
-    device = get_device(cpu=bool(cfg.training.cpu))
+    from ..training.ddp_utils import init_distributed_mode
+    ddp_info = init_distributed_mode()
+    if ddp_info["distributed"]:
+        device = torch.device(ddp_info["device"])
+    else:
+        device = get_device(cpu=bool(cfg.training.cpu))
     print(f"[device] using {device}")
 
     seg_labels_path = resolve_seg_labels_path(cfg.tumor.seg_labels)
@@ -274,6 +292,33 @@ def run(args: argparse.Namespace) -> None:
                 f"No train scans selected after applying train_mod={cfg.data.train_mod}"
             )
 
+    try:
+        modality_filter = parse_modality_arg(getattr(cfg.tumor, "modality", ""))
+    except ValueError as e:
+        raise ValueError(str(e)) from e
+    if modality_filter is not None:
+        n_train_before = len(train_tokens)
+        n_eval_before = len(eval_tokens)
+        train_tokens = apply_modality_filter(train_tokens, modality_filter)
+        eval_tokens = apply_modality_filter(eval_tokens, modality_filter)
+        print(
+            f"[modality] filter={modality_filter} "
+            f"train_tokens {n_train_before}->{len(train_tokens)} "
+            f"eval_tokens {n_eval_before}->{len(eval_tokens)}"
+        )
+        if not train_tokens:
+            raise RuntimeError(
+                f"No train tokens left after --modality={cfg.tumor.modality!r}. "
+                "Check list tokens and prepare naming (*_{mod}_z####.png)."
+            )
+        if not eval_tokens:
+            raise RuntimeError(
+                f"No eval tokens left after --modality={cfg.tumor.modality!r}. "
+                "Check list tokens and prepare naming (*_{mod}_z####.png)."
+            )
+    else:
+        print("[modality] filter=all (no token rewrite)")
+
     train_image_index = build_image_index(image_root=cfg.tumor.train_root, image_ext=cfg.tumor.image_ext)
     eval_root_resolved = Path(cfg.tumor.eval_root).expanduser().resolve()
     train_root_resolved = Path(cfg.tumor.train_root).expanduser().resolve()
@@ -317,7 +362,7 @@ def run(args: argparse.Namespace) -> None:
     if len(eval_ds) == 0:
         raise RuntimeError("Eval dataset is empty after list filtering and label pairing.")
 
-    train_loader, eval_loader = make_dataloaders(train_ds, eval_ds, cfg, device)
+    train_loader, eval_loader = make_dataloaders(train_ds, eval_ds, cfg, device, distributed=ddp_info["distributed"])
 
     print(f"[data] train_pairs={len(train_ds)} eval_pairs={len(eval_ds)}")
     print(
@@ -371,6 +416,13 @@ def run(args: argparse.Namespace) -> None:
 
     model = build_model(cfg, num_classes=encoding_info.num_classes).to(device)
     load_pretrained_for_downstream(model, cfg, device=device)
+    if ddp_info["distributed"]:
+        model = torch.nn.parallel.DistributedDataParallel(
+            model,
+            device_ids=[ddp_info["local_rank"]],
+            output_device=ddp_info["local_rank"],
+            find_unused_parameters=True
+        )
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=float(cfg.training.lr),

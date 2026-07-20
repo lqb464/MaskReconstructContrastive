@@ -20,6 +20,7 @@ import numpy as np
 import torch
 
 from ..tissue_segmentation.trainer import TissueSegmentationTrainer
+from ..training.ddp_utils import is_main_process
 from .region_dice import (
     BRATS_REGION_CLASSES,
     RegionDiceBuffers,
@@ -158,16 +159,40 @@ class TumorSegmentationTrainer(TissueSegmentationTrainer):
                     self._region_hd95_lists["et"].append(hd_et)
 
     def _on_epoch_end_stats(self, stats: dict) -> dict:
+        import torch.distributed as dist
         if self.enable_region_dice and self._region_buffers is not None:
+            if dist.is_available() and dist.is_initialized():
+                for key in self._region_buffers.intersection.keys():
+                    dist.all_reduce(self._region_buffers.intersection[key], op=dist.ReduceOp.SUM)
+                    dist.all_reduce(self._region_buffers.denominator[key], op=dist.ReduceOp.SUM)
+
             stats["region_dice"] = finalize_region_dice(self._region_buffers)
             stats["region_iou"]  = finalize_region_iou(self._region_buffers)
 
             region_hd95 = {}
-            for name, hd_list in self._region_hd95_lists.items():
-                if len(hd_list) > 0:
-                    region_hd95[name] = float(np.mean(hd_list))
-                else:
-                    region_hd95[name] = float("nan")
+            if dist.is_available() and dist.is_initialized():
+                for name, hd_list in self._region_hd95_lists.items():
+                    local_sum = sum(hd_list) if len(hd_list) > 0 else 0.0
+                    local_count = len(hd_list)
+                    
+                    sum_tensor = torch.tensor([local_sum], dtype=torch.float64, device=self.device)
+                    count_tensor = torch.tensor([local_count], dtype=torch.float64, device=self.device)
+                    
+                    dist.all_reduce(sum_tensor, op=dist.ReduceOp.SUM)
+                    dist.all_reduce(count_tensor, op=dist.ReduceOp.SUM)
+                    
+                    g_sum = sum_tensor.item()
+                    g_count = count_tensor.item()
+                    if g_count > 0:
+                        region_hd95[name] = float(g_sum / g_count)
+                    else:
+                        region_hd95[name] = float("nan")
+            else:
+                for name, hd_list in self._region_hd95_lists.items():
+                    if len(hd_list) > 0:
+                        region_hd95[name] = float(np.mean(hd_list))
+                    else:
+                        region_hd95[name] = float("nan")
             stats["region_hd95"] = region_hd95
         else:
             stats["region_dice"] = {}
@@ -202,7 +227,7 @@ class TumorSegmentationTrainer(TissueSegmentationTrainer):
         if should_eval and eval_region:
             print(f"[eval/region]  Dice: {region_dice_summary_line(eval_region)} | IoU: {region_dice_summary_line(eval_iou)} | HD95: {region_dice_summary_line(eval_hd95)}")
 
-        if self._region_log is not None:
+        if self._region_log is not None and is_main_process():
             self._region_log.append(epoch, "train", train_region, train_iou, train_hd95)
             if should_eval:
                 self._region_log.append(epoch, "eval", eval_region, eval_iou, eval_hd95)

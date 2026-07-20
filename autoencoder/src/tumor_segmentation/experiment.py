@@ -94,6 +94,7 @@ class TumorTaskConfig(TissueTaskConfig):
 
     require_special_ids: bool = False
     enable_region_dice: bool = True
+    modality: str = ""
 
 
 @dataclass
@@ -136,6 +137,7 @@ class ExperimentConfig(_BaseExperimentConfig):
             aggregation_level=str(getattr(args, "aggregation_level", "scan")),
             require_special_ids=bool(getattr(args, "require_special_ids", False)),
             enable_region_dice=bool(getattr(args, "enable_region_dice", True)),
+            modality=str(getattr(args, "modality", "")).strip(),
         )
         return cls(
             model=base.model,
@@ -165,6 +167,16 @@ def build_argparser() -> argparse.ArgumentParser:
     grp.add_argument("--eval-label", type=str, default="", help="Root folder containing eval segmentation labels.")
     grp.add_argument("--train-list", type=str, default="", help="Path to scan list for train split. If missing, patients are auto-discovered from --train-root.")
     grp.add_argument("--eval-list", type=str, default="", help="Path to scan list for eval/test split. If missing, patients are auto-discovered/split from --train-root.")
+    grp.add_argument(
+        "--modality",
+        type=str,
+        default="",
+        help=(
+            "Filter/expand patient scan tokens to one or more MRI modalities. "
+            "Examples: 'flair', 't1', 't1,flair', or 'all' (default: empty = all). "
+            "Requires prepare naming like BraTS2021_xxxxx_{mod}_z####.png."
+        ),
+    )
     grp.add_argument(
         "--one",
         type=str,

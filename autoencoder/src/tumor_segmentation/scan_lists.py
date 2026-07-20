@@ -13,24 +13,109 @@ from __future__ import annotations
 import random
 import re
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Iterable, List, Optional, Sequence, Tuple
 
 from ..tissue_segmentation.io import read_scan_list
 
 _BRATS_SLICE_RE = re.compile(r"^(.+)_z\d+$", re.IGNORECASE)
+# Match modality suffix; t1ce before t1 so "…_t1ce" is not split as "…_t1".
+_MODALITY_SUFFIX_RE = re.compile(r"_(t1ce|flair|t1|t2)$", re.IGNORECASE)
+ALL_MODALITIES: Tuple[str, ...] = ("t1", "t1ce", "t2", "flair")
 
 
 def patient_token_from_stem(stem: str) -> str:
     """
     Extract patient-level token from a 2D slice stem.
 
-    BraTS prepare output uses stems like 'BraTS2021_00000_z0080' -> 'BraTS2021_00000'.
+    Supports:
+      - BraTS2021_00000_z0080       -> BraTS2021_00000
+      - BraTS2021_00000_flair_z0080 -> BraTS2021_00000
     Falls back to the full stem when the pattern does not match.
     """
     match = _BRATS_SLICE_RE.match(stem)
+    if not match:
+        return stem
+    token = match.group(1)
+    patient, _mod = split_patient_and_modality(token)
+    return patient
+
+
+def split_patient_and_modality(token: str) -> Tuple[str, Optional[str]]:
+    """Split 'BraTS2021_00000_flair' -> ('BraTS2021_00000', 'flair')."""
+    raw = str(token).strip()
+    if not raw:
+        return "", None
+    match = _MODALITY_SUFFIX_RE.search(raw)
     if match:
-        return match.group(1)
-    return stem
+        return raw[: match.start()], match.group(1).lower()
+    return raw, None
+
+
+def parse_modality_arg(modality_arg: str | None) -> Optional[List[str]]:
+    """
+    Parse --modality CLI value.
+
+    Returns:
+      None  -> keep all modalities (no token rewrite)
+      list  -> ordered unique modalities to keep/expand to
+    """
+    raw = str(modality_arg or "").strip().lower()
+    if not raw or raw in {"all", "*"}:
+        return None
+    parts = [p.strip().lower() for p in raw.split(",") if p.strip()]
+    if not parts:
+        return None
+    unknown = [p for p in parts if p not in ALL_MODALITIES]
+    if unknown:
+        raise ValueError(
+            f"Unknown --modality value(s): {unknown}. "
+            f"Choose from {list(ALL_MODALITIES)}, comma-separated list, or 'all'."
+        )
+    seen: set[str] = set()
+    ordered: List[str] = []
+    for p in parts:
+        if p not in seen:
+            seen.add(p)
+            ordered.append(p)
+    return ordered
+
+
+def apply_modality_filter(
+    tokens: Iterable[str],
+    modalities: Optional[Sequence[str]],
+) -> List[str]:
+    """
+    Rewrite scan tokens so image resolution only hits selected modalities.
+
+    - Patient token 'BraTS2021_00000' + modalities=['flair']
+        -> ['BraTS2021_00000_flair']
+    - Already modality-scoped token kept only if its modality is selected
+    - modalities=None -> tokens unchanged (all modalities via patient prefix)
+    """
+    if modalities is None:
+        return [str(t).strip() for t in tokens if str(t).strip()]
+
+    mods = [str(m).lower() for m in modalities]
+    out: List[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        patient, existing = split_patient_and_modality(token)
+        if not patient:
+            continue
+        if existing is not None:
+            if existing not in mods:
+                continue
+            scoped = f"{patient}_{existing}"
+            if scoped not in seen:
+                seen.add(scoped)
+                out.append(scoped)
+            continue
+        for mod in mods:
+            scoped = f"{patient}_{mod}"
+            if scoped not in seen:
+                seen.add(scoped)
+                out.append(scoped)
+    return out
 
 
 def discover_patient_tokens_from_images(
@@ -199,7 +284,11 @@ def resolve_train_eval_tokens(
 
 
 __all__ = [
+    "ALL_MODALITIES",
     "patient_token_from_stem",
+    "split_patient_and_modality",
+    "parse_modality_arg",
+    "apply_modality_filter",
     "discover_patient_tokens_from_images",
     "split_patient_tokens",
     "resolve_train_eval_tokens",

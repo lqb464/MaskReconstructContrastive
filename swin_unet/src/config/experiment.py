@@ -73,6 +73,7 @@ class TrainingConfig:
     grad_clip: float = 1.0
     warmup_epochs: int = 5
     min_lr: float = 1e-6
+    grad_accumulation_steps: int = 1
 
     enable_reconstruct: bool = False
     enable_contrastive: bool = False
@@ -222,6 +223,7 @@ class ExperimentConfig:
                 grad_clip=getattr(args, "grad_clip", 1.0),
                 warmup_epochs=getattr(args, "warmup_epochs", 5),
                 min_lr=getattr(args, "min_lr", 1e-6),
+                grad_accumulation_steps=getattr(args, "grad_accumulation_steps", 1),
             ),
             data=DataConfig(
                 data_root=args.data_root,
@@ -394,6 +396,7 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--grad-clip", type=float, default=1.0)
     p.add_argument("--warmup-epochs", type=int, default=5)
     p.add_argument("--min-lr", type=float, default=1e-6)
+    p.add_argument("--grad-accumulation-steps", type=int, default=1, help="Number of steps to accumulate gradients.")
 
     p.add_argument("--resume-ckpt", type=str, default="", help="Path to checkpoint .pt")
     p.add_argument(

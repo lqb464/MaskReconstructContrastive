@@ -5,6 +5,9 @@ prepare_brats2021.py
 Convert BraTS 2021 volumetric NIfTI data to 2D PNG slices + NPZ label files
 compatible with tumor_segmentation / TissueSegmentationDataset.
 
+Slice selection reuses the ADNI energy-threshold logic (extract_brain_slices).
+The same slice indices are applied to every requested modality and to seg.
+
 Supports:
   - Extracted patient folders under --brats-root
   - .tar / .tar.gz archives passed directly to --brats-root (common on Kaggle)
@@ -16,24 +19,28 @@ Expected structure inside the archive/root:
         BraTS2021_00000_t1ce.nii.gz
         BraTS2021_00000_t2.nii.gz
         BraTS2021_00000_seg.nii.gz
-    BraTS2021_00001/
-        ...
 
-Output structure:
+Output structure (--modality all):
     <out-root>/
         images/
-            BraTS2021_00000_z0080.png
+            BraTS2021_00000_t1_z0080.png
+            BraTS2021_00000_t1ce_z0080.png
+            BraTS2021_00000_t2_z0080.png
+            BraTS2021_00000_flair_z0080.png
         labels/
-            BraTS2021_00000_z0080_label.npz
+            BraTS2021_00000_t1_z0080_label.npz
+            ... (same mask stem-matched per modality)
         train_list.txt
         eval_list.txt
 
-Usage (Kaggle, tar input):
+Usage (Kaggle, all 4 modalities + seg):
     python autoencoder/scripts/prepare_brats2021.py \\
         --brats-root /kaggle/input/.../BraTS2021_Training_Data.tar \\
-        --out-root   /data/brats2021_2d \\
-        --modality   flair \\
-        --val-ratio  0.15
+        --extract-dir /kaggle/working/brats_extract \\
+        --out-root   /kaggle/working/brats2021_2d \\
+        --modality   all \\
+        --num-slices 20 \\
+        --val-ratio  0.2
 """
 
 from __future__ import annotations
@@ -45,14 +52,17 @@ import shutil
 import sys
 import tarfile
 import tempfile
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
+from scipy.ndimage import gaussian_filter1d
 
 log = logging.getLogger(__name__)
 
 _TAR_SUFFIXES = (".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz")
+ALL_MODALITIES = ("t1", "t1ce", "t2", "flair")
 
 
 def _is_tar_archive(path: Path) -> bool:
@@ -70,7 +80,6 @@ def _extract_tar_archive(archive_path: Path, extract_dir: Path) -> Path:
     with tarfile.open(archive_path, "r:*") as tar:
         tar.extractall(path=extract_dir)
 
-    # Find directory that contains patient subfolders (BraTS2021_*)
     candidates = [extract_dir]
     candidates.extend(sorted(p for p in extract_dir.iterdir() if p.is_dir()))
 
@@ -114,7 +123,6 @@ def resolve_brats_root(brats_root: str | Path, *, work_dir: Optional[Path] = Non
         if patient_dirs:
             return root, None
 
-        # Maybe one extra nesting level: BraTS2021_Training_Data/BraTS2021_00000/...
         for child in sorted(root.iterdir()):
             if not child.is_dir():
                 continue
@@ -129,207 +137,237 @@ def resolve_brats_root(brats_root: str | Path, *, work_dir: Optional[Path] = Non
     )
 
 
-def _load_nifti(path: Path) -> np.ndarray:
-    """Load NIfTI file, orient to RAI, and return float32 volume [H, W, D]."""
+def _load_nifti_zyx(path: Path, *, dtype=np.float32) -> np.ndarray:
+    """
+    Load NIfTI, orient to RAI, return array shaped (Z, H, W) — same convention as ADNI/SimpleITK.
+    """
     try:
         import SimpleITK as sitk  # type: ignore
+
+        sitk.ProcessObject_SetGlobalWarningDisplay(False)
         img = sitk.ReadImage(str(path))
         orienter = sitk.DICOMOrientImageFilter()
         orienter.SetDesiredCoordinateOrientation("RAI")
         img = orienter.Execute(img)
-        vol = sitk.GetArrayFromImage(img).astype(np.float32)
-        return np.transpose(vol, (1, 2, 0))  # [Z, Y, X] -> [Y, X, Z]
+        return sitk.GetArrayFromImage(img).astype(dtype)
     except ImportError:
         pass
 
     try:
         import nibabel as nib  # type: ignore
+
         img = nib.load(str(path))
         orig_ornt = nib.orientations.io_orientation(img.affine)
-        targ_ornt = nib.orientations.axcodes2ornt(('R', 'A', 'I'))
+        targ_ornt = nib.orientations.axcodes2ornt(("R", "A", "I"))
         transform = nib.orientations.ornt_transform(orig_ornt, targ_ornt)
         img_oriented = img.as_reoriented(transform)
-        return np.asarray(img_oriented.dataobj, dtype=np.float32)
+        # nibabel data is typically (X, Y, Z); move Z to axis 0 to match SimpleITK.
+        vol = np.asarray(img_oriented.dataobj, dtype=dtype)
+        if vol.ndim != 3:
+            raise ValueError(f"Expected 3D volume, got shape {vol.shape}")
+        return np.transpose(vol, (2, 1, 0))
     except (ImportError, Exception):
         pass
 
-    try:
-        import nibabel as nib  # type: ignore
-        img = nib.load(str(path))
-        return np.asarray(img.dataobj, dtype=np.float32)
-    except ImportError:
-        pass
-
     raise RuntimeError(
-        f"Could not load {path}: install nibabel or SimpleITK "
-        "(pip install nibabel  OR  pip install SimpleITK)."
+        f"Could not load {path}: install SimpleITK or nibabel "
+        "(pip install SimpleITK  OR  pip install nibabel)."
     )
 
 
-def _load_seg_nifti(path: Path) -> np.ndarray:
-    """Load segmentation NIfTI, orient to RAI, and return int16 volume [H, W, D]."""
-    try:
-        import SimpleITK as sitk  # type: ignore
-        img = sitk.ReadImage(str(path))
-        orienter = sitk.DICOMOrientImageFilter()
-        orienter.SetDesiredCoordinateOrientation("RAI")
-        img = orienter.Execute(img)
-        vol = sitk.GetArrayFromImage(img).astype(np.int16)
-        return np.transpose(vol, (1, 2, 0))
-    except ImportError:
-        pass
+def extract_brain_slices(volume_np: np.ndarray, n_slices: int = 20):
+    """
+    ADNI slice picker (kept as-is in spirit).
 
-    try:
-        import nibabel as nib  # type: ignore
-        img = nib.load(str(path))
-        orig_ornt = nib.orientations.io_orientation(img.affine)
-        targ_ornt = nib.orientations.axcodes2ornt(('R', 'A', 'I'))
-        transform = nib.orientations.ornt_transform(orig_ornt, targ_ornt)
-        img_oriented = img.as_reoriented(transform)
-        return np.asarray(img_oriented.dataobj).astype(np.int16)
-    except (ImportError, Exception):
-        pass
+    volume_np: numpy array of shape (Z, H, W)
+    returns: list of 2D slices, slice indices, (start, end) brain region
+    """
+    Z = volume_np.shape[0]
 
-    try:
-        import nibabel as nib  # type: ignore
-        img = nib.load(str(path))
-        return np.asarray(img.dataobj).astype(np.int16)
-    except ImportError:
-        pass
+    energy = volume_np.reshape(Z, -1).mean(axis=1)
+    energy_smooth = gaussian_filter1d(energy, sigma=5)
 
-    raise RuntimeError(
-        "Could not load segmentation NIfTI: install nibabel or SimpleITK."
-    )
+    threshold = energy_smooth.min() + 0.4 * (energy_smooth.max() - energy_smooth.min())
+    brain_mask = energy_smooth > threshold
+
+    idx = np.where(brain_mask)[0]
+    if len(idx) == 0:
+        start, end = int(Z * 0.25), int(Z * 0.65)
+    else:
+        start, end = idx[0], (idx[-1] - idx[0]) // 2 + idx[0]
+
+    slice_indices = np.linspace(start, end, n_slices, dtype=int)
+    slices = [volume_np[i] for i in slice_indices]
+    return slices, slice_indices, (start, end)
 
 
-def _normalize_slice_to_uint8(sl: np.ndarray) -> np.ndarray:
-    sl = sl.astype(np.float32)
-    mn, mx = float(sl.min()), float(sl.max())
-    if mx - mn < 1e-8:
-        return np.zeros_like(sl, dtype=np.uint8)
-    sl = (sl - mn) / (mx - mn) * 255.0
-    return np.clip(sl, 0, 255).astype(np.uint8)
+def _normalize_slices_to_uint8(slices: Sequence[np.ndarray]) -> List[np.ndarray]:
+    """ADNI-style shared min/max normalize across the selected slices of one volume."""
+    img_max = max(float(s.max()) for s in slices)
+    img_min = min(float(s.min()) for s in slices)
+    out: List[np.ndarray] = []
+    for s in slices:
+        img = s.astype(np.float32)
+        img = img - img_min
+        img = img / (img_max + 1e-5)
+        out.append((img * 255.0).astype(np.uint8))
+    return out
 
 
 def _save_png(arr: np.ndarray, path: Path) -> None:
     try:
+        import imageio  # type: ignore
+
+        imageio.imwrite(str(path), arr)
+        return
+    except ImportError:
+        pass
+
+    try:
         from PIL import Image  # type: ignore
+
         Image.fromarray(arr, mode="L").save(str(path))
         return
     except ImportError:
         pass
 
-    try:
-        import cv2  # type: ignore
-        cv2.imwrite(str(path), arr)
-        return
-    except ImportError:
-        pass
-
-    raise RuntimeError(
-        "Cannot save PNG: install Pillow or opencv-python."
-    )
+    raise RuntimeError("Cannot save PNG: install imageio or Pillow.")
 
 
-def _is_empty_label(label_sl: np.ndarray) -> bool:
-    return bool((label_sl == 0).all())
+def _resolve_patient_file(patient_dir: Path, patient_id: str, suffix: str) -> Optional[Path]:
+    candidates = [
+        patient_dir / f"{patient_id}_{suffix}.nii.gz",
+        patient_dir / f"{patient_id}_{suffix}.nii",
+    ]
+    return next((p for p in candidates if p.exists()), None)
+
+
+def parse_modalities(modality_arg: str) -> List[str]:
+    raw = modality_arg.strip().lower()
+    if raw in {"all", "*"}:
+        return list(ALL_MODALITIES)
+    parts = [p.strip().lower() for p in raw.split(",") if p.strip()]
+    if not parts:
+        raise ValueError("--modality is empty")
+    unknown = [p for p in parts if p not in ALL_MODALITIES]
+    if unknown:
+        raise ValueError(
+            f"Unknown modality(ies): {unknown}. "
+            f"Choose from {list(ALL_MODALITIES)} or 'all'."
+        )
+    # preserve order, drop duplicates
+    seen = set()
+    ordered: List[str] = []
+    for p in parts:
+        if p not in seen:
+            seen.add(p)
+            ordered.append(p)
+    return ordered
 
 
 def process_patient(
     patient_dir: Path,
     *,
-    modality: str,
+    modalities: Sequence[str],
     out_images: Path,
     out_labels: Path,
-    bg_keep_prob: float,
-    rng: random.Random,
-    z_range: Optional[Tuple[int, int]] = None,
-    num_slices: int = 0,
-) -> List[str]:
+    num_slices: int,
+    energy_modality: str,
+) -> Tuple[str, int, Optional[str]]:
+    """
+    Extract synced slices for all modalities + seg.
+
+    Returns: (patient_id, num_stems_written, error_or_None)
+    """
     patient_id = patient_dir.name
+    try:
+        seg_path = _resolve_patient_file(patient_dir, patient_id, "seg")
+        if seg_path is None:
+            return patient_id, 0, "seg file not found"
 
-    img_candidates = [
-        patient_dir / f"{patient_id}_{modality}.nii.gz",
-        patient_dir / f"{patient_id}_{modality}.nii",
-    ]
-    seg_candidates = [
-        patient_dir / f"{patient_id}_seg.nii.gz",
-        patient_dir / f"{patient_id}_seg.nii",
-    ]
+        mod_paths: dict[str, Path] = {}
+        for mod in modalities:
+            p = _resolve_patient_file(patient_dir, patient_id, mod)
+            if p is None:
+                return patient_id, 0, f"modality file not found ({mod})"
+            mod_paths[mod] = p
 
-    img_path = next((p for p in img_candidates if p.exists()), None)
-    seg_path = next((p for p in seg_candidates if p.exists()), None)
+        if energy_modality not in mod_paths:
+            return patient_id, 0, f"energy modality not in requested set: {energy_modality}"
 
-    if img_path is None:
-        log.warning(f"[skip] {patient_id}: modality file not found ({modality})")
-        return []
-    if seg_path is None:
-        log.warning(f"[skip] {patient_id}: seg file not found")
-        return []
+        energy_vol = _load_nifti_zyx(mod_paths[energy_modality], dtype=np.float32)
+        _, slice_indices, _ = extract_brain_slices(energy_vol, n_slices=num_slices)
 
-    log.info(f"[process] {patient_id} modality={modality}")
+        seg_vol = _load_nifti_zyx(seg_path, dtype=np.int16)
+        if seg_vol.shape != energy_vol.shape:
+            return (
+                patient_id,
+                0,
+                f"shape mismatch energy={energy_vol.shape} seg={seg_vol.shape}",
+            )
 
-    img_vol = _load_nifti(img_path)
-    seg_vol = _load_seg_nifti(seg_path)
-
-    if img_vol.shape != seg_vol.shape:
-        log.warning(
-            f"[skip] {patient_id}: shape mismatch img={img_vol.shape} seg={seg_vol.shape}"
-        )
-        return []
-
-    _, _, depth = img_vol.shape
-    z_start = z_range[0] if z_range else 0
-    z_end = z_range[1] if z_range else depth
-    z_end = min(z_end, depth)
-
-    # Filter slices first to find non-empty/valid ones
-    valid_zs: List[int] = []
-    for z in range(z_start, z_end):
-        img_sl = img_vol[:, :, z]
-        seg_sl = seg_vol[:, :, z]
-
-        # Skip if the image slice is empty of brain tissue (all black/zero)
-        # Check if there are at least 500 non-zero voxels (approx 0.8% of 240x240 image)
-        if (img_sl > 0).sum() < 500:
-            continue
-
-        # If slice has no tumor, keep with probability bg_keep_prob
-        if _is_empty_label(seg_sl):
-            if rng.random() > bg_keep_prob:
+        mod_vols: dict[str, np.ndarray] = {energy_modality: energy_vol}
+        for mod, path in mod_paths.items():
+            if mod == energy_modality:
                 continue
+            vol = _load_nifti_zyx(path, dtype=np.float32)
+            if vol.shape != energy_vol.shape:
+                return (
+                    patient_id,
+                    0,
+                    f"shape mismatch {mod}={vol.shape} energy={energy_vol.shape}",
+                )
+            mod_vols[mod] = vol
 
-        valid_zs.append(z)
+        # Shared min/max normalize per modality across selected slices (ADNI-style).
+        mod_uint8: dict[str, List[np.ndarray]] = {}
+        for mod in modalities:
+            selected = [mod_vols[mod][int(z)] for z in slice_indices]
+            mod_uint8[mod] = _normalize_slices_to_uint8(selected)
 
-    # Select from valid_zs
-    if num_slices > 0:
-        if len(valid_zs) == 0:
-            log.warning(f"[warn] {patient_id}: no non-empty slices found")
-            z_indices = []
-        elif len(valid_zs) <= num_slices:
-            z_indices = valid_zs
-        else:
-            indices = np.linspace(0, len(valid_zs) - 1, num_slices, dtype=int)
-            z_indices = [valid_zs[i] for i in indices]
-    else:
-        z_indices = valid_zs
+        written = 0
+        for i, z in enumerate(slice_indices):
+            z = int(z)
+            seg_sl = seg_vol[z]
+            for mod in modalities:
+                stem = f"{patient_id}_{mod}_z{z:04d}"
+                _save_png(mod_uint8[mod][i], out_images / f"{stem}.png")
+                np.savez_compressed(
+                    str(out_labels / f"{stem}_label.npz"),
+                    label=seg_sl.astype(np.int16),
+                )
+                written += 1
 
-    written: List[str] = []
-    for z in z_indices:
-        img_sl = img_vol[:, :, z]
-        seg_sl = seg_vol[:, :, z]
+        return patient_id, written, None
+    except Exception as e:
+        return patient_id, 0, str(e)
 
-        stem = f"{patient_id}_z{z:04d}"
-        _save_png(_normalize_slice_to_uint8(img_sl), out_images / f"{stem}.png")
-        np.savez_compressed(str(out_labels / f"{stem}_label.npz"), label=seg_sl.astype(np.int16))
-        written.append(stem)
 
-    return written
+def _process_patient_job(args: tuple) -> Tuple[str, int, Optional[str]]:
+    (
+        patient_dir_str,
+        modalities,
+        out_images_str,
+        out_labels_str,
+        num_slices,
+        energy_modality,
+    ) = args
+    return process_patient(
+        Path(patient_dir_str),
+        modalities=modalities,
+        out_images=Path(out_images_str),
+        out_labels=Path(out_labels_str),
+        num_slices=num_slices,
+        energy_modality=energy_modality,
+    )
 
 
 def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Convert BraTS 2021 NIfTI volumes to 2D PNG slices for training.",
+        description=(
+            "Convert BraTS 2021 NIfTI volumes to 2D PNG slices + synced seg labels. "
+            "Supports one modality or all four via --modality all."
+        ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
@@ -343,15 +381,25 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--out-root", required=True, help="Output root directory.")
     parser.add_argument(
         "--modality",
-        default="flair",
-        choices=["flair", "t1", "t1ce", "t2"],
-        help="MRI modality to extract as input image.",
+        default="all",
+        help=(
+            "MRI modality to extract: one of {t1,t1ce,t2,flair}, "
+            "comma-separated list, or 'all' for all four."
+        ),
+    )
+    parser.add_argument(
+        "--energy-modality",
+        default="",
+        help=(
+            "Modality used for ADNI extract_brain_slices energy curve. "
+            "Default: first modality in --modality (for 'all' that is t1)."
+        ),
     )
     parser.add_argument(
         "--bg-keep-prob",
         type=float,
         default=0.10,
-        help="Fraction of all-background slices to keep (1.0 keeps all).",
+        help="Unused with ADNI brain-slice picker; kept for CLI compatibility.",
     )
     parser.add_argument(
         "--val-ratio",
@@ -364,13 +412,13 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         "--z-range",
         type=str,
         default="",
-        help="Optional z-slice range 'start:end' (e.g. '40:130').",
+        help="Unused with ADNI brain-slice picker; kept for CLI compatibility.",
     )
     parser.add_argument(
         "--num-slices",
         type=int,
-        default=0,
-        help="Number of slices to extract per patient (0 to keep all based on bg-keep-prob).",
+        default=20,
+        help="Number of slices to extract per patient (ADNI extract_brain_slices).",
     )
     parser.add_argument(
         "--patients",
@@ -385,6 +433,12 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default="",
         help="Directory to extract tar into (default: temp dir; use /kaggle/working/brats_extract on Kaggle).",
     )
+    parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=4,
+        help="Process pool workers (1 = sequential).",
+    )
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging.")
     return parser.parse_args(argv)
 
@@ -396,20 +450,34 @@ def main(argv: Optional[List[str]] = None) -> None:
         format="%(asctime)s %(levelname)s %(message)s",
     )
 
+    try:
+        modalities = parse_modalities(args.modality)
+    except ValueError as e:
+        log.error(str(e))
+        sys.exit(1)
+
+    energy_modality = args.energy_modality.strip().lower() or modalities[0]
+    if energy_modality not in modalities:
+        log.error(
+            f"--energy-modality={energy_modality!r} must be one of selected modalities {modalities}"
+        )
+        sys.exit(1)
+
+    if args.num_slices <= 0:
+        log.error("--num-slices must be > 0 when using ADNI extract_brain_slices")
+        sys.exit(1)
+
+    if args.bg_keep_prob != 0.10 or args.z_range.strip():
+        log.warning(
+            "[compat] --bg-keep-prob / --z-range are ignored; "
+            "slice indices come from ADNI extract_brain_slices."
+        )
+
     out_root = Path(args.out_root).expanduser().resolve()
     out_images = out_root / "images"
     out_labels = out_root / "labels"
     out_images.mkdir(parents=True, exist_ok=True)
     out_labels.mkdir(parents=True, exist_ok=True)
-
-    z_range: Optional[Tuple[int, int]] = None
-    if args.z_range.strip():
-        parts = args.z_range.strip().split(":")
-        if len(parts) != 2:
-            log.error(f"--z-range must be 'start:end', got: {args.z_range!r}")
-            sys.exit(1)
-        z_range = (int(parts[0]), int(parts[1]))
-        log.info(f"[z-range] restricting to z in [{z_range[0]}, {z_range[1]})")
 
     work_dir = Path(args.extract_dir).expanduser().resolve() if args.extract_dir.strip() else None
     data_root, temp_dir = resolve_brats_root(args.brats_root, work_dir=work_dir)
@@ -435,15 +503,19 @@ def main(argv: Optional[List[str]] = None) -> None:
             sys.exit(1)
 
         log.info(f"[patients] found {len(patient_dirs)} patient directories")
+        log.info(
+            f"[modalities] {modalities} | energy_modality={energy_modality} | "
+            f"num_slices={args.num_slices}"
+        )
 
         rng_split = random.Random(args.seed)
-        rng_slice = random.Random(args.seed + 1)
-
         patient_dirs_ordered = list(patient_dirs)
         if not args.no_shuffle:
             rng_split.shuffle(patient_dirs_ordered)
 
         n_val = max(1, int(round(len(patient_dirs_ordered) * args.val_ratio)))
+        if n_val >= len(patient_dirs_ordered):
+            n_val = max(1, len(patient_dirs_ordered) - 1)
         eval_dirs = {p.name for p in patient_dirs_ordered[:n_val]}
         train_dirs = {p.name for p in patient_dirs_ordered[n_val:]}
 
@@ -452,37 +524,62 @@ def main(argv: Optional[List[str]] = None) -> None:
             f"val_ratio={args.val_ratio:.2f}"
         )
 
+        jobs = [
+            (
+                str(p),
+                list(modalities),
+                str(out_images),
+                str(out_labels),
+                int(args.num_slices),
+                energy_modality,
+            )
+            for p in patient_dirs_ordered
+        ]
+
+        results: dict[str, Tuple[int, Optional[str]]] = {}
+        max_workers = max(1, int(args.max_workers))
+
+        if max_workers == 1:
+            for job in jobs:
+                pid, n_written, err = _process_patient_job(job)
+                results[pid] = (n_written, err)
+                if err:
+                    log.warning(f"  {pid}: ERROR {err}")
+                else:
+                    log.info(f"  {pid}: wrote {n_written} files")
+        else:
+            with ProcessPoolExecutor(max_workers=max_workers) as ex:
+                futures = {ex.submit(_process_patient_job, job): job[0] for job in jobs}
+                for fut in as_completed(futures):
+                    pid, n_written, err = fut.result()
+                    results[pid] = (n_written, err)
+                    if err:
+                        log.warning(f"  {pid}: ERROR {err}")
+                    else:
+                        log.info(f"  {pid}: wrote {n_written} files")
+
         train_tokens: List[str] = []
         eval_tokens: List[str] = []
         total_written = 0
-
-        for patient_dir in patient_dirs_ordered:
-            stems = process_patient(
-                patient_dir,
-                modality=args.modality,
-                out_images=out_images,
-                out_labels=out_labels,
-                bg_keep_prob=args.bg_keep_prob,
-                rng=rng_slice,
-                z_range=z_range,
-                num_slices=args.num_slices,
-            )
-            total_written += len(stems)
-
-            patient_token = patient_dir.name
-            if patient_dir.name in eval_dirs:
-                eval_tokens.append(patient_token)
+        errors = 0
+        for p in patient_dirs_ordered:
+            n_written, err = results.get(p.name, (0, "missing result"))
+            total_written += n_written
+            if err:
+                errors += 1
+                continue
+            if p.name in eval_dirs:
+                eval_tokens.append(p.name)
             else:
-                train_tokens.append(patient_token)
-
-            log.info(f"  {patient_dir.name}: wrote {len(stems)} slices")
+                train_tokens.append(p.name)
 
         train_list_path = out_root / "train_list.txt"
         eval_list_path = out_root / "eval_list.txt"
         train_list_path.write_text("\n".join(sorted(train_tokens)) + "\n", encoding="utf-8")
         eval_list_path.write_text("\n".join(sorted(eval_tokens)) + "\n", encoding="utf-8")
 
-        log.info(f"\n[done] total slices written: {total_written}")
+        log.info(f"\n[done] total image/label files written: {total_written}")
+        log.info(f"[done] patients with errors: {errors}")
         log.info(f"[done] images      -> {out_images}")
         log.info(f"[done] labels      -> {out_labels}")
         log.info(f"[done] train_list  -> {train_list_path} ({len(train_tokens)} patients)")

@@ -14,6 +14,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from ..config.experiment import ExperimentConfig
+from ..training.ddp_utils import is_main_process
 from ..data.augmentation import sample_masks_anti_mirror
 from ..models.model_utils import flip_lr
 from ..training.ckpt_io import save_checkpoint
@@ -501,6 +502,10 @@ class TissueSegmentationTrainer:
         presence_mask = init_class_presence_mask(num_classes=self.num_classes, device=self.device)
         vis_payload: dict[str, torch.Tensor] | None = None
 
+        accumulation_steps = max(1, int(getattr(self.cfg.training, "grad_accumulation_steps", 1)))
+        if training:
+            self.optimizer.zero_grad(set_to_none=True)
+
         progress = loader if self.disable_tqdm else tqdm(loader, desc=desc, leave=False, dynamic_ncols=True)
         for batch_idx, batch in enumerate(progress):
             x = batch["input"].to(self.device, non_blocking=True)
@@ -516,29 +521,35 @@ class TissueSegmentationTrainer:
                 ignore_index=self.ignore_index,
             )
 
-            if training:
-                self.optimizer.zero_grad(set_to_none=True)
-
             with autocast(device_type=self.device.type, enabled=self.use_amp):
                 loss, logits = self._forward_views(x, y, plane, pixel_mask)
 
             if not torch.isfinite(loss):
                 raise RuntimeError(f"Non-finite loss detected in {'train' if training else 'eval'} at step {batch_idx}: {loss}")
 
-            if training:
-                if self.use_amp:
-                    self.scaler.scale(loss).backward()
-                    self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=float(self.cfg.training.grad_clip))
-                    self.scaler.step(self.optimizer)
-                    self.scaler.update()
-                else:
-                    loss.backward()
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=float(self.cfg.training.grad_clip))
-                    self.optimizer.step()
-
             loss_sum += float(loss.detach().item())
             steps += 1
+
+            if training:
+                if accumulation_steps > 1:
+                    loss = loss / accumulation_steps
+
+                if self.use_amp:
+                    self.scaler.scale(loss).backward()
+                else:
+                    loss.backward()
+
+                is_last_batch = (batch_idx + 1 == len(loader))
+                if ((batch_idx + 1) % accumulation_steps == 0) or is_last_batch:
+                    if self.use_amp:
+                        self.scaler.unscale_(self.optimizer)
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=float(self.cfg.training.grad_clip))
+                        self.scaler.step(self.optimizer)
+                        self.scaler.update()
+                    else:
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=float(self.cfg.training.grad_clip))
+                        self.optimizer.step()
+                    self.optimizer.zero_grad(set_to_none=True)
 
             with torch.no_grad():
                 pred = torch.argmax(logits, dim=1)
@@ -776,8 +787,12 @@ class TissueSegmentationTrainer:
 
         for epoch in range(1, epochs + 1):
             epoch_start = time.perf_counter()
-            if hasattr(self.model, "current_epoch"):
-                self.model.current_epoch = epoch
+            if hasattr(train_loader, "sampler") and hasattr(train_loader.sampler, "set_epoch"):
+                train_loader.sampler.set_epoch(epoch)
+
+            model_trunk = self.model.module if isinstance(self.model, torch.nn.parallel.DistributedDataParallel) else self.model
+            if hasattr(model_trunk, "current_epoch"):
+                model_trunk.current_epoch = epoch
 
             train_start = time.perf_counter()
             train_stats = self._run_epoch(train_loader, training=True)
@@ -811,8 +826,9 @@ class TissueSegmentationTrainer:
             if self.lr_scheduler is not None:
                 self.lr_scheduler.step()
 
-            if (epoch % self.save_latest_every == 0) or (epoch == epochs):
-                self._save_latest(epoch)
+            if is_main_process():
+                if (epoch % self.save_latest_every == 0) or (epoch == epochs):
+                    self._save_latest(epoch)
 
             best_updated = False
             allow_best_window = False
@@ -824,15 +840,17 @@ class TissueSegmentationTrainer:
                 )
                 if allow_best_window and math.isfinite(metric) and metric > self.best_macro_dice:
                     self.best_macro_dice = metric
-                    self._save_best(epoch)
+                    if is_main_process():
+                        self._save_best(epoch)
                     best_updated = True
 
-            self._write_epoch_report(
-                epoch=epoch,
-                train_stats=train_stats,
-                eval_stats=eval_stats,
-                should_eval=should_eval,
-            )
+            if is_main_process():
+                self._write_epoch_report(
+                    epoch=epoch,
+                    train_stats=train_stats,
+                    eval_stats=eval_stats,
+                    should_eval=should_eval,
+                )
 
             epoch_time = time.perf_counter() - epoch_start
             train_excluded = train_stats.get("excluded_class_ids", [])
@@ -847,94 +865,96 @@ class TissueSegmentationTrainer:
             else:
                 best_macro_for_csv = float("nan")
 
-            self.logger.append(
-                {
-                    "epoch": epoch,
-                    "train_loss": train_stats["loss"],
-                    "train_macro_dice": train_stats["macro_dice"],
-                    "train_dice_min": train_stats["dice_min"],
-                    "train_dice_mean": train_stats["dice_mean"],
-                    "train_dice_max": train_stats["dice_max"],
-                    "train_num_valid_classes": train_stats["num_valid_classes"],
-                    "eval_loss": eval_stats["loss"],
-                    "eval_macro_dice": eval_stats["macro_dice"],
-                    "eval_dice_min": eval_stats["dice_min"],
-                    "eval_dice_mean": eval_stats["dice_mean"],
-                    "eval_dice_max": eval_stats["dice_max"],
-                    "eval_num_valid_classes": eval_stats["num_valid_classes"],
-                    "lr": self.optimizer.param_groups[0]["lr"],
-                    "train_num_excluded_classes": len(train_excluded),
-                    "eval_num_excluded_classes": len(eval_excluded),
-                    "eval_ran": int(should_eval),
-                    "best_updated": int(best_updated),
-                    "best_eval_macro_dice": best_macro_for_csv,
-                    "train_time_s": float(train_time),
-                    "eval_time_s": float(eval_time),
-                    "epoch_time_s": float(epoch_time),
-                    "train_pc_macro_dice": train_stats.get("pc_macro_dice", float("nan")),
-                    "eval_pc_macro_dice": eval_stats.get("pc_macro_dice", float("nan")),
-                    "train_num_present_classes": train_stats.get("num_present_classes", 0),
-                    "eval_num_present_classes": eval_stats.get("num_present_classes", 0),
-                    "primary_metric_name": self.primary_metric,
-                    "train_primary_metric": train_stats.get(self.primary_metric_key, float("nan")),
-                    "eval_primary_metric": eval_stats.get(self.primary_metric_key, float("nan")),
-                }
-            )
-            eval_dice_tensor = eval_stats.get("per_class_dice")
-            if should_eval and isinstance(eval_dice_tensor, torch.Tensor):
-                eval_dice_values = [float(v) for v in eval_dice_tensor.tolist()]
-            else:
-                eval_dice_values = [float("nan")] * self.num_classes
-            self.per_class_eval_logger.append(epoch, eval_dice_values)
+            if is_main_process():
+                self.logger.append(
+                    {
+                        "epoch": epoch,
+                        "train_loss": train_stats["loss"],
+                        "train_macro_dice": train_stats["macro_dice"],
+                        "train_dice_min": train_stats["dice_min"],
+                        "train_dice_mean": train_stats["dice_mean"],
+                        "train_dice_max": train_stats["dice_max"],
+                        "train_num_valid_classes": train_stats["num_valid_classes"],
+                        "eval_loss": eval_stats["loss"],
+                        "eval_macro_dice": eval_stats["macro_dice"],
+                        "eval_dice_min": eval_stats["dice_min"],
+                        "eval_dice_mean": eval_stats["dice_mean"],
+                        "eval_dice_max": eval_stats["dice_max"],
+                        "eval_num_valid_classes": eval_stats["num_valid_classes"],
+                        "lr": self.optimizer.param_groups[0]["lr"],
+                        "train_num_excluded_classes": len(train_excluded),
+                        "eval_num_excluded_classes": len(eval_excluded),
+                        "eval_ran": int(should_eval),
+                        "best_updated": int(best_updated),
+                        "best_eval_macro_dice": best_macro_for_csv,
+                        "train_time_s": float(train_time),
+                        "eval_time_s": float(eval_time),
+                        "epoch_time_s": float(epoch_time),
+                        "train_pc_macro_dice": train_stats.get("pc_macro_dice", float("nan")),
+                        "eval_pc_macro_dice": eval_stats.get("pc_macro_dice", float("nan")),
+                        "train_num_present_classes": train_stats.get("num_present_classes", 0),
+                        "eval_num_present_classes": eval_stats.get("num_present_classes", 0),
+                        "primary_metric_name": self.primary_metric,
+                        "train_primary_metric": train_stats.get(self.primary_metric_key, float("nan")),
+                        "eval_primary_metric": eval_stats.get(self.primary_metric_key, float("nan")),
+                    }
+                )
+                eval_dice_tensor = eval_stats.get("per_class_dice")
+                if should_eval and isinstance(eval_dice_tensor, torch.Tensor):
+                    eval_dice_values = [float(v) for v in eval_dice_tensor.tolist()]
+                else:
+                    eval_dice_values = [float("nan")] * self.num_classes
+                self.per_class_eval_logger.append(epoch, eval_dice_values)
 
-            train_dice_tensor = train_stats.get("per_class_dice")
-            train_skull_tensor = train_stats.get("macro_valid_mask")
-            if isinstance(train_dice_tensor, torch.Tensor) and isinstance(train_skull_tensor, torch.Tensor):
-                train_dice_values = [float(v) for v in train_dice_tensor.tolist()]
-                train_valid_values = [bool(v) for v in train_skull_tensor.tolist()]
-            else:
-                train_dice_values = [float("nan")] * self.num_classes
-                train_valid_values = [False] * self.num_classes
-            self.per_class_long_logger.append_split(
-                epoch=epoch,
-                split="train",
-                per_class_dice=train_dice_values,
-                valid_mask=train_valid_values,
-                class_names=self.class_names,
-            )
+                train_dice_tensor = train_stats.get("per_class_dice")
+                train_skull_tensor = train_stats.get("macro_valid_mask")
+                if isinstance(train_dice_tensor, torch.Tensor) and isinstance(train_skull_tensor, torch.Tensor):
+                    train_dice_values = [float(v) for v in train_dice_tensor.tolist()]
+                    train_valid_values = [bool(v) for v in train_skull_tensor.tolist()]
+                else:
+                    train_dice_values = [float("nan")] * self.num_classes
+                    train_valid_values = [False] * self.num_classes
+                self.per_class_long_logger.append_split(
+                    epoch=epoch,
+                    split="train",
+                    per_class_dice=train_dice_values,
+                    valid_mask=train_valid_values,
+                    class_names=self.class_names,
+                )
 
-            mapped_values = [bool(v) for v in self.class_valid_mask_cpu.tolist()]
-            self.per_label_logger.append_split(
-                epoch=epoch,
-                split="train",
-                per_class_dice=train_dice_values,
-                macro_valid_mask=train_valid_values,
-                mapped_mask=mapped_values,
-                class_names=self.class_names,
-                enc_to_orig_map=self.enc_to_orig_map,
-            )
+                mapped_values = [bool(v) for v in self.class_valid_mask_cpu.tolist()]
+                self.per_label_logger.append_split(
+                    epoch=epoch,
+                    split="train",
+                    per_class_dice=train_dice_values,
+                    macro_valid_mask=train_valid_values,
+                    mapped_mask=mapped_values,
+                    class_names=self.class_names,
+                    enc_to_orig_map=self.enc_to_orig_map,
+                )
 
-            eval_mask_tensor = eval_stats.get("macro_valid_mask")
-            if should_eval and isinstance(eval_mask_tensor, torch.Tensor):
-                eval_valid_values = [bool(v) for v in eval_mask_tensor.tolist()]
-            else:
-                eval_valid_values = [False] * self.num_classes
-            self.per_class_long_logger.append_split(
-                epoch=epoch,
-                split="eval",
-                per_class_dice=eval_dice_values,
-                valid_mask=eval_valid_values,
-                class_names=self.class_names,
-            )
-            self.per_label_logger.append_split(
-                epoch=epoch,
-                split="eval",
-                per_class_dice=eval_dice_values,
-                macro_valid_mask=eval_valid_values,
-                mapped_mask=mapped_values,
-                class_names=self.class_names,
-                enc_to_orig_map=self.enc_to_orig_map,
-            )
+                eval_mask_tensor = eval_stats.get("macro_valid_mask")
+                if should_eval and isinstance(eval_mask_tensor, torch.Tensor):
+                    eval_valid_values = [bool(v) for v in eval_mask_tensor.tolist()]
+                else:
+                    eval_valid_values = [False] * self.num_classes
+                self.per_class_long_logger.append_split(
+                    epoch=epoch,
+                    split="eval",
+                    per_class_dice=eval_dice_values,
+                    valid_mask=eval_valid_values,
+                    class_names=self.class_names,
+                )
+                self.per_label_logger.append_split(
+                    epoch=epoch,
+                    split="eval",
+                    per_class_dice=eval_dice_values,
+                    macro_valid_mask=eval_valid_values,
+                    mapped_mask=mapped_values,
+                    class_names=self.class_names,
+                    enc_to_orig_map=self.enc_to_orig_map,
+                )
+
             self._print_epoch_summary(
                 epoch=epoch,
                 epochs=epochs,
@@ -948,7 +968,7 @@ class TissueSegmentationTrainer:
                 epoch_time=epoch_time,
             )
 
-            if capture_vis and self.vis_dir is not None and self._val_vis_batch is not None:
+            if capture_vis and self.vis_dir is not None and self._val_vis_batch is not None and is_main_process():
                 vis_path = self.vis_dir / f"eval_vis_epoch_{epoch:04d}.png"
                 vis_flip_path = self.vis_dir / f"eval_vis_epoch_{epoch:04d}_flip.png"
                 save_val_visualization_grid(

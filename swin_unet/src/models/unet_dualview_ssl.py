@@ -20,7 +20,7 @@ class _SEBlock(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         w = F.adaptive_avg_pool2d(x, 1)
-        w = F.relu(self.fc1(w), inplace=True)
+        w = F.relu(self.fc1(w), inplace=False)
         w = torch.sigmoid(self.fc2(w))
         return x * w
 
@@ -31,7 +31,7 @@ class _ResBlock(nn.Module):
         self.n1 = _norm2d(out_ch, use_gn)
         self.conv2 = nn.Conv2d(out_ch, out_ch, 3, padding=1, bias=False)
         self.n2 = _norm2d(out_ch, use_gn)
-        self.act = nn.ReLU(inplace=True)
+        self.act = nn.ReLU(inplace=False)
         self.proj = nn.Conv2d(in_ch, out_ch, 1, bias=False) if in_ch != out_ch else nn.Identity()
         self.se = _SEBlock(out_ch) if se else nn.Identity()
 

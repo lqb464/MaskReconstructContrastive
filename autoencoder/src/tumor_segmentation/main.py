@@ -48,7 +48,7 @@ from ..tissue_segmentation.io import (
 )
 from ..tissue_segmentation.plotting import generate_plots
 from .experiment import ExperimentConfig, build_argparser, enforce_tumor_args, resolve_seg_labels_path
-from .scan_lists import resolve_train_eval_tokens
+from .scan_lists import apply_modality_filter, parse_modality_arg, resolve_train_eval_tokens
 from .trainer import TumorSegmentationTrainer
 
 
@@ -181,6 +181,33 @@ def run(args: argparse.Namespace) -> None:
             raise RuntimeError(
                 f"No train scans selected after applying train_mod={cfg.data.train_mod}"
             )
+
+    try:
+        modality_filter = parse_modality_arg(getattr(cfg.tumor, "modality", ""))
+    except ValueError as e:
+        raise ValueError(str(e)) from e
+    if modality_filter is not None:
+        n_train_before = len(train_tokens)
+        n_eval_before = len(eval_tokens)
+        train_tokens = apply_modality_filter(train_tokens, modality_filter)
+        eval_tokens = apply_modality_filter(eval_tokens, modality_filter)
+        print(
+            f"[modality] filter={modality_filter} "
+            f"train_tokens {n_train_before}->{len(train_tokens)} "
+            f"eval_tokens {n_eval_before}->{len(eval_tokens)}"
+        )
+        if not train_tokens:
+            raise RuntimeError(
+                f"No train tokens left after --modality={cfg.tumor.modality!r}. "
+                "Check list tokens and prepare naming (*_{mod}_z####.png)."
+            )
+        if not eval_tokens:
+            raise RuntimeError(
+                f"No eval tokens left after --modality={cfg.tumor.modality!r}. "
+                "Check list tokens and prepare naming (*_{mod}_z####.png)."
+            )
+    else:
+        print("[modality] filter=all (no token rewrite)")
 
     train_image_index = build_image_index(image_root=cfg.tumor.train_root, image_ext=cfg.tumor.image_ext)
     eval_root_resolved  = Path(cfg.tumor.eval_root).expanduser().resolve()
