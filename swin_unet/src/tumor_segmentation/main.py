@@ -48,7 +48,14 @@ from ..tissue_segmentation.io import (
 )
 from ..tissue_segmentation.plotting import generate_plots
 from .experiment import ExperimentConfig, build_argparser, enforce_tumor_args, resolve_seg_labels_path
-from .scan_lists import apply_modality_filter, parse_modality_arg, resolve_train_eval_tokens
+from .scan_lists import (
+    apply_modality_filter,
+    normalize_patient_tokens,
+    parse_modality_arg,
+    resolve_stack_modalities,
+    resolve_train_eval_tokens,
+)
+from .multimodal_dataset import ModalityStackSegmentationDataset
 from .trainer import TumorSegmentationTrainer
 
 
@@ -167,8 +174,8 @@ def load_pretrained_for_downstream(model, cfg: ExperimentConfig, *, device) -> N
 
 
 def make_dataloaders(
-    train_ds: TissueSegmentationDataset,
-    eval_ds: TissueSegmentationDataset,
+    train_ds,
+    eval_ds,
     cfg: ExperimentConfig,
     device: torch.device,
     distributed: bool = False,
@@ -296,7 +303,33 @@ def run(args: argparse.Namespace) -> None:
         modality_filter = parse_modality_arg(getattr(cfg.tumor, "modality", ""))
     except ValueError as e:
         raise ValueError(str(e)) from e
-    if modality_filter is not None:
+
+    stack_channels = bool(getattr(cfg.tumor, "stack_modality_channels", False))
+    stack_modalities: list[str] | None = None
+    if stack_channels:
+        try:
+            stack_modalities = resolve_stack_modalities(modality_filter)
+        except ValueError as e:
+            raise ValueError(str(e)) from e
+        train_tokens = normalize_patient_tokens(train_tokens)
+        eval_tokens = normalize_patient_tokens(eval_tokens)
+        requested_in_ch = int(getattr(cfg.model, "in_ch", 1))
+        cfg.model.in_ch = len(stack_modalities)
+        if requested_in_ch not in {1, len(stack_modalities)}:
+            print(
+                f"[modality] WARNING: overriding --in-ch={requested_in_ch} "
+                f"with {len(stack_modalities)} for stacked modalities."
+            )
+        print(
+            f"[modality] stack_channels=True order={stack_modalities} "
+            f"in_ch={cfg.model.in_ch} "
+            f"train_patients={len(train_tokens)} eval_patients={len(eval_tokens)}"
+        )
+        if not train_tokens:
+            raise RuntimeError("No train patients left for --stack-modality-channels.")
+        if not eval_tokens:
+            raise RuntimeError("No eval patients left for --stack-modality-channels.")
+    elif modality_filter is not None:
         n_train_before = len(train_tokens)
         n_eval_before = len(eval_tokens)
         train_tokens = apply_modality_filter(train_tokens, modality_filter)
@@ -342,20 +375,39 @@ def run(args: argparse.Namespace) -> None:
         debug_shapes=bool(cfg.tumor.debug_shapes),
     )
 
-    train_ds = TissueSegmentationDataset(
-        image_root=cfg.tumor.train_root,
-        label_root=cfg.tumor.train_label,
-        scan_tokens=train_tokens,
-        image_index=train_image_index,
-        **ds_kwargs,
-    )
-    eval_ds = TissueSegmentationDataset(
-        image_root=cfg.tumor.eval_root,
-        label_root=cfg.tumor.eval_label,
-        scan_tokens=eval_tokens,
-        image_index=eval_image_index,
-        **ds_kwargs,
-    )
+    if stack_channels:
+        assert stack_modalities is not None
+        train_ds = ModalityStackSegmentationDataset(
+            image_root=cfg.tumor.train_root,
+            label_root=cfg.tumor.train_label,
+            patient_tokens=train_tokens,
+            stack_modalities=stack_modalities,
+            image_index=train_image_index,
+            **ds_kwargs,
+        )
+        eval_ds = ModalityStackSegmentationDataset(
+            image_root=cfg.tumor.eval_root,
+            label_root=cfg.tumor.eval_label,
+            patient_tokens=eval_tokens,
+            stack_modalities=stack_modalities,
+            image_index=eval_image_index,
+            **ds_kwargs,
+        )
+    else:
+        train_ds = TissueSegmentationDataset(
+            image_root=cfg.tumor.train_root,
+            label_root=cfg.tumor.train_label,
+            scan_tokens=train_tokens,
+            image_index=train_image_index,
+            **ds_kwargs,
+        )
+        eval_ds = TissueSegmentationDataset(
+            image_root=cfg.tumor.eval_root,
+            label_root=cfg.tumor.eval_label,
+            scan_tokens=eval_tokens,
+            image_index=eval_image_index,
+            **ds_kwargs,
+        )
 
     if len(train_ds) == 0:
         raise RuntimeError("Train dataset is empty after list filtering and label pairing.")
@@ -365,18 +417,32 @@ def run(args: argparse.Namespace) -> None:
     train_loader, eval_loader = make_dataloaders(train_ds, eval_ds, cfg, device, distributed=ddp_info["distributed"])
 
     print(f"[data] train_pairs={len(train_ds)} eval_pairs={len(eval_ds)}")
-    print(
-        "[data/train] "
-        f"resolved_images={train_ds.num_images_resolved} "
-        f"labeled_samples={train_ds.num_labeled_samples} "
-        f"filtered_missing_labels={train_ds.num_missing_labels}"
-    )
-    print(
-        "[data/eval] "
-        f"resolved_images={eval_ds.num_images_resolved} "
-        f"labeled_samples={eval_ds.num_labeled_samples} "
-        f"filtered_missing_labels={eval_ds.num_missing_labels}"
-    )
+    if stack_channels:
+        print(
+            "[data/train] "
+            f"stack_groups={train_ds.num_labeled_samples} "
+            f"incomplete_groups_skipped={train_ds.num_incomplete_stack_groups} "
+            f"filtered_missing_labels={train_ds.num_missing_labels}"
+        )
+        print(
+            "[data/eval] "
+            f"stack_groups={eval_ds.num_labeled_samples} "
+            f"incomplete_groups_skipped={eval_ds.num_incomplete_stack_groups} "
+            f"filtered_missing_labels={eval_ds.num_missing_labels}"
+        )
+    else:
+        print(
+            "[data/train] "
+            f"resolved_images={train_ds.num_images_resolved} "
+            f"labeled_samples={train_ds.num_labeled_samples} "
+            f"filtered_missing_labels={train_ds.num_missing_labels}"
+        )
+        print(
+            "[data/eval] "
+            f"resolved_images={eval_ds.num_images_resolved} "
+            f"labeled_samples={eval_ds.num_labeled_samples} "
+            f"filtered_missing_labels={eval_ds.num_missing_labels}"
+        )
     if one_mode:
         print(f"[one] enabled token={one_token}")
     print(

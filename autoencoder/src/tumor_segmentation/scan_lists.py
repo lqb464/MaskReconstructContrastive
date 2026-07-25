@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import random
 import re
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from ..tissue_segmentation.io import read_scan_list
 
@@ -283,11 +284,119 @@ def resolve_train_eval_tokens(
     return train_tokens, eval_tokens, str(train_list_path), str(eval_list_path)
 
 
+_SLICE_MODALITY_RE = re.compile(r"^(.+)_(t1ce|flair|t1|t2)_(z\d+)$", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class ModalityStackSample:
+    """One training sample: same slice index, modalities stacked as channels."""
+
+    group_key: str
+    patient: str
+    slice_tag: str
+    modality_paths: Tuple[Tuple[str, Path], ...]
+    reference_image_path: Path
+
+
+def parse_braats_modality_slice_stem(stem: str) -> Optional[Tuple[str, str, str]]:
+    """
+    Parse BraTS 2D slice stems with explicit modality suffix.
+
+    Example:
+      BraTS2021_00000_flair_z0080 -> ('BraTS2021_00000', 'flair', 'z0080')
+    """
+    match = _SLICE_MODALITY_RE.match(str(stem).strip())
+    if not match:
+        return None
+    return match.group(1), match.group(2).lower(), match.group(3).lower()
+
+
+def normalize_patient_tokens(tokens: Iterable[str]) -> List[str]:
+    """Reduce scan tokens to unique patient-level IDs (strip modality suffix)."""
+    out: List[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        patient, _mod = split_patient_and_modality(str(token).strip())
+        if not patient or patient in seen:
+            continue
+        seen.add(patient)
+        out.append(patient)
+    return out
+
+
+def resolve_stack_modalities(modality_filter: Optional[Sequence[str]]) -> List[str]:
+    """
+    Ordered modality list for --stack-modality-channels.
+
+    Uses ALL_MODALITIES when --modality is empty/all; otherwise the explicit filter.
+    """
+    if modality_filter is None:
+        return list(ALL_MODALITIES)
+    mods = [str(m).lower() for m in modality_filter]
+    if len(mods) < 2:
+        raise ValueError(
+            "--stack-modality-channels requires at least 2 modalities. "
+            f"Got: {mods}. Example: --modality t1,t1ce,t2,flair or --modality all."
+        )
+    return mods
+
+
+def build_modality_stack_samples(
+    *,
+    image_paths: Iterable[Path],
+    patient_tokens: Sequence[str],
+    modalities: Sequence[str],
+) -> tuple[List[ModalityStackSample], int]:
+    """
+    Group slice images by (patient, z-index) and keep only complete modality sets.
+    """
+    patients = set(normalize_patient_tokens(patient_tokens))
+    mods = [str(m).lower() for m in modalities]
+    mod_set = set(mods)
+
+    buckets: Dict[str, Dict[str, Path]] = {}
+    for path in image_paths:
+        parsed = parse_braats_modality_slice_stem(path.stem)
+        if parsed is None:
+            continue
+        patient, mod, slice_tag = parsed
+        if patient not in patients or mod not in mod_set:
+            continue
+        group_key = f"{patient}_{slice_tag}"
+        buckets.setdefault(group_key, {})[mod] = path.resolve()
+
+    samples: List[ModalityStackSample] = []
+    skipped_incomplete = 0
+    for group_key in sorted(buckets.keys()):
+        mod_map = buckets[group_key]
+        if any(mod not in mod_map for mod in mods):
+            skipped_incomplete += 1
+            continue
+        patient, slice_tag = group_key.rsplit("_", 1)
+        ordered_paths = tuple((mod, mod_map[mod]) for mod in mods)
+        ref_path = mod_map.get("flair", ordered_paths[0][1])
+        samples.append(
+            ModalityStackSample(
+                group_key=group_key,
+                patient=patient,
+                slice_tag=slice_tag,
+                modality_paths=ordered_paths,
+                reference_image_path=ref_path,
+            )
+        )
+    return samples, skipped_incomplete
+
+
 __all__ = [
     "ALL_MODALITIES",
+    "ModalityStackSample",
     "patient_token_from_stem",
     "split_patient_and_modality",
     "parse_modality_arg",
+    "parse_braats_modality_slice_stem",
+    "normalize_patient_tokens",
+    "resolve_stack_modalities",
+    "build_modality_stack_samples",
     "apply_modality_filter",
     "discover_patient_tokens_from_images",
     "split_patient_tokens",

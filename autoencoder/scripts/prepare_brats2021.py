@@ -62,7 +62,26 @@ from scipy.ndimage import gaussian_filter1d
 log = logging.getLogger(__name__)
 
 _TAR_SUFFIXES = (".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz")
-ALL_MODALITIES = ("t1", "t1ce", "t2", "flair")
+BASE_MODALITIES = ("t1", "t1ce", "t2", "flair")
+DERIVED_MODALITIES = {"cer": 4, "hyper": 5}
+ALL_MODALITIES = ("t1", "t1ce", "t2", "flair", "cer", "hyper")
+
+
+def _get_add_mri_derived_channels():
+    try:
+        from derived_MRI import add_mri_derived_channels
+        return add_mri_derived_channels
+    except ImportError:
+        import sys
+        for parent in Path(__file__).resolve().parents:
+            if (parent / "derived_MRI.py").exists():
+                if str(parent) not in sys.path:
+                    sys.path.insert(0, str(parent))
+                from derived_MRI import add_mri_derived_channels
+                return add_mri_derived_channels
+        raise ImportError(
+            "Could not import derived_MRI.py. Make sure derived_MRI.py is in root or PYTHONPATH."
+        )
 
 
 def _is_tar_archive(path: Path) -> bool:
@@ -177,7 +196,7 @@ def _load_nifti_zyx(path: Path, *, dtype=np.float32) -> np.ndarray:
 
 def extract_brain_slices(volume_np: np.ndarray, n_slices: int = 20):
     """
-    ADNI slice picker (kept as-is in spirit).
+    Extract n_slices evenly distributed across the entire brain volume (bottom to top).
 
     volume_np: numpy array of shape (Z, H, W)
     returns: list of 2D slices, slice indices, (start, end) brain region
@@ -187,14 +206,14 @@ def extract_brain_slices(volume_np: np.ndarray, n_slices: int = 20):
     energy = volume_np.reshape(Z, -1).mean(axis=1)
     energy_smooth = gaussian_filter1d(energy, sigma=5)
 
-    threshold = energy_smooth.min() + 0.4 * (energy_smooth.max() - energy_smooth.min())
+    threshold = energy_smooth.min() + 0.3 * (energy_smooth.max() - energy_smooth.min())
     brain_mask = energy_smooth > threshold
 
     idx = np.where(brain_mask)[0]
     if len(idx) == 0:
-        start, end = int(Z * 0.25), int(Z * 0.65)
+        start, end = int(Z * 0.15), int(Z * 0.85)
     else:
-        start, end = idx[0], (idx[-1] - idx[0]) // 2 + idx[0]
+        start, end = idx[0], idx[-1]
 
     slice_indices = np.linspace(start, end, n_slices, dtype=int)
     slices = [volume_np[i] for i in slice_indices]
@@ -205,11 +224,13 @@ def _normalize_slices_to_uint8(slices: Sequence[np.ndarray]) -> List[np.ndarray]
     """ADNI-style shared min/max normalize across the selected slices of one volume."""
     img_max = max(float(s.max()) for s in slices)
     img_min = min(float(s.min()) for s in slices)
+    denom = img_max - img_min
+    if denom < 1e-5:
+        denom = 1.0
     out: List[np.ndarray] = []
     for s in slices:
         img = s.astype(np.float32)
-        img = img - img_min
-        img = img / (img_max + 1e-5)
+        img = (img - img_min) / denom
         out.append((img * 255.0).astype(np.uint8))
     return out
 
@@ -275,7 +296,7 @@ def process_patient(
     energy_modality: str,
 ) -> Tuple[str, int, Optional[str]]:
     """
-    Extract synced slices for all modalities + seg.
+    Extract synced slices for all modalities + seg (including derived modalities via derived_MRI.py).
 
     Returns: (patient_id, num_stems_written, error_or_None)
     """
@@ -285,17 +306,28 @@ def process_patient(
         if seg_path is None:
             return patient_id, 0, "seg file not found"
 
-        mod_paths: dict[str, Path] = {}
+        # Determine required base NIfTI files
+        req_base_mods = set()
         for mod in modalities:
-            p = _resolve_patient_file(patient_dir, patient_id, mod)
+            if mod in BASE_MODALITIES:
+                req_base_mods.add(mod)
+            elif mod in DERIVED_MODALITIES:
+                # Derived modalities require all 4 base modalities
+                req_base_mods.update(BASE_MODALITIES)
+
+        if not req_base_mods:
+            return patient_id, 0, f"No valid modalities requested in {modalities}"
+
+        # Resolve paths for required base NIfTI files
+        base_paths: dict[str, Path] = {}
+        for bmod in sorted(req_base_mods):
+            p = _resolve_patient_file(patient_dir, patient_id, bmod)
             if p is None:
-                return patient_id, 0, f"modality file not found ({mod})"
-            mod_paths[mod] = p
+                return patient_id, 0, f"base modality file not found ({bmod})"
+            base_paths[bmod] = p
 
-        if energy_modality not in mod_paths:
-            return patient_id, 0, f"energy modality not in requested set: {energy_modality}"
-
-        energy_vol = _load_nifti_zyx(mod_paths[energy_modality], dtype=np.float32)
+        energy_key = energy_modality if energy_modality in base_paths else sorted(base_paths.keys())[0]
+        energy_vol = _load_nifti_zyx(base_paths[energy_key], dtype=np.float32)
         _, slice_indices, _ = extract_brain_slices(energy_vol, n_slices=num_slices)
 
         seg_vol = _load_nifti_zyx(seg_path, dtype=np.int16)
@@ -306,36 +338,66 @@ def process_patient(
                 f"shape mismatch energy={energy_vol.shape} seg={seg_vol.shape}",
             )
 
-        mod_vols: dict[str, np.ndarray] = {energy_modality: energy_vol}
-        for mod, path in mod_paths.items():
-            if mod == energy_modality:
+        # Load all base volumes
+        base_vols: dict[str, np.ndarray] = {energy_key: energy_vol}
+        for bmod, path in base_paths.items():
+            if bmod == energy_key:
                 continue
             vol = _load_nifti_zyx(path, dtype=np.float32)
             if vol.shape != energy_vol.shape:
                 return (
                     patient_id,
                     0,
-                    f"shape mismatch {mod}={vol.shape} energy={energy_vol.shape}",
+                    f"shape mismatch {bmod}={vol.shape} energy={energy_vol.shape}",
                 )
-            mod_vols[mod] = vol
+            base_vols[bmod] = vol
 
-        # Shared min/max normalize per modality across selected slices (ADNI-style).
+        # Build map of selected slice arrays per modality: mod -> List[np.ndarray]
+        mod_slices_float: dict[str, List[np.ndarray]] = {}
+
+        # First populate requested base modalities
+        for bmod in BASE_MODALITIES:
+            if bmod in base_vols:
+                mod_slices_float[bmod] = [base_vols[bmod][int(z)] for z in slice_indices]
+
+        has_derived = any(mod in DERIVED_MODALITIES for mod in modalities)
+        if has_derived:
+            add_mri_derived_channels = _get_add_mri_derived_channels()
+
+            # Build [20, 4, H, W] for derived_MRI (order: t1, t1ce, t2, flair)
+            h, w = mod_slices_float["t1"][0].shape
+            vol_4ch = np.zeros((len(slice_indices), 4, h, w), dtype=np.float32)
+            for s_i in range(len(slice_indices)):
+                for m_i, bmod in enumerate(BASE_MODALITIES):
+                    vol_4ch[s_i, m_i] = mod_slices_float[bmod][s_i]
+
+            # Call derived_MRI.py -> returns [20, 6, H, W]
+            vol_6ch = add_mri_derived_channels(vol_4ch)
+
+            for dmod, ch_idx in DERIVED_MODALITIES.items():
+                if dmod in modalities:
+                    mod_slices_float[dmod] = [vol_6ch[s_i, ch_idx] for s_i in range(len(slice_indices))]
+
         mod_uint8: dict[str, List[np.ndarray]] = {}
         for mod in modalities:
-            selected = [mod_vols[mod][int(z)] for z in slice_indices]
-            mod_uint8[mod] = _normalize_slices_to_uint8(selected)
+            if mod in mod_slices_float:
+                mod_uint8[mod] = _normalize_slices_to_uint8(mod_slices_float[mod])
 
         written = 0
         for i, z in enumerate(slice_indices):
             z = int(z)
             seg_sl = seg_vol[z]
+            # Write single unified label file per slice for the patient
+            label_stem = f"{patient_id}_z{z:04d}"
+            np.savez_compressed(
+                str(out_labels / f"{label_stem}_label.npz"),
+                label=seg_sl.astype(np.int16),
+            )
             for mod in modalities:
+                if mod not in mod_uint8:
+                    continue
                 stem = f"{patient_id}_{mod}_z{z:04d}"
                 _save_png(mod_uint8[mod][i], out_images / f"{stem}.png")
-                np.savez_compressed(
-                    str(out_labels / f"{stem}_label.npz"),
-                    label=seg_sl.astype(np.int16),
-                )
                 written += 1
 
         return patient_id, written, None

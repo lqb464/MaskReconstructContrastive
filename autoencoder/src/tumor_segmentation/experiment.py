@@ -95,6 +95,7 @@ class TumorTaskConfig(TissueTaskConfig):
     require_special_ids: bool = False
     enable_region_dice: bool = True
     modality: str = ""
+    stack_modality_channels: bool = False
 
 
 @dataclass
@@ -138,6 +139,7 @@ class ExperimentConfig(_BaseExperimentConfig):
             require_special_ids=bool(getattr(args, "require_special_ids", False)),
             enable_region_dice=bool(getattr(args, "enable_region_dice", True)),
             modality=str(getattr(args, "modality", "")).strip(),
+            stack_modality_channels=bool(getattr(args, "stack_modality_channels", False)),
         )
         return cls(
             model=base.model,
@@ -174,7 +176,16 @@ def build_argparser() -> argparse.ArgumentParser:
         help=(
             "Filter/expand patient scan tokens to one or more MRI modalities. "
             "Examples: 'flair', 't1', 't1,flair', or 'all' (default: empty = all). "
+            "With --stack-modality-channels, selects channel order (requires >=2). "
             "Requires prepare naming like BraTS2021_xxxxx_{mod}_z####.png."
+        ),
+    )
+    grp.add_argument(
+        "--stack-modality-channels",
+        action="store_true",
+        help=(
+            "Stack selected modalities as input channels for the same slice "
+            "(e.g. 4 modalities -> in_ch=4). Default off: each modality is a separate sample."
         ),
     )
     grp.add_argument(
@@ -321,6 +332,8 @@ def enforce_tumor_args(args: argparse.Namespace) -> None:
             "tumor_segmentation task is supervised segmentation-only. "
             "Disable contrastive with --disable-contrastive."
         )
+    if bool(getattr(args, "stack_modality_channels", False)) and str(getattr(args, "one", "")).strip():
+        raise ValueError("--stack-modality-channels is incompatible with --one.")
     if not bool(getattr(args, "enable_reconstruct", True)):
         raise ValueError(
             "tumor_segmentation task requires reconstruction path enabled. "
