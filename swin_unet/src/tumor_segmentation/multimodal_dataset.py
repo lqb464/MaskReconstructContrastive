@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import random
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -48,7 +49,11 @@ class ModalityStackSegmentationDataset(Dataset):
         allow_unknown_label_ids: bool = False,
         debug_shapes: bool = False,
         image_index: ImageIndex | None = None,
+        is_train: bool = True,
+        modality_drop_prob: float = 0.0,
     ):
+        self.is_train = bool(is_train)
+        self.modality_drop_prob = float(modality_drop_prob)
         self.image_root = Path(image_root).expanduser().resolve()
         self.label_root = Path(label_root).expanduser().resolve()
         if not self.image_root.exists():
@@ -121,6 +126,12 @@ class ModalityStackSegmentationDataset(Dataset):
                 "No stacked modality groups remain after filtering for labels. "
                 "Check --modality, patient lists, and prepare naming "
                 "(*_{mod}_z####.png with matching labels)."
+            )
+
+        if self.is_train and self.modality_drop_prob > 0.0:
+            print(
+                f"[modality_dropout] Enabled for training: drop_prob={self.modality_drop_prob:.2f} "
+                f"(cer=0.5 grey, others=0.0 black, min 1 modality kept)"
             )
 
     def _build_label_stem_index(self) -> Dict[str, List[Path]]:
@@ -211,6 +222,25 @@ class ModalityStackSegmentationDataset(Dataset):
             raise ValueError(
                 f"Dataset contract violation: input must have shape [{expected_ch},H,W], got {tuple(x.shape)}"
             )
+
+        # Modality Dropout during training: drop each modality independently with probability modality_drop_prob,
+        # but guarantee AT LEAST 1 modality is KEPT.
+        if self.is_train and self.modality_drop_prob > 0.0:
+            drop_mask = [random.random() < self.modality_drop_prob for _ in range(expected_ch)]
+            # Ensure at least 1 modality is kept
+            if all(drop_mask):
+                keep_idx = random.randrange(expected_ch)
+                drop_mask[keep_idx] = False
+
+            for c_idx in range(expected_ch):
+                if drop_mask[c_idx]:
+                    mod_name = self.stack_modalities[c_idx].lower()
+                    if mod_name == "cer":
+                        # Replacement for CER: 0.5 (Neutral Grey in [0, 1] tensor space)
+                        x[c_idx] = 0.5
+                    else:
+                        # Replacement for standard modalities (t1, t1ce, t2, flair, hyper): 0.0 (Black background)
+                        x[c_idx] = 0.0
 
         if y.dtype != torch.long or y.ndim != 2:
             raise ValueError(f"Dataset contract violation: target must be torch.long [H,W], got {y.dtype} {tuple(y.shape)}")

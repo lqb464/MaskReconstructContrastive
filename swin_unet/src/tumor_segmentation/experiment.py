@@ -96,6 +96,7 @@ class TumorTaskConfig(TissueTaskConfig):
     enable_region_dice: bool = True
     modality: str = ""
     stack_modality_channels: bool = False
+    modality_drop_prob: float = 0.10
 
 
 @dataclass
@@ -245,6 +246,12 @@ def build_argparser() -> argparse.ArgumentParser:
         choices=["letterbox", "direct"],
     )
     grp.add_argument("--strict-pairs", type=int, default=0)
+    grp.add_argument(
+        "--modality-drop-prob",
+        type=float,
+        default=0.10,
+        help="Probability of dropping each modality channel during stacked training (default: 0.10, min 1 kept).",
+    )
     grp.add_argument("--val-every", type=int, default=1)
     grp.add_argument("--vis-num", type=int, default=4)
     grp.add_argument("--vis-threshold", type=float, default=0.5)

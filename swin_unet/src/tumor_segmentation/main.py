@@ -377,12 +377,15 @@ def run(args: argparse.Namespace) -> None:
 
     if stack_channels:
         assert stack_modalities is not None
+        drop_prob = float(getattr(cfg.tumor, "modality_drop_prob", 0.10))
         train_ds = ModalityStackSegmentationDataset(
             image_root=cfg.tumor.train_root,
             label_root=cfg.tumor.train_label,
             patient_tokens=train_tokens,
             stack_modalities=stack_modalities,
             image_index=train_image_index,
+            is_train=True,
+            modality_drop_prob=drop_prob,
             **ds_kwargs,
         )
         eval_ds = ModalityStackSegmentationDataset(
@@ -391,6 +394,8 @@ def run(args: argparse.Namespace) -> None:
             patient_tokens=eval_tokens,
             stack_modalities=stack_modalities,
             image_index=eval_image_index,
+            is_train=False,
+            modality_drop_prob=0.0,
             **ds_kwargs,
         )
     else:
