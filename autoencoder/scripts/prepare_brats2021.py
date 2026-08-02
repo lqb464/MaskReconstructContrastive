@@ -67,21 +67,120 @@ DERIVED_MODALITIES = {"cer": 4, "hyper": 5}
 ALL_MODALITIES = ("t1", "t1ce", "t2", "flair", "cer", "hyper")
 
 
-def _get_add_mri_derived_channels():
-    try:
-        from derived_MRI import add_mri_derived_channels
-        return add_mri_derived_channels
-    except ImportError:
-        import sys
-        for parent in Path(__file__).resolve().parents:
-            if (parent / "derived_MRI.py").exists():
-                if str(parent) not in sys.path:
-                    sys.path.insert(0, str(parent))
-                from derived_MRI import add_mri_derived_channels
-                return add_mri_derived_channels
-        raise ImportError(
-            "Could not import derived_MRI.py. Make sure derived_MRI.py is in root or PYTHONPATH."
-        )
+def add_mri_derived_channels(
+    images: np.ndarray,
+    *,
+    clip_z: float = 5.0,
+    calibration_percentiles: tuple[float, float] = (10.0, 90.0),
+    max_fit_voxels: int = 200_000,
+    huber_delta: float = 1.5,
+    huber_iterations: int = 20,
+    eps: float = 1e-6,
+    random_seed: int = 42,
+) -> np.ndarray:
+    """
+    Convert MRI input from [20, 4, H, W] to [20, 6, H, W].
+    Exact implementation from derived_MRI.py embedded directly for Kaggle execution.
+    """
+    images = np.asarray(images, dtype=np.float32)
+
+    if images.ndim != 4 or images.shape[0] != 20 or images.shape[1] != 4:
+        raise ValueError(f"Expected shape [20, 4, H, W], received {images.shape}.")
+
+    if not np.all(np.isfinite(images)):
+        raise ValueError("Input contains NaN or infinite values.")
+
+    t1, t1c, t2, flair = images[:, 0], images[:, 1], images[:, 2], images[:, 3]
+    brain_mask = np.any(images != 0, axis=1)
+
+    if int(brain_mask.sum()) < 100:
+        raise ValueError("Only few foreground pixels detected.")
+
+    def robust_normalize(volume: np.ndarray, mask: np.ndarray) -> np.ndarray:
+        values = volume[mask]
+        median = np.median(values)
+        mad = np.median(np.abs(values - median))
+        robust_scale = 1.4826 * mad
+
+        if robust_scale < eps:
+            robust_scale = float(np.std(values))
+
+        if robust_scale < eps:
+            robust_scale = 1.0
+
+        normalized = (volume - median) / (robust_scale + eps)
+        normalized = np.clip(normalized, -clip_z, clip_z)
+        normalized[~mask] = 0.0
+        return normalized.astype(np.float32)
+
+    def fit_huber_affine(x: np.ndarray, y: np.ndarray) -> tuple[float, float]:
+        x, y = np.asarray(x, dtype=np.float64), np.asarray(y, dtype=np.float64)
+        if x.size < 10:
+            return 1.0, float(np.median(y - x))
+
+        if x.size > max_fit_voxels:
+            rng = np.random.default_rng(random_seed)
+            indices = rng.choice(x.size, size=max_fit_voxels, replace=False)
+            x, y = x[indices], y[indices]
+
+        design = np.column_stack([x, np.ones_like(x)])
+        coefficients, *_ = np.linalg.lstsq(design, y, rcond=None)
+
+        for _ in range(huber_iterations):
+            residuals = y - design @ coefficients
+            residual_center = np.median(residuals)
+            residual_mad = np.median(np.abs(residuals - residual_center))
+            residual_scale = 1.4826 * residual_mad
+
+            if residual_scale < eps:
+                break
+
+            threshold = huber_delta * residual_scale
+            abs_res = np.abs(residuals)
+            weights = np.ones_like(residuals)
+            outliers = abs_res > threshold
+            weights[outliers] = threshold / (abs_res[outliers] + eps)
+
+            sqrt_w = np.sqrt(weights)
+            weighted_design = design * sqrt_w[:, None]
+            weighted_y = y * sqrt_w
+
+            new_coeffs, *_ = np.linalg.lstsq(weighted_design, weighted_y, rcond=None)
+            if np.max(np.abs(new_coeffs - coefficients)) < 1e-6:
+                coefficients = new_coeffs
+                break
+            coefficients = new_coeffs
+
+        slope, intercept = float(coefficients[0]), float(coefficients[1])
+        if not np.isfinite(slope) or not np.isfinite(intercept) or slope <= 0:
+            slope, intercept = 1.0, float(np.median(y - x))
+        return slope, intercept
+
+    z_t1 = robust_normalize(t1, brain_mask)
+    z_t1c = robust_normalize(t1c, brain_mask)
+    z_t2 = robust_normalize(t2, brain_mask)
+    z_flair = robust_normalize(flair, brain_mask)
+
+    low_p, high_p = calibration_percentiles
+    t1_low, t1_high = np.percentile(t1[brain_mask], [low_p, high_p])
+    t1c_low, t1c_high = np.percentile(t1c[brain_mask], [low_p, high_p])
+
+    calib_mask = (
+        brain_mask
+        & (t1 >= t1_low) & (t1 <= t1_high)
+        & (t1c >= t1c_low) & (t1c <= t1c_high)
+    )
+
+    slope, intercept = fit_huber_affine(t1[calib_mask], t1c[calib_mask])
+    raw_enhancement = t1c - (slope * t1 + intercept)
+    signed_enhancement = robust_normalize(raw_enhancement, brain_mask)
+
+    pos_t2 = np.maximum(z_t2, 0.0)
+    pos_flair = np.maximum(z_flair, 0.0)
+    joint_t2_flair = np.clip(np.sqrt(pos_t2 * pos_flair), 0.0, clip_z).astype(np.float32)
+    joint_t2_flair[~brain_mask] = 0.0
+
+    return np.stack([z_t1, z_t1c, z_t2, z_flair, signed_enhancement, joint_t2_flair], axis=1).astype(np.float32)
 
 
 def _is_tar_archive(path: Path) -> bool:
@@ -211,9 +310,9 @@ def extract_brain_slices(volume_np: np.ndarray, n_slices: int = 20):
 
     idx = np.where(brain_mask)[0]
     if len(idx) == 0:
-        start, end = int(Z * 0.15), int(Z * 0.85)
+        start, end = int(Z * 0.25), int(Z * 0.65)
     else:
-        start, end = idx[0], idx[-1]
+        start, end = idx[0], (idx[-1] - idx[0]) // 2 + idx[0]
 
     slice_indices = np.linspace(start, end, n_slices, dtype=int)
     slices = [volume_np[i] for i in slice_indices]
@@ -362,8 +461,6 @@ def process_patient(
 
         has_derived = any(mod in DERIVED_MODALITIES for mod in modalities)
         if has_derived:
-            add_mri_derived_channels = _get_add_mri_derived_channels()
-
             # Build [20, 4, H, W] for derived_MRI (order: t1, t1ce, t2, flair)
             h, w = mod_slices_float["t1"][0].shape
             vol_4ch = np.zeros((len(slice_indices), 4, h, w), dtype=np.float32)
